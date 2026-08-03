@@ -95,10 +95,11 @@ Compose UI → ViewModel → Repository → Room / MusicSource
 ### 5.1 核心实体
 
 - `MusicSourceEntity`：来源 ID、类型、显示名称、根目录、启用状态、能力及最后同步结果。WebDAV 密码不存于该表；
-- `TrackEntity`：稳定内部 ID、来源 ID、来源键、标题、时长、格式、音轨号、碟号、年份、流派、可用状态和元数据状态；
+- `TrackEntity`：首次发现时生成且后续保持不变的 UUID、来源 ID、来源键、标题、时长、格式、音轨号、碟号、年份、流派、可用状态和元数据状态；
 - `TrackLocationEntity`：歌曲的本地 MediaStore URI、WebDAV 相对路径或离线文件路径，以及大小、ETag、修改时间和完整性状态；
 - `AlbumEntity`、`ArtistEntity`、`TrackArtistCrossRef`：专辑、歌手和多歌手关系；
 - `PlaylistEntity`、`PlaylistTrackCrossRef`：自建歌单、收藏系统歌单及稳定排序；
+- `PlaybackHistoryEntity`：最近播放时间、累计播放次数和最近完成状态，用于最近播放视图；
 - `DownloadEntity`：下载任务、进度、临时文件、目标文件、预期大小、ETag、状态及错误；
 - `PlaybackQueueEntity`、`PlaybackQueueItemEntity`、`PlaybackStateEntity`：队列、当前索引、进度、循环模式、随机模式和更新时间；
 - `SyncSessionEntity`：一次扫描的状态和已发现条目标记，用于防止失败扫描误删记录。
@@ -194,7 +195,7 @@ WebDAV 凭据不拼接到 URL，也不放进 `MediaItem` 的可序列化元数�
 
 应用采用 Material 3 与底部导航：
 
-- 媒体库：歌曲、专辑、歌手、文件夹；
+- 媒体库：歌曲、专辑、歌手、文件夹，并提供跨这些分类的标题、歌手和专辑搜索；
 - 歌单：收藏、自建歌单、最近播放；
 - 下载：进行中、已完成、失败任务；
 - 设置：本地扫描、WebDAV 配置、缓存、主题和播放设置。
