@@ -17,6 +17,10 @@ android {
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
+androidComponents.onVariants {
+    it.sources.assets?.addStaticSourceDirectory("schemas")
+}
+
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
@@ -32,4 +36,5 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.room.testing)
 }

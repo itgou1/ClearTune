@@ -162,7 +162,11 @@ class RoomQueueRepository(
 
         val nextQueueOrder = nextItems.map(PlaybackQueueItemEntity::id)
         val proposedShuffleOrder = when (command) {
-            is QueueCommand.Replace -> nextQueueOrder
+            is QueueCommand.Replace -> if (existingState.shuffleEnabled) {
+                replacementShuffleOrder(nextQueueOrder, nextItems.getOrNull(currentIndex)?.id)
+            } else {
+                nextQueueOrder
+            }
             is QueueCommand.AddNext -> {
                 val addedId = nextQueueOrder.first { it !in existingQueueOrder }
                 val insertionIndex = (existingShuffleOrder.indexOf(existingCurrentItemId) + 1)
@@ -288,4 +292,11 @@ internal fun reconcileShuffleOrder(existingOrder: List<String>, queueOrder: List
     val retained = existingOrder.filterTo(linkedSetOf()) { it in queueIds }
     queueOrder.forEach(retained::add)
     return retained.toList()
+}
+
+internal fun replacementShuffleOrder(queueOrder: List<String>, selectedId: String?): List<String> {
+    if (queueOrder.isEmpty()) return emptyList()
+    val selected = selectedId?.takeIf(queueOrder::contains)
+    val remaining = queueOrder.filterNot { it == selected }.asReversed()
+    return listOfNotNull(selected) + remaining
 }

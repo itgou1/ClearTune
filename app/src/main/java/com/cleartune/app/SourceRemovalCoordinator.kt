@@ -6,6 +6,7 @@ import com.cleartune.core.model.CredentialAlias
 import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.SourceId
+import com.cleartune.data.webdav.ArtworkCache
 import java.io.File
 import kotlinx.coroutines.CancellationException
 
@@ -29,6 +30,7 @@ class RoomWebDavSourceRemovalCoordinator(
     private val downloadWork: DownloadWorkCancellation,
     private val credentials: CredentialDeletion,
     private val clearCheckpoint: suspend (SourceId) -> Unit = {},
+    private val artworkCache: ArtworkCache = ArtworkCache.None,
 ) {
     private val root = downloadRoot.canonicalFile
 
@@ -61,6 +63,7 @@ class RoomWebDavSourceRemovalCoordinator(
         }
 
         clearCheckpoint(sourceId)
+        clearArtwork(sourceId)
         source.credentialAlias?.let { alias ->
             credentials.delete(CredentialAlias(alias))
             database.sourceDao().clearTombstoneCredential(sourceId.value)
@@ -108,12 +111,22 @@ class RoomWebDavSourceRemovalCoordinator(
             val sourceId = SourceId(source.id)
             sourceWork.cancel(sourceId)
             clearCheckpoint(sourceId)
+            clearArtwork(sourceId)
             source.credentialAlias?.let { alias ->
                 credentials.delete(CredentialAlias(alias))
                 database.sourceDao().clearTombstoneCredential(source.id)
             }
         }
         reconcilePendingCleanup()
+    }
+
+    private suspend fun clearArtwork(sourceId: SourceId) {
+        val prefix = artworkCache.sourceUriPrefix(sourceId) ?: return
+        artworkCache.clearSource(sourceId)
+        database.withTransaction {
+            database.libraryWriteDao().clearTrackArtworkRefsWithPrefix(prefix)
+            database.libraryWriteDao().clearAlbumArtworkRefsWithPrefix(prefix)
+        }
     }
 
     private companion object {

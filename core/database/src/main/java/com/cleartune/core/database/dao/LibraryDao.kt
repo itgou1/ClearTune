@@ -22,6 +22,7 @@ import com.cleartune.core.database.model.FolderRow
 import com.cleartune.core.database.model.LibraryIngestRecord
 import com.cleartune.core.database.model.LibraryTrackRow
 import com.cleartune.core.database.model.MediaCatalogRow
+import com.cleartune.core.database.model.MediaCatalogNodeRow
 import com.cleartune.core.database.model.StableLibraryId
 import com.cleartune.core.model.LibraryMutation
 import com.cleartune.core.model.LocationType
@@ -69,6 +70,84 @@ interface LibraryReadDao {
         """,
     )
     suspend fun mediaCatalogPage(category: String, limit: Int, offset: Int): List<MediaCatalogRow>
+
+    @Query(
+        """
+        SELECT 'album:' || a.id AS mediaId, a.title, a.artworkRef AS artworkUri
+          FROM albums a
+         WHERE EXISTS (
+            SELECT 1 FROM tracks t JOIN track_locations l ON l.trackId = t.id
+             WHERE t.albumId = a.id AND l.available = 1
+         )
+         ORDER BY a.title COLLATE NOCASE, a.id
+         LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun mediaCatalogAlbumNodes(limit: Int, offset: Int): List<MediaCatalogNodeRow>
+
+    @Query(
+        """
+        SELECT 'artist:' || a.id AS mediaId, a.name AS title, CAST(NULL AS TEXT) AS artworkUri
+          FROM artists a
+         WHERE EXISTS (
+            SELECT 1 FROM track_artists ta JOIN track_locations l ON l.trackId = ta.trackId
+             WHERE ta.artistId = a.id AND l.available = 1
+         )
+         ORDER BY a.name COLLATE NOCASE, a.id
+         LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun mediaCatalogArtistNodes(limit: Int, offset: Int): List<MediaCatalogNodeRow>
+
+    @Query(
+        """
+        SELECT 'playlist:' || p.id AS mediaId, p.name AS title, CAST(NULL AS TEXT) AS artworkUri
+          FROM playlists p
+         ORDER BY p.createdAtEpochMs DESC, p.id
+         LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun mediaCatalogPlaylistNodes(limit: Int, offset: Int): List<MediaCatalogNodeRow>
+
+    @Query(
+        """
+        SELECT t.id AS mediaId, t.title, a.title AS albumTitle,
+               (SELECT GROUP_CONCAT(ar.name, char(31))
+                  FROM track_artists ta JOIN artists ar ON ar.id = ta.artistId
+                 WHERE ta.trackId = t.id) AS artistNames,
+               t.artworkRef AS artworkUri, chosen.uri AS playbackUri,
+               chosen.sourceId AS sourceId, chosen.id AS locationId
+          FROM tracks t
+          LEFT JOIN albums a ON a.id = t.albumId
+          JOIN track_locations chosen ON chosen.id = (
+               SELECT candidate.id FROM track_locations candidate
+                WHERE candidate.trackId = t.id AND candidate.available = 1
+                ORDER BY CASE candidate.type
+                    WHEN 'DOWNLOADED_FILE' THEN 0 WHEN 'LOCAL_URI' THEN 1 ELSE 2 END,
+                    candidate.id
+                LIMIT 1
+          )
+         WHERE (:entityType = 'album' AND t.albumId = :entityId)
+            OR (:entityType = 'artist' AND EXISTS(
+                SELECT 1 FROM track_artists ta WHERE ta.trackId = t.id AND ta.artistId = :entityId
+            ))
+            OR (:entityType = 'playlist' AND EXISTS(
+                SELECT 1 FROM playlist_tracks pt WHERE pt.trackId = t.id AND pt.playlistId = :entityId
+            ))
+         ORDER BY CASE WHEN :entityType = 'playlist' THEN (
+                    SELECT MIN(pt.position) FROM playlist_tracks pt
+                     WHERE pt.trackId = t.id AND pt.playlistId = :entityId
+                  ) END,
+                  t.title COLLATE NOCASE, t.id
+         LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun mediaCatalogEntityPage(
+        entityType: String,
+        entityId: String,
+        limit: Int,
+        offset: Int,
+    ): List<MediaCatalogRow>
 
     @Query(
         """
@@ -210,6 +289,12 @@ abstract class LibraryWriteDao {
     @Query("UPDATE track_locations SET available = 0 WHERE sourceId = :sourceId AND type = 'REMOTE_URL' AND available != 0")
     abstract suspend fun markRemoteLocationsUnavailable(sourceId: String): Int
 
+    @Query("UPDATE tracks SET artworkRef = NULL WHERE artworkRef IS NOT NULL AND instr(artworkRef, :uriPrefix) = 1")
+    abstract suspend fun clearTrackArtworkRefsWithPrefix(uriPrefix: String): Int
+
+    @Query("UPDATE albums SET artworkRef = NULL WHERE artworkRef IS NOT NULL AND instr(artworkRef, :uriPrefix) = 1")
+    abstract suspend fun clearAlbumArtworkRefsWithPrefix(uriPrefix: String): Int
+
     @Transaction
     open suspend fun applySourceSnapshot(
         sourceId: SourceId,
@@ -322,9 +407,10 @@ abstract class LibraryWriteDao {
         is LibraryMutation.Upsert -> {
             mutation.tracks.forEach { track ->
                 val existing = track(track.id.value)
+                val nextArtworkRef = if (track.artworkResolved) track.artworkRef else existing?.artworkRef
                 val nextAlbumId = track.albumTitle?.takeIf(String::isNotBlank)?.let { title ->
                     StableLibraryId.album(mutation.sourceId, title).value.also { albumId ->
-                        upsertAlbum(AlbumEntity(albumId, title.trim(), track.artworkRef))
+                        upsertAlbum(AlbumEntity(albumId, title.trim(), nextArtworkRef))
                     }
                 } ?: track.albumId?.value ?: existing?.albumId
                 upsertTrack(
@@ -333,7 +419,7 @@ abstract class LibraryWriteDao {
                         title = track.title,
                         durationMs = track.durationMs ?: existing?.durationMs,
                         albumId = nextAlbumId,
-                        artworkRef = track.artworkRef ?: existing?.artworkRef,
+                        artworkRef = nextArtworkRef,
                         addedAtEpochMs = existing?.addedAtEpochMs ?: track.addedAtEpochMs,
                     ),
                 )

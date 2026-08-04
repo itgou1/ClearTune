@@ -34,12 +34,16 @@ class SourceControllerTest {
         val form = WebDavFormState("Remote", "https://music.example/dav/", "alice", "secret")
 
         val tested = requireNotNull(controller.testConnection(form, null).value)
+        assertNull(controller.selectRoot(tested, "").failure)
         assertEquals(source, controller.save(tested).value)
         assertNull(controller.requestSync(source.id).failure)
         assertEquals(listOf("album"), requireNotNull(controller.browse(source.id, "").value).map { it.name })
         assertNull(controller.delete(source.id).failure)
 
-        assertEquals(listOf("test", "save", "initial-sync", "sync", "browse", "delete"), operations.calls)
+        assertEquals(
+            listOf("test", "select-root", "save", "initial-sync", "sync", "browse", "delete"),
+            operations.calls,
+        )
     }
 
     @Test
@@ -183,13 +187,34 @@ class SourceControllerTest {
         val controller = SourceController(FakeSourceRepository(), actions)
         val tested = requireNotNull(controller.testConnection(form(), null).value)
 
-        val roots = controller.browseTested(tested, "")
-        assertEquals(listOf("album"), requireNotNull(roots.value).map { it.name })
-        assertNull(controller.selectRoot(tested, "library").failure)
-        assertEquals("https://music.example/dav/library/", tested.draft.url)
+        assertEquals(listOf("album"), requireNotNull(controller.browseTested(tested, "").value).map { it.name })
+        assertEquals(listOf("album"), requireNotNull(controller.browseTested(tested, "album").value).map { it.name })
+        assertEquals(listOf("album"), requireNotNull(controller.browseTested(tested, "album/live").value).map { it.name })
+        assertNull(controller.selectRoot(tested, "album/live").failure)
+        assertEquals("https://music.example/dav/album/live/", tested.draft.url)
+        assertEquals(listOf("", "album", "album/live"), actions.testedBrowsePaths)
+        assertEquals(TestedRootState("album/live", "album/live"), tested.rootState())
+        assertTrue("secret" !in tested.rootState().toString())
 
         assertEquals(source, controller.save(tested).value)
-        assertEquals(listOf("test", "browse-tested", "select-root", "save", "initial-sync"), actions.calls)
+        assertEquals(
+            listOf("test", "browse-tested", "browse-tested", "browse-tested", "select-root", "save", "initial-sync"),
+            actions.calls,
+        )
+    }
+
+    @Test
+    fun `save requires explicit root choice while keeping tested receipt usable`() = runTest {
+        val source = source()
+        val controller = SourceController(FakeSourceRepository(), FakeSourceActions(source))
+        val tested = requireNotNull(controller.testConnection(form(), null).value)
+
+        val rejected = controller.save(tested)
+
+        assertEquals("root_selection_required", rejected.failure?.code)
+        assertTrue(tested.draft.password.any { it != '\u0000' })
+        assertNull(controller.selectRoot(tested, "").failure)
+        assertEquals(source, controller.save(tested).value)
     }
 
     @Test
@@ -202,6 +227,7 @@ class SourceControllerTest {
         }
         val controller = SourceController(repository, actions)
         val tested = requireNotNull(controller.testConnection(form(), null).value)
+        assertNull(controller.selectRoot(tested, "").failure)
 
         val result = controller.save(tested)
 
@@ -238,6 +264,7 @@ private class FakeSourceActions(private val source: MusicSource) : SourceActionP
     var receivedPassword: CharArray? = null
     var initialSyncFailure: SourceFailure? = null
     var repositoryAfterSave: FakeSourceRepository? = null
+    val testedBrowsePaths = mutableListOf<String>()
     override suspend fun test(draft: SourceDraft) {
         calls += "test"
         receivedPassword = draft.password
@@ -269,6 +296,7 @@ private class FakeSourceActions(private val source: MusicSource) : SourceActionP
     }
     override suspend fun browseTested(draft: SourceDraft, relativePath: String): List<SourceBrowseItem> {
         calls += "browse-tested"
+        testedBrowsePaths += relativePath
         return listOf(SourceBrowseItem("album", "album", isDirectory = true))
     }
     override suspend fun selectRoot(draft: SourceDraft, relativePath: String): SourceDraft {

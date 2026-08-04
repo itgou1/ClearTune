@@ -128,17 +128,20 @@ class ProductionPersistenceAndroidTest {
         (1..4).forEach { index ->
             database.libraryWriteDao().upsertTrack(TrackEntity("track-$index", "Song $index", null, null, null, index.toLong()))
         }
-        val ids = ArrayDeque(listOf("q1", "q2", "q3", "q4"))
+        val ids = ArrayDeque(listOf("initial", "q1", "q2", "q3", "q4"))
         val repository = com.cleartune.core.database.RoomQueueRepository(database, idFactory = ids::removeFirst)
-        repository.apply(QueueCommand.Replace((1..3).map { TrackId("track-$it") }, startIndex = 1))
         val adapter = RoomPlaybackQueueAdapter(database, repository, clock = { 99 })
-        adapter.updatePlaybackState(currentIndex = 1, positionMs = 4_321, shuffleEnabled = true)
+        repository.apply(QueueCommand.Replace(listOf(TrackId("track-4"))))
+        adapter.updatePlaybackState(currentIndex = 0, positionMs = 4_321, shuffleEnabled = true)
+
+        repository.apply(QueueCommand.Replace((1..3).map { TrackId("track-$it") }, startIndex = 1))
 
         val first = adapter.recoveryState()
         assertEquals(QueueItemId("q2"), first.shuffleOrder.first())
         assertTrue(first.shuffleOrder != listOf(QueueItemId("q1"), QueueItemId("q2"), QueueItemId("q3")))
+        assertTrue(first.snapshot.shuffleEnabled)
         assertEquals(1, first.snapshot.currentIndex)
-        assertEquals(4_321, first.snapshot.positionMs)
+        assertEquals(0, first.snapshot.positionMs)
 
         repository.apply(QueueCommand.AddLast(TrackId("track-4")))
         val recreated = RoomPlaybackQueueAdapter(database, repository).recoveryState()
@@ -167,9 +170,18 @@ class ProductionPersistenceAndroidTest {
         val catalog = RoomLibrarySessionCatalog(database)
 
         assertEquals(listOf("Alpha", "Beta", "Gamma"), catalog.childrenPage("songs", 0, 10).map { it.title })
-        assertEquals(listOf("Alpha"), catalog.childrenPage("albums", 0, 10).map { it.title })
-        assertEquals(listOf("Alpha"), catalog.childrenPage("artists", 0, 10).map { it.title })
-        assertEquals(listOf("Gamma"), catalog.childrenPage("playlists", 0, 10).map { it.title })
+        val albumNode = catalog.childrenPage("albums", 0, 10).single()
+        val artistNode = catalog.childrenPage("artists", 0, 10).single()
+        val playlistNode = catalog.childrenPage("playlists", 0, 10).single()
+        assertEquals("Album", albumNode.title)
+        assertTrue(albumNode.browsable && !albumNode.playable)
+        assertEquals("Artist", artistNode.title)
+        assertTrue(artistNode.browsable && !artistNode.playable)
+        assertEquals("List", playlistNode.title)
+        assertTrue(playlistNode.browsable && !playlistNode.playable)
+        assertEquals(listOf("Alpha"), catalog.childrenPage(albumNode.mediaId, 0, 10).map { it.title })
+        assertEquals(listOf("Alpha"), catalog.childrenPage(artistNode.mediaId, 0, 10).map { it.title })
+        assertEquals(listOf("Gamma"), catalog.childrenPage(playlistNode.mediaId, 0, 10).map { it.title })
         assertEquals(listOf("Beta"), catalog.childrenPage("songs", 1, 1).map { it.title })
     }
 

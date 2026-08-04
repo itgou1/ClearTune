@@ -65,13 +65,21 @@ class RoomDownloadPersistenceAdapter(
         database.downloadDao().downloadForTrack(trackId.value)?.toSummary()
 
     override suspend fun insert(summary: DownloadSummary) {
-        check(database.downloadDao().download(summary.id.value) == null) { "Download already exists" }
-        database.downloadDao().upsert(summary.toEntity())
+        database.withTransaction {
+            check(database.downloadDao().download(summary.id.value) == null) { "Download already exists" }
+            val sourceId = requireNotNull(activeRemoteSourceId(summary.trackId)) {
+                "Track has no active remote source"
+            }
+            database.downloadDao().upsert(summary.toEntity(sourceId = sourceId))
+        }
     }
 
     override suspend fun replace(summary: DownloadSummary) {
-        val existing = requireNotNull(database.downloadDao().download(summary.id.value)) { "Download not found" }
-        database.downloadDao().upsert(summary.toEntity(existing))
+        database.withTransaction {
+            val existing = requireNotNull(database.downloadDao().download(summary.id.value)) { "Download not found" }
+            val sourceId = existing.sourceId ?: activeRemoteSourceId(summary.trackId)
+            database.downloadDao().upsert(summary.toEntity(existing, sourceId))
+        }
     }
 
     override suspend fun remove(id: DownloadId) {
@@ -128,8 +136,12 @@ class RoomDownloadPersistenceAdapter(
         generation
     }
 
-    override suspend fun persistProgress(downloadId: DownloadId, downloadedBytes: Long, totalBytes: Long?) =
-        update(downloadId) { current ->
+    override suspend fun persistProgress(
+        downloadId: DownloadId,
+        generation: Long,
+        downloadedBytes: Long,
+        totalBytes: Long?,
+    ): Boolean = updateRunning(downloadId, generation) { current ->
             val monotonicBytes = downloadedBytes.coerceAtLeast(current.bytesDownloaded)
             val safeTotal = totalBytes?.coerceAtLeast(monotonicBytes)
                 ?: current.totalBytes?.coerceAtLeast(monotonicBytes)
@@ -200,7 +212,8 @@ class RoomDownloadPersistenceAdapter(
         return published
     }
 
-    override suspend fun recordFailure(downloadId: DownloadId, code: String) = update(downloadId) { current ->
+    override suspend fun recordFailure(downloadId: DownloadId, generation: Long, code: String): Boolean =
+        updateRunning(downloadId, generation) { current ->
         current.copy(
             state = DownloadState.FAILED.name,
             errorMessage = code.take(160),
@@ -247,7 +260,32 @@ class RoomDownloadPersistenceAdapter(
         }
     }
 
-    private fun DownloadSummary.toEntity(existing: DownloadEntity? = null) = DownloadEntity(
+    private suspend fun updateRunning(
+        downloadId: DownloadId,
+        generation: Long,
+        transform: (DownloadEntity) -> DownloadEntity,
+    ): Boolean = database.withTransaction {
+        val current = database.downloadDao().download(downloadId.value) ?: return@withTransaction false
+        if (current.state != DownloadState.RUNNING.name || current.workGeneration != generation) {
+            return@withTransaction false
+        }
+        database.downloadDao().upsert(transform(current))
+        true
+    }
+
+    private suspend fun activeRemoteSourceId(trackId: TrackId): String? {
+        database.libraryReadDao().playableLocations(trackId.value).forEach { location ->
+            if (location.type == LocationType.REMOTE_URL.name &&
+                database.sourceDao().source(location.sourceId) != null
+            ) return location.sourceId
+        }
+        return null
+    }
+
+    private fun DownloadSummary.toEntity(
+        existing: DownloadEntity? = null,
+        sourceId: String? = existing?.sourceId,
+    ) = DownloadEntity(
         id = id.value,
         trackId = trackId.value,
         state = state.name,
@@ -258,7 +296,7 @@ class RoomDownloadPersistenceAdapter(
         finalPath = finalPath,
         errorMessage = errorMessage,
         updatedAtEpochMs = clock(),
-        sourceId = existing?.sourceId,
+        sourceId = sourceId,
         workGeneration = existing?.workGeneration ?: 0,
         cleanupPending = existing?.cleanupPending ?: false,
     )

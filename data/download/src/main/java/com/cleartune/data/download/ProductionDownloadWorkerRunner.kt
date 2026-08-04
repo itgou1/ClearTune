@@ -32,24 +32,27 @@ class ProductionDownloadWorkerRunner(
     override suspend fun run(downloadId: DownloadId): WorkerOutcome {
         val work = persistence.loadWork(downloadId) ?: return WorkerOutcome.FAILED
         val credentials = work.credentials
+        var generation: Long? = null
         return try {
-            val generation = persistence.beginWork(downloadId) ?: return WorkerOutcome.FAILED
-            val execution = transfer(work, transferFactory(credentials))
+            generation = persistence.beginWork(downloadId) ?: return WorkerOutcome.FAILED
+            val execution = transfer(work, generation, transferFactory(credentials))
             when (val result = execution.result) {
                 is DownloadTransferResult.Completed -> complete(downloadId, generation, work, result, execution.persistedBytes)
                 is DownloadTransferResult.RetryableFailure -> {
-                    persistence.recordFailure(downloadId, result.code)
+                    persistence.recordFailure(downloadId, generation, result.code)
                     WorkerOutcome.RETRY
                 }
                 is DownloadTransferResult.PermanentFailure -> {
-                    persistence.recordFailure(downloadId, result.code)
+                    persistence.recordFailure(downloadId, generation, result.code)
                     WorkerOutcome.FAILED
                 }
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {
-            runCatching { persistence.recordFailure(downloadId, "worker_failure") }
+            generation?.let { captured ->
+                runCatching { persistence.recordFailure(downloadId, captured, "worker_failure") }
+            }
             WorkerOutcome.FAILED
         } finally {
             credentials?.password?.fill('\u0000')
@@ -58,6 +61,7 @@ class ProductionDownloadWorkerRunner(
 
     private suspend fun transfer(
         work: DownloadWork,
+        generation: Long,
         executor: DownloadTransferExecutor,
     ): CompletedTransferExecution = coroutineScope {
         val progressSignal = Channel<Unit>(Channel.CONFLATED)
@@ -71,8 +75,9 @@ class ProductionDownloadWorkerRunner(
                 progressQueueDepth(0)
                 while (true) {
                     val (downloaded, total) = latestProgress.getAndSet(null) ?: break
-                    persistence.persistProgress(work.summary.id, downloaded, total)
-                    persisted.set(downloaded)
+                    if (persistence.persistProgress(work.summary.id, generation, downloaded, total)) {
+                        persisted.set(downloaded)
+                    }
                 }
             }
         }
@@ -123,11 +128,16 @@ class ProductionDownloadWorkerRunner(
             finalFile.length() == completed.bytes &&
             (work.expectedBytes == null || work.expectedBytes == completed.bytes)
         if (!valid) {
-            persistence.recordFailure(downloadId, "final_file_missing")
+            persistence.recordFailure(downloadId, generation, "final_file_missing")
             return WorkerOutcome.FAILED
         }
         if (completed.bytes > persistedBytes) {
-            persistence.persistProgress(downloadId, completed.bytes, work.expectedBytes ?: completed.bytes)
+            persistence.persistProgress(
+                downloadId,
+                generation,
+                completed.bytes,
+                work.expectedBytes ?: completed.bytes,
+            )
         }
         return if (persistence.publishDownloadedLocation(
             downloadId,

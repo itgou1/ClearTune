@@ -6,8 +6,10 @@ import com.cleartune.core.model.SourceType
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.file.Files
 import kotlinx.coroutines.test.runTest
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -65,6 +67,95 @@ class RangeWebDavMetadataEnricherTest {
         assertTrue(metadata.artistNames.isEmpty())
     }
 
+    @Test
+    fun `overflowing ID3 frame length falls back to filename`() = runTest {
+        val fixture = ByteArray(20).apply {
+            "ID3".toByteArray().copyInto(this)
+            this[3] = 3
+            this[9] = 10
+            "TIT2".toByteArray().copyInto(this, 10)
+            byteArrayOf(0x7f, 0xff.toByte(), 0xff.toByte(), 0xff.toByte()).copyInto(this, 14)
+        }
+        val enricher = RangeWebDavMetadataEnricher(WebDavRangeReader { _, _, _, _, _ ->
+            RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
+        })
+
+        val metadata = enricher.enrich(source(), entry("Malformed Song.mp3", fixture.size.toLong()))
+
+        assertEquals("Malformed Song", metadata.title)
+        assertNull(metadata.albumTitle)
+    }
+
+    @Test
+    fun `overflowing FLAC Vorbis vendor length falls back to filename`() = runTest {
+        val fixture = "fLaC".toByteArray() +
+            byteArrayOf(0x84.toByte(), 0, 0, 8) +
+            ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(Int.MAX_VALUE).array() +
+            byteArrayOf(0, 0, 0, 0)
+        val enricher = RangeWebDavMetadataEnricher(WebDavRangeReader { _, _, _, _, _ ->
+            RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
+        })
+
+        val metadata = enricher.enrich(source(), entry("Malformed Album.flac", fixture.size.toLong()))
+
+        assertEquals("Malformed Album", metadata.title)
+        assertTrue(metadata.artistNames.isEmpty())
+    }
+
+    @Test
+    fun `MP3 APIC artwork is bounded and persisted as a contained local reference`() = runTest {
+        val root = Files.createTempDirectory("mp3-artwork-").toFile()
+        try {
+            val artwork = byteArrayOf(1, 2, 3, 4)
+            val fixture = id3(
+                "TIT2" to text("Artwork Song"),
+                "APIC" to (byteArrayOf(3) + "image/jpeg".toByteArray() +
+                    byteArrayOf(0, 3, 0) + artwork),
+            )
+            val enricher = RangeWebDavMetadataEnricher(
+                reader = WebDavRangeReader { _, _, _, _, _ ->
+                    RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
+                },
+                artworkCache = EmbeddedArtworkCache(root, maximumArtworkBytes = 8),
+            )
+
+            val metadata = enricher.enrich(source(), entry("art.mp3", fixture.size.toLong()))
+
+            val file = java.io.File(java.net.URI(requireNotNull(metadata.artworkRef)))
+            assertArrayEquals(artwork, file.readBytes())
+            assertTrue(file.canonicalFile.toPath().startsWith(root.canonicalFile.toPath()))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `FLAC PICTURE artwork is parsed and malicious data length is rejected`() = runTest {
+        val root = Files.createTempDirectory("flac-artwork-").toFile()
+        try {
+            val pictureBytes = byteArrayOf(9, 8, 7)
+            val valid = flacWithPicture("Picture Song", "image/png", pictureBytes, pictureBytes.size)
+            val malicious = flacWithPicture("Broken Picture", "image/png", byteArrayOf(1), Int.MAX_VALUE)
+            val responses = ArrayDeque(listOf(valid, malicious))
+            val enricher = RangeWebDavMetadataEnricher(
+                reader = WebDavRangeReader { _, _, _, _, _ ->
+                    val bytes = responses.removeFirst()
+                    RangeResponse(bytes, "bytes 0-${bytes.lastIndex}/${bytes.size}", true, null)
+                },
+                artworkCache = EmbeddedArtworkCache(root, maximumArtworkBytes = 8),
+            )
+
+            val accepted = enricher.enrich(source(), entry("valid.flac", valid.size.toLong()))
+            val rejected = enricher.enrich(source(), entry("malicious.flac", malicious.size.toLong()))
+
+            assertArrayEquals(pictureBytes, java.io.File(java.net.URI(requireNotNull(accepted.artworkRef))).readBytes())
+            assertEquals("Broken Picture", rejected.title)
+            assertNull(rejected.artworkRef)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     private fun source() = MusicSource(
         SourceId("source"), "Remote", SourceType.WEBDAV, "https://music.example/dav/",
     )
@@ -110,5 +201,38 @@ class RangeWebDavMetadataEnricherTest {
         fun block(type: Int, last: Boolean, data: ByteArray): ByteArray =
             byteArrayOf(((if (last) 0x80 else 0) or type).toByte(), (data.size ushr 16).toByte(), (data.size ushr 8).toByte(), data.size.toByte()) + data
         return "fLaC".toByteArray() + block(0, false, streamInfo) + block(4, true, vorbis)
+    }
+
+    private fun flacWithPicture(
+        title: String,
+        mime: String,
+        image: ByteArray,
+        declaredImageLength: Int,
+    ): ByteArray {
+        val comment = "TITLE=$title".toByteArray()
+        val vorbis = ByteArrayOutputStream().apply {
+            write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0).array())
+            write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(1).array())
+            write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(comment.size).array())
+            write(comment)
+        }.toByteArray()
+        val mimeBytes = mime.toByteArray()
+        val picture = ByteArrayOutputStream().apply {
+            write(ByteBuffer.allocate(4).putInt(3).array())
+            write(ByteBuffer.allocate(4).putInt(mimeBytes.size).array())
+            write(mimeBytes)
+            write(ByteBuffer.allocate(4).putInt(0).array())
+            repeat(4) { write(ByteBuffer.allocate(4).putInt(1).array()) }
+            write(ByteBuffer.allocate(4).putInt(declaredImageLength).array())
+            write(image)
+        }.toByteArray()
+        fun block(type: Int, last: Boolean, data: ByteArray): ByteArray =
+            byteArrayOf(
+                ((if (last) 0x80 else 0) or type).toByte(),
+                (data.size ushr 16).toByte(),
+                (data.size ushr 8).toByte(),
+                data.size.toByte(),
+            ) + data
+        return "fLaC".toByteArray() + block(4, false, vorbis) + block(6, true, picture)
     }
 }

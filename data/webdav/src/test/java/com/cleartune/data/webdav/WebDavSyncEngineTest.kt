@@ -182,6 +182,40 @@ class WebDavSyncEngineTest {
     }
 
     @Test
+    fun `one malformed metadata entry falls back without aborting sibling sync`() = runTest {
+        val gateway = RecordingLibraryGateway()
+        val entries = listOf(
+            WebDavEntry(base.resolve("bad.mp3")!!, "bad.mp3", false, 10, "bad"),
+            WebDavEntry(base.resolve("good.mp3")!!, "good.mp3", false, 10, "good"),
+        )
+        val engine = WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ -> entries },
+            libraryWriteGateway = gateway,
+            metadataEnricher = WebDavMetadataEnricher { _, entry ->
+                if (entry.name == "bad.mp3") throw IndexOutOfBoundsException("malformed tag")
+                EnrichedTrackMetadata("Parsed Good")
+            },
+        )
+
+        val report = engine.sync(source)
+
+        assertEquals(2, report.discoveredTracks)
+        val tracks = gateway.mutations.filterIsInstance<LibraryMutation.Upsert>().single().tracks
+        assertEquals(listOf("bad", "Parsed Good"), tracks.map { it.title })
+    }
+
+    @Test(expected = CancellationException::class)
+    fun `metadata cancellation still aborts sync`() = runTest {
+        WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("stop.mp3")!!, "stop.mp3", false, 10, "v1"))
+            },
+            libraryWriteGateway = RecordingLibraryGateway(),
+            metadataEnricher = WebDavMetadataEnricher { _, _ -> throw CancellationException("stop") },
+        ).sync(source)
+    }
+
+    @Test
     fun `changed remote fingerprint marks completed download update available`() = runTest {
         val updates = mutableListOf<String>()
         WebDavSyncEngine(
@@ -197,7 +231,7 @@ class WebDavSyncEngineTest {
     }
 
     @Test
-    fun `enrichment failure does not publish update availability`() = runTest {
+    fun `enrichment failure falls back then publishes changed update availability`() = runTest {
         val updates = mutableListOf<String>()
         val engine = WebDavSyncEngine(
             client = DirectoryListingClient { _, _ ->
@@ -209,9 +243,10 @@ class WebDavSyncEngineTest {
             updatePublisher = RemoteUpdatePublisher { _, sourceKey -> updates += sourceKey },
         )
 
-        runCatching { engine.sync(source) }
+        val report = engine.sync(source)
 
-        assertTrue(updates.isEmpty())
+        assertEquals(1, report.discoveredTracks)
+        assertEquals(listOf("changed.mp3"), updates)
     }
 
     @Test

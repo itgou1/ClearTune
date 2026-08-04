@@ -17,6 +17,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,6 +56,9 @@ object SettingsFeatureEntry {
         val scope = rememberCoroutineScope()
         val dispatch: (SettingsProductCommand) -> Unit = { command ->
             scope.launch { dependencies.onProductCommand(command) }
+        }
+        LaunchedEffect(dependencies.onProductCommand) {
+            dependencies.onProductCommand(SettingsProductCommand.RefreshCacheUsage)
         }
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(horizontal = ClearTuneDimensions.spacingMd),

@@ -42,6 +42,7 @@ sealed interface SettingsProductCommand {
     data class SetBackgroundPlayback(val enabled: Boolean) : SettingsProductCommand
     data class SetDynamicBackground(val enabled: Boolean) : SettingsProductCommand
     data class SetCacheLimitMb(val megabytes: Int) : SettingsProductCommand
+    data object RefreshCacheUsage : SettingsProductCommand
     data object ScanLibrary : SettingsProductCommand
     data object CleanUpCache : SettingsProductCommand
     data object OpenLicenses : SettingsProductCommand
@@ -114,6 +115,10 @@ class PersistentSettingsRepository(
             is SettingsProductCommand.SetCacheLimitMb -> {
                 val limit = command.megabytes.coerceIn(64, 8_192)
                 productState.value.copy(cacheLimitMb = limit).also { storage.putString(CACHE_LIMIT_KEY, "$limit") }
+            }
+            SettingsProductCommand.RefreshCacheUsage -> {
+                onAction(command)
+                productState.value
             }
             SettingsProductCommand.ScanLibrary,
             SettingsProductCommand.CleanUpCache,

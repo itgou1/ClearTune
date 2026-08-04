@@ -113,6 +113,7 @@ class WebDavSyncEngine(
                         artworkRef = enriched[index].artworkRef,
                         albumTitle = enriched[index].albumTitle,
                         artistNames = enriched[index].artistNames,
+                        artworkResolved = enriched[index].artworkResolved,
                     )
                 }
                 val locations = changed.mapIndexed { index, (entry, _) ->
@@ -145,7 +146,17 @@ class WebDavSyncEngine(
     private suspend fun enrich(source: MusicSource, entries: List<WebDavEntry>): List<EnrichedTrackMetadata> = coroutineScope {
         val semaphore = Semaphore(maxEnrichmentConcurrency)
         entries.map { entry ->
-            async { semaphore.withPermit { metadataEnricher.enrich(source, entry) } }
+            async {
+                semaphore.withPermit {
+                    try {
+                        metadataEnricher.enrich(source, entry)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        EnrichedTrackMetadata(entry.name.substringBeforeLast('.', entry.name))
+                    }
+                }
+            }
         }.awaitAll()
     }
 
@@ -172,6 +183,7 @@ data class EnrichedTrackMetadata(
     val artistNames: List<String> = emptyList(),
     val durationMs: Long? = null,
     val artworkRef: String? = null,
+    val artworkResolved: Boolean = false,
 )
 
 fun interface RemoteFingerprintLookup {

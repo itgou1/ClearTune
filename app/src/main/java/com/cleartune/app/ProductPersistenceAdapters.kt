@@ -48,6 +48,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -191,10 +193,18 @@ class RoomLibrarySessionCatalog(
 
     override fun childrenPage(parentId: String, page: Int, pageSize: Int): List<LibraryCatalogTrack> =
         runBlocking(Dispatchers.IO) {
-            if (parentId !in CATEGORIES) return@runBlocking emptyList()
             val safeSize = pageSize.coerceIn(1, MAX_PAGE_SIZE)
             val offset = (page.coerceAtLeast(0).toLong() * safeSize).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            database.libraryReadDao().mediaCatalogPage(parentId, safeSize, offset).map { it.toCatalogTrack() }
+            val dao = database.libraryReadDao()
+            when (parentId) {
+                "songs", "downloads" -> dao.mediaCatalogPage(parentId, safeSize, offset).map { it.toCatalogTrack() }
+                "albums" -> dao.mediaCatalogAlbumNodes(safeSize, offset).map { it.toCatalogNode() }
+                "artists" -> dao.mediaCatalogArtistNodes(safeSize, offset).map { it.toCatalogNode() }
+                "playlists" -> dao.mediaCatalogPlaylistNodes(safeSize, offset).map { it.toCatalogNode() }
+                else -> parentId.catalogEntity()?.let { (type, id) ->
+                    dao.mediaCatalogEntityPage(type, id, safeSize, offset).map { it.toCatalogTrack() }
+                }.orEmpty()
+            }
         }
 
     override fun resolve(mediaId: String): LibraryCatalogTrack? = runBlocking(Dispatchers.IO) {
@@ -213,6 +223,20 @@ class RoomLibrarySessionCatalog(
         locationId = locationId,
     )
 
+    private fun com.cleartune.core.database.model.MediaCatalogNodeRow.toCatalogNode() = LibraryCatalogTrack(
+        mediaId = mediaId,
+        title = title,
+        artworkUri = artworkUri,
+        browsable = true,
+        playable = false,
+    )
+
+    private fun String.catalogEntity(): Pair<String, String>? {
+        val type = substringBefore(':')
+        val id = substringAfter(':', missingDelimiterValue = "")
+        return if (type in ENTITY_TYPES && id.isNotBlank()) type to id else null
+    }
+
     private fun String.catalogMimeType(): String? = when (substringBefore('?').substringAfterLast('.').lowercase()) {
         "mp3" -> "audio/mpeg"
         "flac" -> "audio/flac"
@@ -224,19 +248,39 @@ class RoomLibrarySessionCatalog(
     }
 
     private companion object {
-        val CATEGORIES = setOf("songs", "albums", "artists", "playlists", "downloads")
+        val ENTITY_TYPES = setOf("album", "artist", "playlist")
         const val MAX_PAGE_SIZE = 500
     }
 }
 
-class AppProductSettingsController(
-    context: Context,
+class AppProductSettingsController private constructor(
+    private val preferences: ProductPreferenceStore,
     private val scanLibrary: suspend () -> Unit,
     private val cleanUpCache: suspend () -> Unit,
-    private val cacheRoot: File = context.cacheDir,
+    private val cacheRoot: File,
 ) : SettingsProductController {
-    private val preferences = context.getSharedPreferences("cleartune_product_settings", Context.MODE_PRIVATE)
+    constructor(
+        context: Context,
+        scanLibrary: suspend () -> Unit,
+        cleanUpCache: suspend () -> Unit,
+        cacheRoot: File = context.cacheDir,
+    ) : this(
+        SharedProductPreferenceStore(
+            context.getSharedPreferences("cleartune_product_settings", Context.MODE_PRIVATE),
+        ),
+        scanLibrary,
+        cleanUpCache,
+        cacheRoot,
+    )
+
+    internal constructor(
+        cacheRoot: File,
+        scanLibrary: suspend () -> Unit,
+        cleanUpCache: suspend () -> Unit,
+    ) : this(InMemoryProductPreferenceStore(), scanLibrary, cleanUpCache, cacheRoot)
+
     private val mutex = Mutex()
+    private val cacheUsage = CacheUsageMonitor(cacheRoot)
     private val state = MutableStateFlow(
         SettingsProductState(
             restoreQueue = preferences.boolean("restore_queue", true),
@@ -244,16 +288,21 @@ class AppProductSettingsController(
             offlineCacheEnabled = preferences.boolean("offline_cache", false),
             backgroundPlayback = preferences.boolean("background_playback", false),
             dynamicBackground = preferences.boolean("dynamic_background", true),
-            cacheLimitMb = preferences.getInt("cache_limit_mb", 512).coerceIn(64, 8_192),
-            cachedBytes = cacheBytes(cacheRoot),
+            cacheLimitMb = preferences.integer("cache_limit_mb", 512).coerceIn(64, 8_192),
+            cachedBytes = cacheUsage.bytes.value,
             scanLibrary = SettingsOperationState.Ready,
             cleanUpCache = SettingsOperationState.Ready,
             openLicenses = SettingsOperationState.Unavailable("License information is not bundled in this scope"),
         ),
     )
-    override val productSettings: Flow<SettingsProductState> = state
+    override val productSettings: Flow<SettingsProductState> = combine(state, cacheUsage.bytes) { value, bytes ->
+        value.copy(cachedBytes = bytes)
+    }
 
-    fun snapshot(): SettingsProductState = state.value.copy(cachedBytes = cacheBytes(cacheRoot))
+    fun snapshot(): SettingsProductState {
+        cacheUsage.refresh()
+        return state.value.copy(cachedBytes = cacheUsage.bytes.value)
+    }
 
     override suspend fun dispatch(command: SettingsProductCommand) = mutex.withLock {
         state.value = when (command) {
@@ -268,7 +317,8 @@ class AppProductSettingsController(
             is SettingsProductCommand.SetDynamicBackground -> state.value.copy(dynamicBackground = command.enabled)
                 .persist("dynamic_background", command.enabled)
             is SettingsProductCommand.SetCacheLimitMb -> state.value.copy(cacheLimitMb = command.megabytes.coerceIn(64, 8_192))
-                .also { preferences.edit().putInt("cache_limit_mb", it.cacheLimitMb).apply() }
+                .also { preferences.putInt("cache_limit_mb", it.cacheLimitMb) }
+            SettingsProductCommand.RefreshCacheUsage -> state.value.also { cacheUsage.refresh() }
             SettingsProductCommand.ScanLibrary -> runOperation("scan", scanLibrary)
             SettingsProductCommand.CleanUpCache -> runOperation("cleanup", cleanUpCache)
             SettingsProductCommand.OpenLicenses -> error("License information is not bundled in this scope")
@@ -280,6 +330,7 @@ class AppProductSettingsController(
         else state.value.copy(cleanUpCache = SettingsOperationState.Running)
         return try {
             action()
+            cacheUsage.refresh()
             if (kind == "scan") state.value.copy(scanLibrary = SettingsOperationState.Success("Completed"))
             else state.value.copy(
                 cleanUpCache = SettingsOperationState.Success("Completed"),
@@ -294,10 +345,31 @@ class AppProductSettingsController(
     }
 
     private fun SettingsProductState.persist(key: String, value: Boolean): SettingsProductState =
-        also { preferences.edit().putBoolean(key, value).apply() }
+        also { preferences.putBoolean(key, value) }
+}
 
-    private fun android.content.SharedPreferences.boolean(key: String, default: Boolean) =
-        if (contains(key)) getBoolean(key, default) else default
+private interface ProductPreferenceStore {
+    fun boolean(key: String, default: Boolean): Boolean
+    fun integer(key: String, default: Int): Int
+    fun putBoolean(key: String, value: Boolean)
+    fun putInt(key: String, value: Int)
+}
+
+private class SharedProductPreferenceStore(
+    private val preferences: android.content.SharedPreferences,
+) : ProductPreferenceStore {
+    override fun boolean(key: String, default: Boolean): Boolean = preferences.getBoolean(key, default)
+    override fun integer(key: String, default: Int): Int = preferences.getInt(key, default)
+    override fun putBoolean(key: String, value: Boolean) { preferences.edit().putBoolean(key, value).apply() }
+    override fun putInt(key: String, value: Int) { preferences.edit().putInt(key, value).apply() }
+}
+
+private class InMemoryProductPreferenceStore : ProductPreferenceStore {
+    private val values = mutableMapOf<String, Any>()
+    override fun boolean(key: String, default: Boolean): Boolean = values[key] as? Boolean ?: default
+    override fun integer(key: String, default: Int): Int = values[key] as? Int ?: default
+    override fun putBoolean(key: String, value: Boolean) { values[key] = value }
+    override fun putInt(key: String, value: Int) { values[key] = value }
 }
 
 object ProductionBindingContract {
@@ -327,3 +399,12 @@ internal fun cacheBytes(cacheRoot: File): Long = cacheRoot
     .walkTopDown()
     .filter(File::isFile)
     .sumOf(File::length)
+
+internal class CacheUsageMonitor(private val cacheRoot: File) {
+    private val mutableBytes = MutableStateFlow(cacheBytes(cacheRoot))
+    val bytes: StateFlow<Long> = mutableBytes.asStateFlow()
+
+    fun refresh() {
+        mutableBytes.value = cacheBytes(cacheRoot)
+    }
+}

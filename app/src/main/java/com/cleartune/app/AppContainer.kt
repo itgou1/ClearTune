@@ -45,6 +45,7 @@ import com.cleartune.data.local.LocalScanWorkerFactory
 import com.cleartune.data.local.LocalScanWorkerRunner
 import com.cleartune.data.webdav.AndroidKeystoreCredentialCipher
 import com.cleartune.data.webdav.DurableWebDavSyncRunner
+import com.cleartune.data.webdav.EmbeddedArtworkCache
 import com.cleartune.data.webdav.EncryptedCredentialStore
 import com.cleartune.data.webdav.OkHttpWebDavClient
 import com.cleartune.data.webdav.RangeWebDavMetadataEnricher
@@ -111,6 +112,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
         SharedPreferencesWebDavCheckpointStore(appContext),
     )
     private val webDavSyncScheduler = WorkManagerWebDavSyncScheduler(appContext)
+    private val artworkCache = EmbeddedArtworkCache(File(appContext.filesDir, "webdav_artwork_cache"))
     private val webDavSourceManager = WebDavSourceManager(
         connectionProbe = WebDavConnectionProbe { source, credential ->
             val temporaryStore = object : CredentialStore {
@@ -137,6 +139,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
                 WebDavRangeReader { rangeSource, entry, start, endInclusive, maxBytes ->
                     webDavClient.readRange(rangeSource, entry.href, start, endInclusive, maxBytes)
                 },
+                artworkCache = artworkCache,
             ),
             updatePublisher = webDavPersistence::markUpdateAvailable,
         ).sync(source, checkpoint, saveCheckpoint)
@@ -155,6 +158,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
         },
         credentials = CredentialDeletion(credentialStore::delete),
         clearCheckpoint = webDavPersistence::clearCheckpoint,
+        artworkCache = artworkCache,
     )
     val sourceController = SourceController(
         sourceRepository,

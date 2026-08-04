@@ -116,14 +116,59 @@ class ProductionDownloadWorkerRunnerTest {
     @Test
     fun `completed transfer without verified final file fails without publication`() = runTest {
         val fixture = fixture()
-        val port = FakeDownloadPort(fixture.work)
+        val port = FakeDownloadPort(fixture.work, acceptGenerationWrites = false)
         val executor = DownloadTransferExecutor { _, _, _ -> DownloadTransferResult.Completed(100) }
 
         val outcome = ProductionDownloadWorkerRunner(port) { executor }.run(id)
 
         assertEquals(WorkerOutcome.FAILED, outcome)
-        assertEquals("final_file_missing", port.failureCode)
+        assertEquals(null, port.failureCode)
+        assertEquals(listOf(41L), port.rejectedFailureGenerations)
         assertFalse(port.events.contains("publish"))
+    }
+
+    @Test
+    fun `pause before queued progress keeps progress authoritative`() = runTest {
+        val fixture = fixture()
+        val port = FakeDownloadPort(fixture.work, acceptGenerationWrites = false)
+        val executor = DownloadTransferExecutor { _, _, onProgress ->
+            onProgress(40, 100)
+            DownloadTransferResult.PermanentFailure("stopped")
+        }
+
+        ProductionDownloadWorkerRunner(port) { executor }.run(id)
+
+        assertTrue(port.progress.isEmpty())
+        assertEquals(listOf(41L), port.rejectedProgressGenerations)
+        assertEquals(listOf(41L), port.rejectedFailureGenerations)
+    }
+
+    @Test
+    fun `cancel before transfer failure cannot be overwritten by failed`() = runTest {
+        val fixture = fixture()
+        val port = FakeDownloadPort(fixture.work, acceptGenerationWrites = false)
+
+        val outcome = ProductionDownloadWorkerRunner(port) {
+            DownloadTransferExecutor { _, _, _ -> DownloadTransferResult.RetryableFailure("io_error") }
+        }.run(id)
+
+        assertEquals(WorkerOutcome.RETRY, outcome)
+        assertEquals(null, port.failureCode)
+        assertEquals(listOf(41L), port.rejectedFailureGenerations)
+    }
+
+    @Test
+    fun `cancel before unexpected worker failure cannot be overwritten by failed`() = runTest {
+        val fixture = fixture()
+        val port = FakeDownloadPort(fixture.work, acceptGenerationWrites = false)
+
+        val outcome = ProductionDownloadWorkerRunner(port) {
+            DownloadTransferExecutor { _, _, _ -> error("boom") }
+        }.run(id)
+
+        assertEquals(WorkerOutcome.FAILED, outcome)
+        assertEquals(null, port.failureCode)
+        assertEquals(listOf(41L), port.rejectedFailureGenerations)
     }
 
     @Test
@@ -151,9 +196,10 @@ class ProductionDownloadWorkerRunnerTest {
         val fixture = fixture()
         val firstPersistence = CompletableDeferred<Unit>()
         val releasePersistence = CompletableDeferred<Unit>()
-        val port = FakeDownloadPort(fixture.work.copy(expectedBytes = 1_000)) {
-            if (firstPersistence.complete(Unit)) releasePersistence.await()
-        }
+        val port = FakeDownloadPort(
+            fixture.work.copy(expectedBytes = 1_000),
+            beforeProgress = { if (firstPersistence.complete(Unit)) releasePersistence.await() },
+        )
         var maximumPending = 0
         val executor = DownloadTransferExecutor { _, _, onProgress ->
             repeat(1_000) { index -> onProgress((index + 1).toLong(), 1_000) }
@@ -226,25 +272,44 @@ private data class Fixture(val work: DownloadWork, val final: File)
 private class FakeDownloadPort(
     private val work: DownloadWork?,
     private val beforeProgress: suspend () -> Unit = {},
+    private val acceptGenerationWrites: Boolean = true,
 ) : DownloadPersistencePort {
     val progress = mutableListOf<Pair<Long, Long?>>()
     val events = mutableListOf<String>()
     var publishedPath: String? = null
     var failureCode: String? = null
+    val rejectedProgressGenerations = mutableListOf<Long>()
+    val rejectedFailureGenerations = mutableListOf<Long>()
 
     override suspend fun loadWork(downloadId: DownloadId): DownloadWork? = work
     override suspend fun markRunning(downloadId: DownloadId) { events += "running" }
-    override suspend fun persistProgress(downloadId: DownloadId, downloadedBytes: Long, totalBytes: Long?) {
+    override suspend fun beginWork(downloadId: DownloadId): Long = 41L
+    override suspend fun persistProgress(
+        downloadId: DownloadId,
+        generation: Long,
+        downloadedBytes: Long,
+        totalBytes: Long?,
+    ): Boolean {
         beforeProgress()
+        if (!acceptGenerationWrites) {
+            rejectedProgressGenerations += generation
+            return false
+        }
         progress += downloadedBytes to totalBytes
         events += "progress"
+        return true
     }
     override suspend fun publishDownloadedLocation(downloadId: DownloadId, bytes: Long, finalPath: String) {
         publishedPath = finalPath
         events += "publish"
     }
-    override suspend fun recordFailure(downloadId: DownloadId, code: String) {
+    override suspend fun recordFailure(downloadId: DownloadId, generation: Long, code: String): Boolean {
+        if (!acceptGenerationWrites) {
+            rejectedFailureGenerations += generation
+            return false
+        }
         failureCode = code
         events += "failure"
+        return true
     }
 }

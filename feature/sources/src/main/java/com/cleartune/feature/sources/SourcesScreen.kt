@@ -114,7 +114,11 @@ fun WebDavSourceForm(
     onTestConnection: () -> Unit,
     onSave: () -> Unit,
     roots: List<SourceBrowseItem> = emptyList(),
-    onSelectRoot: (SourceBrowseItem) -> Unit = {},
+    currentRootPath: String = "",
+    rootSelectionComplete: Boolean = false,
+    onBrowseDirectory: (SourceBrowseItem) -> Unit = {},
+    onBrowseParent: () -> Unit = {},
+    onUseCurrentFolder: () -> Unit = {},
 ) {
     var confirmCleartext by remember { mutableStateOf(false) }
     LazyColumn(
@@ -166,11 +170,20 @@ fun WebDavSourceForm(
         }
         state.error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
         state.connectionResult?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.primary) } }
-        if (roots.isNotEmpty()) {
-            item { Text("Choose the WebDAV music root", style = MaterialTheme.typography.titleMedium) }
+        if (state.connectionResult != null) {
+            item {
+                Text("Choose the WebDAV music root", style = MaterialTheme.typography.titleMedium)
+                Text(if (currentRootPath.isBlank()) "/" else "/$currentRootPath/")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (currentRootPath.isNotBlank()) {
+                        TextButton(onClick = onBrowseParent) { Text("Up") }
+                    }
+                    Button(onClick = onUseCurrentFolder) { Text("Use this folder") }
+                }
+            }
             items(roots, key = SourceBrowseItem::key) { root ->
-                TextButton(onClick = { onSelectRoot(root) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Use ${root.name}/")
+                TextButton(onClick = { onBrowseDirectory(root) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Open ${root.name}/")
                 }
             }
         }
@@ -180,7 +193,11 @@ fun WebDavSourceForm(
                 TextButton(onClick = onTestConnection, enabled = !state.testing, modifier = Modifier.weight(1f)) {
                     if (state.testing) CircularProgressIndicator(Modifier.height(20.dp)) else Text("测试连接")
                 }
-                Button(onClick = onSave, enabled = state.connectionResult != null, modifier = Modifier.weight(1f)) { Text("保存") }
+                Button(
+                    onClick = onSave,
+                    enabled = state.connectionResult != null && rootSelectionComplete,
+                    modifier = Modifier.weight(1f),
+                ) { Text("保存") }
             }
         }
     }

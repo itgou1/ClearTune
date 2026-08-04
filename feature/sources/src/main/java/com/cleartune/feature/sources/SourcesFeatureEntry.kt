@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,6 +72,8 @@ private fun SourceFormRoute(
     var state by remember(sourceId) { mutableStateOf(WebDavFormState()) }
     var tested by remember(sourceId) { mutableStateOf<TestedSourceDraft?>(null) }
     var roots by remember(sourceId) { mutableStateOf<List<SourceBrowseItem>>(emptyList()) }
+    var testedPath by rememberSaveable(sourceId) { mutableStateOf("") }
+    var selectedRootPath by rememberSaveable(sourceId) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     DisposableEffect(controller, sourceId) {
         onDispose { controller.close() }
@@ -84,6 +87,8 @@ private fun SourceFormRoute(
             controller.abandon(tested)
             tested = null
             roots = emptyList()
+            testedPath = ""
+            selectedRootPath = null
             state = it.copy(testing = false, connectionResult = null, error = null)
         },
         onTestConnection = {
@@ -94,6 +99,8 @@ private fun SourceFormRoute(
                 val result = controller.testConnection(state, sourceId)
                 if (result.failure?.code == "stale_test") return@launch
                 tested = result.value
+                testedPath = ""
+                selectedRootPath = null
                 roots = result.value?.let { receipt ->
                     controller.browseTested(receipt, "").value.orEmpty().filter(SourceBrowseItem::isDirectory)
                 }.orEmpty()
@@ -113,20 +120,49 @@ private fun SourceFormRoute(
             }
         },
         roots = roots,
-        onSelectRoot = { root ->
+        currentRootPath = testedPath,
+        rootSelectionComplete = tested != null && selectedRootPath != null,
+        onBrowseDirectory = { root ->
             val receipt = tested ?: return@WebDavSourceForm
             scope.launch {
-                val result = controller.selectRoot(receipt, root.key)
-                if (result.failure == null) {
-                    state = state.copy(url = receipt.draft.url, connectionResult = "Connection successful")
-                    roots = emptyList()
-                } else {
-                    state = state.copy(error = result.failure.message)
+                val child = joinTestedRootPath(testedPath, root.key)
+                val result = controller.browseTested(receipt, child)
+                result.value?.let {
+                    testedPath = child
+                    roots = it.filter(SourceBrowseItem::isDirectory)
                 }
+                result.failure?.let { state = state.copy(error = it.message) }
+            }
+        },
+        onBrowseParent = {
+            val receipt = tested ?: return@WebDavSourceForm
+            scope.launch {
+                val parent = parentTestedRootPath(testedPath)
+                val result = controller.browseTested(receipt, parent)
+                result.value?.let {
+                    testedPath = parent
+                    roots = it.filter(SourceBrowseItem::isDirectory)
+                }
+                result.failure?.let { state = state.copy(error = it.message) }
+            }
+        },
+        onUseCurrentFolder = {
+            val receipt = tested ?: return@WebDavSourceForm
+            scope.launch {
+                val result = controller.selectRoot(receipt, testedPath)
+                if (result.failure == null) {
+                    selectedRootPath = testedPath
+                    state = state.copy(url = receipt.draft.url, connectionResult = "Music root selected")
+                } else state = state.copy(error = result.failure.message)
             }
         },
     )
 }
+
+internal fun joinTestedRootPath(parent: String, child: String): String =
+    listOf(parent.trim('/'), child.trim('/')).filter(String::isNotBlank).joinToString("/")
+
+internal fun parentTestedRootPath(path: String): String = path.trim('/').substringBeforeLast('/', "")
 
 @Composable
 private fun SourceBrowseRoute(

@@ -82,6 +82,12 @@ data class MediaCatalogRow(
     val locationId: String,
 )
 
+data class MediaCatalogNodeRow(
+    val mediaId: String,
+    val title: String,
+    val artworkUri: String?,
+)
+
 data class LibraryIngestRecord(
     val sourceKey: String,
     val uri: String,

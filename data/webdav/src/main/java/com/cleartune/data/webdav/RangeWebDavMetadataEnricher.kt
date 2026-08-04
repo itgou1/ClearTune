@@ -19,9 +19,12 @@ fun interface WebDavRangeReader {
 class RangeWebDavMetadataEnricher(
     private val reader: WebDavRangeReader,
     private val maximumHeadBytes: Int = 256 * 1024,
+    private val maximumArtworkBytes: Int = 512 * 1024,
+    private val artworkCache: ArtworkCache = ArtworkCache.None,
 ) : WebDavMetadataEnricher {
     init {
         require(maximumHeadBytes in 1..MAXIMUM_METADATA_BYTES)
+        require(maximumArtworkBytes in 1..MAXIMUM_METADATA_BYTES)
     }
 
     override suspend fun enrich(source: MusicSource, entry: WebDavEntry): EnrichedTrackMetadata {
@@ -37,12 +40,32 @@ class RangeWebDavMetadataEnricher(
             return fallback
         }
         if (!response.rangeHonored || !response.contentRange.isHeadRange()) return fallback
-        val parsed = when (entry.name.substringAfterLast('.', "").lowercase()) {
-            "mp3" -> parseId3(response.bytes)
-            "flac" -> parseFlac(response.bytes)
-            else -> null
+        val parsed = try {
+            when (entry.name.substringAfterLast('.', "").lowercase()) {
+                "mp3" -> parseId3(response.bytes, maximumArtworkBytes)
+                "flac" -> parseFlac(response.bytes, maximumArtworkBytes)
+                else -> null
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
         } ?: return fallback
-        return parsed.copy(title = parsed.title.ifBlank { fallback.title })
+        val sourceKey = entry.href.encodedPath
+        val artworkRef = parsed.artwork?.let { artwork ->
+            artworkCache.store(source.id, sourceKey, artwork.mimeType, artwork.bytes)
+        } ?: run {
+            artworkCache.remove(source.id, sourceKey)
+            null
+        }
+        return EnrichedTrackMetadata(
+            title = parsed.title.ifBlank { fallback.title },
+            albumTitle = parsed.albumTitle,
+            artistNames = parsed.artistNames,
+            durationMs = parsed.durationMs,
+            artworkRef = artworkRef,
+            artworkResolved = true,
+        )
     }
 
     private fun String?.isHeadRange(): Boolean = this?.startsWith("bytes 0-") == true
@@ -52,7 +75,7 @@ class RangeWebDavMetadataEnricher(
     }
 }
 
-private fun parseId3(bytes: ByteArray): EnrichedTrackMetadata? {
+private fun parseId3(bytes: ByteArray, maximumArtworkBytes: Int): ParsedTrackMetadata? {
     if (bytes.size < 10 || bytes.copyOfRange(0, 3).toString(Charsets.US_ASCII) != "ID3") return null
     val version = bytes[3].toInt() and 0xff
     if (version !in 3..4) return null
@@ -63,23 +86,27 @@ private fun parseId3(bytes: ByteArray): EnrichedTrackMetadata? {
     var album: String? = null
     val artists = mutableListOf<String>()
     var duration: Long? = null
-    while (offset + 10 <= end) {
+    var artwork: EmbeddedArtwork? = null
+    while (end - offset >= 10) {
         val id = bytes.copyOfRange(offset, offset + 4).toString(Charsets.US_ASCII)
         if (id.all { it == '\u0000' }) break
         val size = if (version == 4) synchsafe(bytes, offset + 4) else int32(bytes, offset + 4)
-        if (size <= 0 || offset + 10 + size > end) break
-        val payload = bytes.copyOfRange(offset + 10, offset + 10 + size)
+        val payloadStart = offset + 10
+        if (size <= 0 || size > end - payloadStart) break
+        val payloadEnd = payloadStart + size
+        val payload = bytes.copyOfRange(payloadStart, payloadEnd)
         when (id) {
             "TIT2" -> title = decodeId3Text(payload)
             "TALB" -> album = decodeId3Text(payload)
             "TPE1" -> decodeId3Text(payload)?.split('\u0000', ';')
                 ?.map(String::trim)?.filter(String::isNotBlank)?.let(artists::addAll)
             "TLEN" -> duration = decodeId3Text(payload)?.trim()?.toLongOrNull()?.takeIf { it >= 0 }
+            "APIC" -> artwork = parseId3Picture(payload, maximumArtworkBytes) ?: artwork
         }
-        offset += 10 + size
+        offset = payloadEnd
     }
     return title?.takeIf(String::isNotBlank)?.let {
-        EnrichedTrackMetadata(it, album?.takeIf(String::isNotBlank), artists.distinct(), duration)
+        ParsedTrackMetadata(it, album?.takeIf(String::isNotBlank), artists.distinct(), duration, artwork)
     }
 }
 
@@ -96,14 +123,15 @@ private fun decodeId3Text(payload: ByteArray): String? {
     return decoded.trim('\u0000', ' ', '\r', '\n', '\t')
 }
 
-private fun parseFlac(bytes: ByteArray): EnrichedTrackMetadata? {
+private fun parseFlac(bytes: ByteArray, maximumArtworkBytes: Int): ParsedTrackMetadata? {
     if (bytes.size < 8 || bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) != "fLaC") return null
     var offset = 4
     var title: String? = null
     var album: String? = null
     val artists = mutableListOf<String>()
     var durationMs: Long? = null
-    while (offset + 4 <= bytes.size) {
+    var artwork: EmbeddedArtwork? = null
+    while (bytes.size - offset >= 4) {
         val header = bytes[offset].toInt() and 0xff
         val last = header and 0x80 != 0
         val type = header and 0x7f
@@ -111,8 +139,8 @@ private fun parseFlac(bytes: ByteArray): EnrichedTrackMetadata? {
             ((bytes[offset + 2].toInt() and 0xff) shl 8) or
             (bytes[offset + 3].toInt() and 0xff)
         val start = offset + 4
+        if (length > bytes.size - start) break
         val end = start + length
-        if (length < 0 || end > bytes.size) break
         when (type) {
             0 -> if (length >= 18) {
                 var packed = 0L
@@ -128,33 +156,132 @@ private fun parseFlac(bytes: ByteArray): EnrichedTrackMetadata? {
                     "ARTIST" -> artists += value
                 }
             }
+            6 -> artwork = parseFlacPicture(bytes, start, end, maximumArtworkBytes) ?: artwork
         }
         offset = end
         if (last) break
     }
     return title?.takeIf(String::isNotBlank)?.let {
-        EnrichedTrackMetadata(it, album?.takeIf(String::isNotBlank), artists.distinct(), durationMs)
+        ParsedTrackMetadata(it, album?.takeIf(String::isNotBlank), artists.distinct(), durationMs, artwork)
     }
 }
+
+private fun parseId3Picture(payload: ByteArray, maximumArtworkBytes: Int): EmbeddedArtwork? {
+    if (payload.size < 5) return null
+    val encoding = payload[0].toInt() and 0xff
+    val mimeEnd = payload.indexOfByte(0, 1).takeIf { it >= 0 } ?: return null
+    val mimeType = payload.copyOfRange(1, mimeEnd).toString(Charsets.ISO_8859_1).lowercase()
+    if (mimeType !in ALLOWED_ARTWORK_TYPES) return null
+    val descriptionStart = mimeEnd + 2
+    if (descriptionStart > payload.size) return null
+    val imageStart = when (encoding) {
+        0, 3 -> payload.indexOfByte(0, descriptionStart).takeIf { it >= 0 }?.plus(1)
+        1, 2 -> findDoubleZero(payload, descriptionStart)
+        else -> null
+    } ?: return null
+    val imageLength = payload.size - imageStart
+    if (imageLength !in 1..maximumArtworkBytes) return null
+    return EmbeddedArtwork(mimeType, payload.copyOfRange(imageStart, payload.size))
+}
+
+private fun ByteArray.indexOfByte(value: Byte, start: Int): Int {
+    for (index in start.coerceAtLeast(0) until size) if (this[index] == value) return index
+    return -1
+}
+
+private fun findDoubleZero(bytes: ByteArray, start: Int): Int? {
+    var offset = start
+    while (bytes.size - offset >= 2) {
+        if (bytes[offset] == 0.toByte() && bytes[offset + 1] == 0.toByte()) return offset + 2
+        offset += 2
+    }
+    return null
+}
+
+private fun parseFlacPicture(
+    bytes: ByteArray,
+    start: Int,
+    end: Int,
+    maximumArtworkBytes: Int,
+): EmbeddedArtwork? {
+    val cursor = BigEndianCursor(bytes, start, end)
+    cursor.readUnsignedInt() ?: return null // picture type
+    val mimeLength = cursor.readUnsignedInt() ?: return null
+    val mimeBytes = cursor.readBytes(mimeLength) ?: return null
+    val mimeType = mimeBytes.toString(Charsets.US_ASCII).lowercase()
+    if (mimeType !in ALLOWED_ARTWORK_TYPES) return null
+    val descriptionLength = cursor.readUnsignedInt() ?: return null
+    if (!cursor.skip(descriptionLength)) return null
+    val width = cursor.readUnsignedInt() ?: return null
+    val height = cursor.readUnsignedInt() ?: return null
+    cursor.readUnsignedInt() ?: return null // color depth
+    cursor.readUnsignedInt() ?: return null // indexed colors
+    if (width !in 1..MAXIMUM_ARTWORK_DIMENSION || height !in 1..MAXIMUM_ARTWORK_DIMENSION) return null
+    val imageLength = cursor.readUnsignedInt() ?: return null
+    if (imageLength !in 1..maximumArtworkBytes.toLong()) return null
+    val image = cursor.readBytes(imageLength) ?: return null
+    return EmbeddedArtwork(mimeType, image)
+}
+
+private class BigEndianCursor(
+    private val bytes: ByteArray,
+    start: Int,
+    private val end: Int,
+) {
+    private var offset = start
+
+    fun readUnsignedInt(): Long? {
+        if (offset < 0 || end - offset < 4) return null
+        var value = 0L
+        repeat(4) { value = (value shl 8) or (bytes[offset++].toLong() and 0xff) }
+        return value
+    }
+
+    fun skip(length: Long): Boolean {
+        if (length < 0 || length > (end - offset).toLong()) return false
+        offset += length.toInt()
+        return true
+    }
+
+    fun readBytes(length: Long): ByteArray? {
+        if (length < 0 || length > (end - offset).toLong() || length > Int.MAX_VALUE) return null
+        val next = offset + length.toInt()
+        return bytes.copyOfRange(offset, next).also { offset = next }
+    }
+}
+
+private data class ParsedTrackMetadata(
+    val title: String,
+    val albumTitle: String?,
+    val artistNames: List<String>,
+    val durationMs: Long?,
+    val artwork: EmbeddedArtwork?,
+)
+
+private data class EmbeddedArtwork(val mimeType: String, val bytes: ByteArray)
+
+private val ALLOWED_ARTWORK_TYPES = setOf("image/jpeg", "image/png")
+private const val MAXIMUM_ARTWORK_DIMENSION = 16_384L
 
 private fun parseVorbisComments(bytes: ByteArray, start: Int, end: Int): List<Pair<String, String>> {
     var offset = start
     fun readLength(): Int? {
-        if (offset + 4 > end) return null
+        if (offset < start || end - offset < 4) return null
         val value = ByteBuffer.wrap(bytes, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
         offset += 4
         return value.takeIf { it >= 0 }
     }
     val vendorLength = readLength() ?: return emptyList()
-    if (offset + vendorLength > end) return emptyList()
+    if (vendorLength > end - offset) return emptyList()
     offset += vendorLength
     val count = readLength()?.coerceAtMost(1_024) ?: return emptyList()
     return buildList {
         repeat(count) {
             val length = readLength() ?: return@buildList
-            if (offset + length > end) return@buildList
-            val comment = bytes.copyOfRange(offset, offset + length).toString(Charsets.UTF_8)
-            offset += length
+            if (length > end - offset) return@buildList
+            val commentEnd = offset + length
+            val comment = bytes.copyOfRange(offset, commentEnd).toString(Charsets.UTF_8)
+            offset = commentEnd
             val separator = comment.indexOf('=')
             if (separator > 0) add(comment.substring(0, separator) to comment.substring(separator + 1))
         }

@@ -27,7 +27,12 @@ interface DownloadPersistencePort {
         markRunning(downloadId)
         return 0
     }
-    suspend fun persistProgress(downloadId: DownloadId, downloadedBytes: Long, totalBytes: Long?)
+    suspend fun persistProgress(
+        downloadId: DownloadId,
+        generation: Long,
+        downloadedBytes: Long,
+        totalBytes: Long?,
+    ): Boolean
 
     /** Atomically marks the record complete and publishes its DOWNLOADED_FILE location. */
     suspend fun publishDownloadedLocation(downloadId: DownloadId, bytes: Long, finalPath: String)
@@ -42,5 +47,5 @@ interface DownloadPersistencePort {
         return true
     }
 
-    suspend fun recordFailure(downloadId: DownloadId, code: String)
+    suspend fun recordFailure(downloadId: DownloadId, generation: Long, code: String): Boolean
 }

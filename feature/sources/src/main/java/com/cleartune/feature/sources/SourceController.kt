@@ -69,7 +69,11 @@ data class SourceDraft(
 data class SourceBrowseItem(val key: String, val name: String, val isDirectory: Boolean)
 data class SourceFailure(val code: String, val message: String, val retryable: Boolean)
 data class SourceResult<T>(val value: T? = null, val failure: SourceFailure? = null)
+data class TestedRootState(val browsePath: String = "", val selectedRootPath: String? = null)
 class TestedSourceDraft internal constructor(internal var draft: SourceDraft) : AutoCloseable {
+    internal var browsePath: String = ""
+    internal var selectedRootPath: String? = null
+    internal fun rootState(): TestedRootState = TestedRootState(browsePath, selectedRootPath)
     override fun close() = draft.password.fill('\u0000')
 }
 
@@ -126,11 +130,25 @@ class SourceController(
         }
     }
 
-    suspend fun save(tested: TestedSourceDraft): SourceResult<MusicSource> = try {
+    suspend fun save(tested: TestedSourceDraft): SourceResult<MusicSource> {
+        if (!isValidReceipt(tested)) {
+            return SourceResult(failure = SourceFailure(STALE_TEST_CODE, "Connection test is no longer valid", false))
+        }
+        if (tested.selectedRootPath == null) {
+            return SourceResult(
+                failure = SourceFailure(
+                    "root_selection_required",
+                    "Choose the WebDAV music root before saving",
+                    false,
+                ),
+            )
+        }
+        return try {
         action(tested.draft.password) { actions.save(tested.draft) }
-    } finally {
-        synchronized(receiptLock) { receipts.remove(tested) }
-        tested.close()
+        } finally {
+            synchronized(receiptLock) { receipts.remove(tested) }
+            tested.close()
+        }
     }
 
     suspend fun browseTested(
@@ -140,16 +158,17 @@ class SourceController(
         requireReceipt(tested)
         val normalized = relativePath.trim('/')
         require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
-        actions.browseTested(tested.draft, normalized)
+        actions.browseTested(tested.draft, normalized).also { tested.browsePath = normalized }
     }
 
     suspend fun selectRoot(tested: TestedSourceDraft, relativePath: String): SourceResult<Unit> =
         action {
             requireReceipt(tested)
             val normalized = relativePath.trim('/')
-            require(normalized.isNotBlank()) { "Choose a source folder" }
             require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
             tested.draft = actions.selectRoot(tested.draft, normalized)
+            tested.browsePath = normalized
+            tested.selectedRootPath = normalized
         }
 
     suspend fun delete(
@@ -224,8 +243,11 @@ class SourceController(
     }
 
     private fun requireReceipt(tested: TestedSourceDraft) {
-        check(synchronized(receiptLock) { tested in receipts }) { "Connection test is no longer valid" }
+        check(isValidReceipt(tested)) { "Connection test is no longer valid" }
     }
+
+    private fun isValidReceipt(tested: TestedSourceDraft): Boolean =
+        synchronized(receiptLock) { tested in receipts }
 
     private companion object {
         const val STALE_TEST_CODE = "stale_test"

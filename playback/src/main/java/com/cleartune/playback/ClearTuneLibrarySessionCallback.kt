@@ -19,10 +19,12 @@ data class LibraryCatalogTrack(
     val artist: String? = null,
     val album: String? = null,
     val artworkUri: String? = null,
-    val playbackUri: String,
+    val playbackUri: String? = null,
     val mimeType: String? = null,
     val sourceId: String? = null,
     val locationId: String? = null,
+    val browsable: Boolean = false,
+    val playable: Boolean = true,
 )
 
 interface LibrarySessionCatalog {
@@ -110,7 +112,7 @@ class ClearTuneLibrarySessionCallback(
 
     fun describeChildren(parentId: String, page: Int, pageSize: Int): List<SessionMediaDescription> {
         val safePageSize = pageSize.coerceAtLeast(1)
-        if (parentId in APPROVED_CATEGORY_IDS) {
+        if (parentId != ROOT_ID) {
             return catalog.childrenPage(parentId, page.coerceAtLeast(0), safePageSize)
                 .map { describeTrack(it, includePlayback = false) }
         }
@@ -147,14 +149,15 @@ class ClearTuneLibrarySessionCallback(
             artist = metadata.artist,
             album = metadata.album,
             artworkUri = metadata.artworkUri,
-            playbackUri = track.playbackUri.takeIf { includePlayback }?.let { playbackUri ->
+            playbackUri = track.playbackUri?.takeIf { includePlayback }?.let { playbackUri ->
                 PrivateMediaSourceRegistry.register(
                     track.mediaId,
                     PrivateMediaSource(playbackUri, track.sourceId, track.locationId),
                 )
             },
             mimeType = track.mimeType,
-            playable = true,
+            browsable = track.browsable,
+            playable = track.playable,
         )
     }
 
@@ -193,6 +196,5 @@ class ClearTuneLibrarySessionCallback(
             "playlists" to "Playlists",
             "downloads" to "Downloads",
         )
-        val APPROVED_CATEGORY_IDS = ROOT_CATEGORIES.mapTo(mutableSetOf()) { it.first }
     }
 }

@@ -15,6 +15,7 @@ import com.cleartune.core.database.entity.TrackLocationEntity
 import com.cleartune.core.model.CredentialAlias
 import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.DownloadState
+import com.cleartune.core.model.DownloadSummary
 import com.cleartune.core.model.LocationType
 import com.cleartune.core.model.PlaylistCommand
 import com.cleartune.core.model.QueueCommand
@@ -98,6 +99,36 @@ class WebDavSourceRemovalAndroidTest {
         assertFalse(fixture.file.exists())
     }
 
+    @Test
+    fun queuedDownloadIsOwnedBeforeWorkerBeginsAndSourceRemovalStopsIt() = runBlocking {
+        database.sourceDao().upsert(
+            MusicSourceEntity(
+                SOURCE_ID.value, "Remote", "WEBDAV", "https://music.example/dav/", false,
+                "webdav-source", true, null,
+            ),
+        )
+        val trackId = TrackId("queued-track")
+        database.libraryWriteDao().upsertTrack(TrackEntity(trackId.value, "Queued", 1_000, null, null, 1))
+        database.libraryWriteDao().upsertLocation(
+            TrackLocationEntity(
+                "queued-remote", trackId.value, SOURCE_ID.value, "queued.flac", LocationType.REMOTE_URL.name,
+                "https://music.example/dav/queued.flac", true, 4, "v1", "", "queued.flac", 1,
+            ),
+        )
+        val adapter = RoomDownloadPersistenceAdapter(database, NoCredentialStoreForRemoval, root, clock = { 2 })
+        adapter.insert(DownloadSummary(DownloadId("queued-download"), trackId, DownloadState.QUEUED))
+        val effects = RecordingRemovalEffects()
+
+        RoomWebDavSourceRemovalCoordinator(database, root, effects, effects, effects)
+            .remove(SOURCE_ID, deleteOfflineCopies = true)
+
+        val queued = requireNotNull(database.downloadDao().download("queued-download"))
+        assertEquals(SOURCE_ID.value, queued.sourceId)
+        assertEquals(DownloadState.CANCELED.name, queued.state)
+        assertTrue(queued.cleanupPending)
+        assertEquals(listOf(DownloadId("queued-download")), effects.stoppedDownloads)
+    }
+
     private suspend fun seedGraph(): Fixture {
         database.sourceDao().upsert(
             MusicSourceEntity(
@@ -146,6 +177,12 @@ class WebDavSourceRemovalAndroidTest {
         const val OFFLINE_SOURCE_ID = "offline-downloads"
         const val DOWNLOAD_ID = "download"
     }
+}
+
+private object NoCredentialStoreForRemoval : CredentialStore {
+    override suspend fun put(alias: CredentialAlias, credential: WebDavCredential) = Unit
+    override suspend fun get(alias: CredentialAlias): WebDavCredential? = null
+    override suspend fun delete(alias: CredentialAlias) = Unit
 }
 
 private class RecordingRemovalEffects(
