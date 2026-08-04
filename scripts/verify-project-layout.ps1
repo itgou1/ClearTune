@@ -13,7 +13,10 @@ $requiredRootFiles = @(
     'gradle/wrapper/gradle-wrapper.jar',
     'gradle/wrapper/gradle-wrapper.properties',
     'gradlew',
-    'gradlew.bat'
+    'gradlew.bat',
+    'scripts/verify-contract-shape.ps1',
+    'scripts/verify-shared-baseline.ps1',
+    'scripts/verify-branch-ownership.ps1'
 )
 
 $requiredModules = @(
