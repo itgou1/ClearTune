@@ -6,6 +6,8 @@ import com.cleartune.core.model.ThemeMode
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PersistentSettingsRepositoryTest {
@@ -32,6 +34,33 @@ class PersistentSettingsRepositoryTest {
 
         assertEquals(ThemeMode.SYSTEM, settings.themeMode)
         assertEquals(ReducedMotionMode.SYSTEM, settings.reducedMotionMode)
+    }
+
+    @Test
+    fun `product playback and storage preferences persist across recreation`() = runTest {
+        val storage = MapSettingsStorage()
+        val repository = PersistentSettingsRepository(storage)
+        repository.dispatch(SettingsProductCommand.SetRestoreQueue(false))
+        repository.dispatch(SettingsProductCommand.SetPauseOnHeadphoneDisconnect(false))
+        repository.dispatch(SettingsProductCommand.SetOfflineCacheEnabled(true))
+        repository.dispatch(SettingsProductCommand.SetBackgroundPlayback(true))
+        repository.dispatch(SettingsProductCommand.SetDynamicBackground(false))
+
+        val restored = PersistentSettingsRepository(storage).productSettings.first()
+
+        assertFalse(restored.restoreQueue)
+        assertFalse(restored.pauseOnHeadphoneDisconnect)
+        assertTrue(restored.offlineCacheEnabled)
+        assertTrue(restored.backgroundPlayback)
+        assertFalse(restored.dynamicBackground)
+    }
+
+    @Test
+    fun `reduced motion resolves explicit and system modes`() {
+        assertTrue(isReducedMotionEnabled(ReducedMotionMode.ON, systemAnimationsEnabled = true))
+        assertFalse(isReducedMotionEnabled(ReducedMotionMode.OFF, systemAnimationsEnabled = false))
+        assertTrue(isReducedMotionEnabled(ReducedMotionMode.SYSTEM, systemAnimationsEnabled = false))
+        assertFalse(isReducedMotionEnabled(ReducedMotionMode.SYSTEM, systemAnimationsEnabled = true))
     }
 }
 

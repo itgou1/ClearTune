@@ -12,6 +12,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -24,95 +25,111 @@ import com.cleartune.core.contracts.DownloadRepository
 import com.cleartune.core.contracts.SettingsRepository
 import com.cleartune.core.contracts.SourceRepository
 import com.cleartune.core.designsystem.theme.ClearTuneDimensions
+import com.cleartune.core.model.AppSettings
 import com.cleartune.core.model.ReducedMotionMode
 import com.cleartune.core.model.SettingsCommand
 import com.cleartune.core.model.ThemeMode
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 data class SettingsFeatureDependencies(
     val settingsRepository: SettingsRepository,
     val sourceRepository: SourceRepository,
     val downloadRepository: DownloadRepository,
+    val productSettings: Flow<SettingsProductState> = flowOf(SettingsProductState()),
+    val onProductCommand: suspend (SettingsProductCommand) -> Unit = {},
 )
 
 object SettingsFeatureEntry {
     const val route = "settings"
 
     @Composable
-    fun Content(
-        dependencies: SettingsFeatureDependencies,
-        onNavigate: (String) -> Unit,
-    ) {
-        val settings by dependencies.settingsRepository.settings.collectAsState(
-            initial = com.cleartune.core.model.AppSettings(),
-        )
+    fun Content(dependencies: SettingsFeatureDependencies, onNavigate: (String) -> Unit) {
+        val settings by dependencies.settingsRepository.settings.collectAsState(initial = AppSettings())
+        val product by dependencies.productSettings.collectAsState(initial = SettingsProductState())
         val sources by dependencies.sourceRepository.observeSources().collectAsState(initial = emptyList())
         val downloads by dependencies.downloadRepository.observeDownloads().collectAsState(initial = emptyList())
         val scope = rememberCoroutineScope()
+        val dispatch: (SettingsProductCommand) -> Unit = { command ->
+            scope.launch { dependencies.onProductCommand(command) }
+        }
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(horizontal = ClearTuneDimensions.spacingMd),
             verticalArrangement = Arrangement.spacedBy(ClearTuneDimensions.spacingSm),
         ) {
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { onNavigate("back") }) { Text("返回") }
-                    Text("设置", style = MaterialTheme.typography.headlineMedium)
+                    TextButton(onClick = { onNavigate("back") }) { Text("Back") }
+                    Text("Settings", style = MaterialTheme.typography.headlineMedium)
                 }
             }
-            item { SectionTitle("外观") }
-            item {
-                SettingsCard("主题") {
-                    ThemeMode.entries.forEach { mode ->
-                        ChoiceRow(
-                            label = mode.label,
-                            selected = settings.themeMode == mode,
-                            onClick = { scope.launch { dependencies.settingsRepository.update(SettingsCommand.SetTheme(mode)) } },
-                        )
-                    }
+            item { SectionTitle("Appearance") }
+            item { SettingsCard("Theme") {
+                ThemeMode.entries.forEach { mode -> ChoiceRow(
+                    label = mode.label,
+                    selected = settings.themeMode == mode,
+                    onClick = { scope.launch { dependencies.settingsRepository.update(SettingsCommand.SetTheme(mode)) } },
+                ) }
+            } }
+            item { SettingsCard("Motion") {
+                ReducedMotionMode.entries.forEach { mode -> ChoiceRow(
+                    label = mode.label,
+                    selected = settings.reducedMotionMode == mode,
+                    onClick = { scope.launch {
+                        dependencies.settingsRepository.update(SettingsCommand.SetReducedMotion(mode))
+                    } },
+                ) }
+            } }
+            item { ToggleCard("Dynamic background", product.dynamicBackground) {
+                dispatch(SettingsProductCommand.SetDynamicBackground(it))
+            } }
+            item { SectionTitle("Playback") }
+            item { SettingsCard("Playback behavior") {
+                ToggleRow("Restore queue and position", product.restoreQueue) {
+                    dispatch(SettingsProductCommand.SetRestoreQueue(it))
                 }
-            }
-            item { SectionTitle("动效") }
-            item {
-                SettingsCard("减少动态效果") {
-                    ReducedMotionMode.entries.forEach { mode ->
-                        ChoiceRow(
-                            label = mode.label,
-                            selected = settings.reducedMotionMode == mode,
-                            onClick = {
-                                scope.launch {
-                                    dependencies.settingsRepository.update(SettingsCommand.SetReducedMotion(mode))
-                                }
-                            },
-                        )
-                    }
+                HorizontalDivider()
+                ToggleRow("Pause when headphones disconnect", product.pauseOnHeadphoneDisconnect) {
+                    dispatch(SettingsProductCommand.SetPauseOnHeadphoneDisconnect(it))
                 }
-            }
-            item { SectionTitle("音乐与存储") }
-            item {
-                SettingsCard("数据概览") {
-                    NavigationRow("音乐来源", "${sources.size} 个", onClick = { onNavigate("sources") })
-                    HorizontalDivider()
-                    NavigationRow("下载管理", "${downloads.size} 项", onClick = { onNavigate("downloads") })
+                HorizontalDivider()
+                ToggleRow("Background playback", product.backgroundPlayback) {
+                    dispatch(SettingsProductCommand.SetBackgroundPlayback(it))
                 }
-            }
-            item { SectionTitle("关于") }
-            item {
-                SettingsCard("ClearTune") {
-                    Text("本地与 WebDAV 纯音乐播放器", modifier = Modifier.padding(ClearTuneDimensions.spacingMd))
-                    Text("版本 1.0.0", modifier = Modifier.padding(horizontal = ClearTuneDimensions.spacingMd))
+            } }
+            item { SectionTitle("Music and storage") }
+            item { SettingsCard("Offline cache") {
+                ToggleRow("Cache streamed music", product.offlineCacheEnabled) {
+                    dispatch(SettingsProductCommand.SetOfflineCacheEnabled(it))
                 }
-            }
+                NavigationRow("Cache limit", "${product.cacheLimitMb} MB") {
+                    val next = if (product.cacheLimitMb >= 2_048) 256 else product.cacheLimitMb * 2
+                    dispatch(SettingsProductCommand.SetCacheLimitMb(next))
+                }
+                NavigationRow("Clean up cache", formatBytes(product.cachedBytes)) {
+                    dispatch(SettingsProductCommand.CleanUpCache)
+                }
+                NavigationRow("Offline downloads", "${downloads.size} tracks") { onNavigate("downloads") }
+            } }
+            item { SettingsCard("Library") {
+                NavigationRow("Music sources", "${sources.size}") { onNavigate("sources") }
+                NavigationRow("Scan library", "Scan now") { dispatch(SettingsProductCommand.ScanLibrary) }
+            } }
+            item { SectionTitle("About") }
+            item { SettingsCard("ClearTune") {
+                Text("Local and WebDAV music player", modifier = Modifier.padding(ClearTuneDimensions.spacingMd))
+                NavigationRow("Open-source licenses", "View") { dispatch(SettingsProductCommand.OpenLicenses) }
+            } }
         }
     }
 }
 
-@Composable
-private fun SectionTitle(title: String) {
+@Composable private fun SectionTitle(title: String) {
     Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 }
 
-@Composable
-private fun SettingsCard(title: String, content: @Composable () -> Unit) {
+@Composable private fun SettingsCard(title: String, content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column {
             Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(ClearTuneDimensions.spacingMd))
@@ -121,8 +138,21 @@ private fun SettingsCard(title: String, content: @Composable () -> Unit) {
     }
 }
 
-@Composable
-private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
+@Composable private fun ToggleCard(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Card(Modifier.fillMaxWidth()) { ToggleRow(label, checked, onCheckedChange) }
+}
+
+@Composable private fun ToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onCheckedChange(!checked) }.padding(ClearTuneDimensions.spacingMd),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = ClearTuneDimensions.spacingSm),
         verticalAlignment = Alignment.CenterVertically,
@@ -132,28 +162,30 @@ private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun NavigationRow(label: String, value: String, onClick: () -> Unit) {
+@Composable private fun NavigationRow(label: String, value: String, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(ClearTuneDimensions.spacingMd),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, Modifier.weight(1f))
         Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("  ›")
     }
 }
 
-private val ThemeMode.label: String
-    get() = when (this) {
-        ThemeMode.SYSTEM -> "跟随系统"
-        ThemeMode.LIGHT -> "浅色"
-        ThemeMode.DARK -> "深色"
-    }
+private fun formatBytes(bytes: Long): String = when {
+    bytes <= 0 -> "Empty"
+    bytes < 1_048_576 -> "${bytes / 1_024} KB"
+    else -> "${bytes / 1_048_576} MB"
+}
 
-private val ReducedMotionMode.label: String
-    get() = when (this) {
-        ReducedMotionMode.SYSTEM -> "跟随系统"
-        ReducedMotionMode.ON -> "开启"
-        ReducedMotionMode.OFF -> "关闭"
-    }
+private val ThemeMode.label: String get() = when (this) {
+    ThemeMode.SYSTEM -> "Use system setting"
+    ThemeMode.LIGHT -> "Light"
+    ThemeMode.DARK -> "Dark"
+}
+
+private val ReducedMotionMode.label: String get() = when (this) {
+    ReducedMotionMode.SYSTEM -> "Use system setting"
+    ReducedMotionMode.ON -> "Reduce motion"
+    ReducedMotionMode.OFF -> "Allow motion"
+}

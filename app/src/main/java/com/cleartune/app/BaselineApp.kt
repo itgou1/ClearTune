@@ -1,5 +1,10 @@
 package com.cleartune.app
 
+import android.animation.ValueAnimator
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,13 +25,22 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import com.cleartune.core.designsystem.theme.ClearTuneDimensions
 import com.cleartune.core.designsystem.theme.ClearTuneTheme
 import com.cleartune.core.model.ThemeMode
+import com.cleartune.core.model.PlaylistId
+import com.cleartune.core.model.QueueCommand
+import com.cleartune.core.model.DownloadCommand
+import com.cleartune.core.model.DownloadState
+import com.cleartune.core.model.SongQuery
 import com.cleartune.feature.downloads.DownloadsFeatureDependencies
 import com.cleartune.feature.downloads.DownloadsFeatureEntry
 import com.cleartune.feature.library.LibraryFeatureDependencies
@@ -34,22 +48,44 @@ import com.cleartune.feature.library.LibraryFeatureEntry
 import com.cleartune.feature.player.MiniPlayer
 import com.cleartune.feature.player.PlayerFeatureDependencies
 import com.cleartune.feature.player.PlayerFeatureEntry
+import com.cleartune.feature.player.PlayerTrackActionState
 import com.cleartune.feature.playlists.PlaylistsFeatureDependencies
 import com.cleartune.feature.playlists.PlaylistsFeatureEntry
 import com.cleartune.feature.settings.SettingsFeatureDependencies
 import com.cleartune.feature.settings.SettingsFeatureEntry
+import com.cleartune.feature.settings.isReducedMotionEnabled
 import com.cleartune.feature.sources.SourcesFeatureDependencies
 import com.cleartune.feature.sources.SourcesFeatureEntry
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 
 object AppRoutes {
     const val Library = "library"
     const val LibraryDetail = "library/detail"
     const val Player = "player"
     const val Playlists = "playlists"
+    const val PlaylistDetail = "playlists/{playlistId}"
     const val Sources = "sources"
     const val Downloads = "downloads"
     const val Settings = "settings"
     val all = listOf(Library, LibraryDetail, Player, Playlists, Sources, Downloads, Settings)
+    val restorable = all
+
+    fun playlistDetail(playlistId: String): String =
+        "$Playlists/${URLEncoder.encode(playlistId, StandardCharsets.UTF_8.name()).replace("+", "%20")}"
+
+    fun playlistId(route: String): String? = route.removePrefix("$Playlists/")
+        .takeIf { route.startsWith("$Playlists/") && it.isNotBlank() }
+        ?.let { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) }
+
+    fun restore(route: String?): String = when {
+        route in restorable -> route!!
+        route?.let(::playlistId) != null -> route
+        else -> Library
+    }
 }
 
 @Composable
@@ -60,6 +96,10 @@ fun ClearTuneApp(container: AppContainer) {
         ThemeMode.LIGHT -> false
         ThemeMode.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
     }
+    val reducedMotion = isReducedMotionEnabled(
+        settings.reducedMotionMode,
+        systemAnimationsEnabled = ValueAnimator.areAnimatorsEnabled(),
+    )
     ClearTuneTheme(darkTheme = darkTheme) {
         Surface(Modifier.fillMaxSize().safeDrawingPadding()) {
             val navController = rememberNavController()
@@ -68,6 +108,10 @@ fun ClearTuneApp(container: AppContainer) {
                     navController = navController,
                     startDestination = AppRoutes.Library,
                     modifier = Modifier.weight(1f),
+                    enterTransition = { if (reducedMotion) EnterTransition.None else fadeIn() },
+                    exitTransition = { if (reducedMotion) ExitTransition.None else fadeOut() },
+                    popEnterTransition = { if (reducedMotion) EnterTransition.None else fadeIn() },
+                    popExitTransition = { if (reducedMotion) ExitTransition.None else fadeOut() },
                 ) {
                     composable(AppRoutes.Library) {
                         LibraryHomeScreen { navController.navigate(it) }
@@ -88,6 +132,38 @@ fun ClearTuneApp(container: AppContainer) {
                                 container.playbackGateway,
                                 container.queueRepository,
                                 container.playbackGateway::syncQueue,
+                                queueTitles = container.libraryRepository.observeSongs(SongQuery()).map { tracks ->
+                                    tracks.associate { it.id to it.title }
+                                },
+                                observeTrackActions = { trackId ->
+                                    container.downloadRepository.observeDownloads().map { downloads ->
+                                        PlayerTrackActionState(
+                                            isDownloaded = downloads.any {
+                                                it.trackId == trackId && it.state == DownloadState.COMPLETED
+                                            },
+                                            canDownload = true,
+                                        )
+                                    }
+                                },
+                                onToggleDownload = { trackId ->
+                                    val existing = container.downloadRepository.observeDownloads().first()
+                                        .firstOrNull { it.trackId == trackId }
+                                    container.downloadRepository.dispatch(
+                                        if (existing == null) DownloadCommand.Enqueue(trackId)
+                                        else DownloadCommand.Delete(existing.id),
+                                    )
+                                },
+                                onPlayOccurrence = { occurrenceId ->
+                                    val snapshot = container.queueRepository.observeQueue().first()
+                                    val index = snapshot.items.indexOfFirst { it.id == occurrenceId }
+                                    if (index >= 0) {
+                                        container.queueRepository.apply(
+                                            QueueCommand.Replace(snapshot.items.map { it.trackId }, startIndex = index),
+                                        )
+                                        container.playbackGateway.syncQueue()
+                                        container.playbackGateway.dispatch(com.cleartune.core.model.PlaybackCommand.Play)
+                                    }
+                                },
                             ),
                             navController::navigateOrBack,
                         )
@@ -98,8 +174,31 @@ fun ClearTuneApp(container: AppContainer) {
                                 container.playlistRepository,
                                 container.playbackGateway,
                                 container.queueRepository,
+                                container.playlistDetailsProvider,
+                                container.libraryRepository.observeSongs(SongQuery()).map { tracks ->
+                                    tracks.associate { it.id to it.title }
+                                },
                             ),
                             navController::navigateOrBack,
+                        )
+                    }
+                    composable(
+                        route = AppRoutes.PlaylistDetail,
+                        arguments = listOf(navArgument("playlistId") { type = NavType.StringType }),
+                    ) { entry ->
+                        val playlistId = entry.arguments?.getString("playlistId")?.let(::PlaylistId)
+                        PlaylistsFeatureEntry.Content(
+                            PlaylistsFeatureDependencies(
+                                container.playlistRepository,
+                                container.playbackGateway,
+                                container.queueRepository,
+                                container.playlistDetailsProvider,
+                                container.libraryRepository.observeSongs(SongQuery()).map { tracks ->
+                                    tracks.associate { it.id to it.title }
+                                },
+                            ),
+                            navController::navigateOrBack,
+                            playlistId,
                         )
                     }
                     composable(AppRoutes.Sources) {
@@ -120,6 +219,8 @@ fun ClearTuneApp(container: AppContainer) {
                                 container.settingsRepository,
                                 container.sourceRepository,
                                 container.downloadRepository,
+                                container.settingsProductController.productSettings,
+                                container.settingsProductController::dispatch,
                             ),
                             navController::navigateOrBack,
                         )
@@ -158,7 +259,10 @@ private fun LibraryHomeScreen(onNavigate: (String) -> Unit) {
                 Text("你的全部音乐", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             TextButton(onClick = { onNavigate(AppRoutes.LibraryDetail) }) { Text("搜索") }
-            TextButton(onClick = { onNavigate(AppRoutes.Settings) }) { Text("设置") }
+            TextButton(
+                onClick = { onNavigate(AppRoutes.Settings) },
+                modifier = Modifier.semantics { contentDescription = "Open settings" },
+            ) { Text("Settings") }
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(ClearTuneDimensions.spacingSm)) {
             items(categories) { category ->

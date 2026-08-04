@@ -57,6 +57,25 @@ class InMemoryPlaylistRepositoryTest {
     }
 
     @Test
+    fun `playlist rows resolve presentation titles and preserve occurrence order`() {
+        val details = PlaylistDetails(
+            id = PlaylistId("mix"),
+            name = "Mix",
+            items = listOf(
+                PlaylistItemRecord(PlaylistItemId("first"), TrackId("song")),
+                PlaylistItemRecord(PlaylistItemId("second"), TrackId("song")),
+            ),
+        )
+
+        val rows = details.toPlaylistRows(mapOf(TrackId("song") to "Saturn"))
+
+        assertEquals(listOf("first", "second"), rows.map { it.stableKey })
+        assertEquals(listOf("Saturn", "Saturn"), rows.map { it.title })
+        assertEquals("Add Saturn next", rows.first().addNextActionLabel)
+        assertEquals("Add Saturn last", rows.first().addLastActionLabel)
+    }
+
+    @Test
     fun `storage restores playlists after repository recreation`() = runTest {
         val storage = MemoryPlaylistStorage()
         val first = InMemoryPlaylistRepository(idFactory = { "id-${++nextId}" }, storage = storage)

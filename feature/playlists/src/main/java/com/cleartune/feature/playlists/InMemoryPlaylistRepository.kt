@@ -21,6 +21,25 @@ data class PlaylistDetails(
     val items: List<PlaylistItemRecord>,
 )
 
+data class PlaylistRowUi(
+    val stableKey: String,
+    val title: String,
+    val addNextActionLabel: String,
+    val addLastActionLabel: String,
+    val removeActionLabel: String,
+)
+
+fun PlaylistDetails.toPlaylistRows(titles: Map<TrackId, String>): List<PlaylistRowUi> = items.map { item ->
+    val title = titles[item.trackId]?.takeIf(String::isNotBlank) ?: item.trackId.value
+    PlaylistRowUi(
+        stableKey = item.id.value,
+        title = title,
+        addNextActionLabel = "Add $title next",
+        addLastActionLabel = "Add $title last",
+        removeActionLabel = "Remove $title from playlist",
+    )
+}
+
 interface PlaylistDetailsProvider {
     fun observePlaylist(playlistId: PlaylistId): Flow<PlaylistDetails?>
 }
@@ -30,7 +49,7 @@ interface PlaylistStorage {
     fun save(playlists: List<PlaylistDetails>)
 }
 
-class InMemoryPlaylistRepository(
+open class PersistentPlaylistRepository(
     private val storage: PlaylistStorage? = null,
     private val idFactory: () -> String = { UUID.randomUUID().toString() },
 ) : PlaylistRepository, PlaylistDetailsProvider {
@@ -92,6 +111,12 @@ class InMemoryPlaylistRepository(
         return name
     }
 }
+
+/** Explicit test/preview fallback. Production assembly must provide a persistent repository. */
+class InMemoryPlaylistRepository(
+    storage: PlaylistStorage? = null,
+    idFactory: () -> String = { UUID.randomUUID().toString() },
+) : PersistentPlaylistRepository(storage, idFactory)
 
 private inline fun List<PlaylistDetails>.update(
     id: PlaylistId,

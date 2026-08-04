@@ -11,6 +11,8 @@ import com.cleartune.core.contracts.DownloadRepository
 import com.cleartune.core.contracts.LibraryRepository
 import com.cleartune.core.contracts.PlaybackLibraryRepository
 import com.cleartune.core.contracts.SourceRepository
+import com.cleartune.core.contracts.PlaylistRepository
+import com.cleartune.core.contracts.SettingsRepository
 import com.cleartune.core.contracts.WebDavCredential
 import com.cleartune.core.model.AlbumId
 import com.cleartune.core.model.DownloadCommand
@@ -31,12 +33,18 @@ import com.cleartune.core.model.CredentialAlias
 import com.cleartune.core.model.SourceType
 import com.cleartune.core.model.TrackId
 import com.cleartune.core.model.TrackSummary
-import com.cleartune.feature.playlists.InMemoryPlaylistRepository
+import com.cleartune.core.model.AppSettings
+import com.cleartune.core.model.ReducedMotionMode
+import com.cleartune.core.model.SettingsCommand
+import com.cleartune.core.model.ThemeMode
+import com.cleartune.feature.playlists.PersistentPlaylistRepository
+import com.cleartune.feature.playlists.PlaylistDetailsProvider
 import com.cleartune.feature.playlists.PlaylistDetails
 import com.cleartune.feature.playlists.PlaylistItemRecord
 import com.cleartune.feature.playlists.PlaylistStorage
-import com.cleartune.feature.settings.PersistentSettingsRepository
-import com.cleartune.feature.settings.SettingsStorage
+import com.cleartune.feature.settings.SettingsProductCommand
+import com.cleartune.feature.settings.SettingsProductController
+import com.cleartune.feature.settings.SettingsProductState
 import com.cleartune.playback.Media3PlaybackBackend
 import com.cleartune.playback.PersistentQueueRepository
 import com.cleartune.playback.PlaybackCoordinator
@@ -45,6 +53,7 @@ import com.cleartune.playback.QueueStorage
 import com.cleartune.playback.PlaybackRequestHeadersProvider
 import java.io.File
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collect
@@ -54,6 +63,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -68,8 +79,14 @@ class AppContainer(
 ) {
     private val appContext = context.applicationContext
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    val playlistRepository = InMemoryPlaylistRepository(storage = SharedPreferencesPlaylistStorage(appContext))
-    val settingsRepository = PersistentSettingsRepository(SharedPreferencesSettingsStorage(appContext))
+    private val appPlaylistRepository = PersistentPlaylistRepository(
+        storage = SharedPreferencesPlaylistStorage(appContext),
+    )
+    val playlistRepository: PlaylistRepository = appPlaylistRepository
+    val playlistDetailsProvider: PlaylistDetailsProvider = appPlaylistRepository
+    private val appSettingsRepository = AppSettingsRepository(SharedPreferencesSettingsStorage(appContext))
+    val settingsRepository: SettingsRepository = appSettingsRepository
+    val settingsProductController: SettingsProductController = appSettingsRepository
     val queueRepository = PersistentQueueRepository(SharedPreferencesQueueStorage(appContext))
     private val mediaBackend = Media3PlaybackBackend(appContext)
     val playbackRequestHeadersProvider = PlaybackRequestHeadersProvider { uri ->
@@ -180,13 +197,95 @@ private fun basicAuthorizationHeader(credential: WebDavCredential): Map<String, 
     }
 }
 
-private class SharedPreferencesSettingsStorage(context: Context) : SettingsStorage {
+private interface AppSettingsStorage {
+    fun getString(key: String): String?
+    fun putString(key: String, value: String)
+}
+
+private class SharedPreferencesSettingsStorage(context: Context) : AppSettingsStorage {
     private val preferences = context.getSharedPreferences("cleartune_settings", Context.MODE_PRIVATE)
     override fun getString(key: String): String? = preferences.getString(key, null)
     override fun putString(key: String, value: String) {
         preferences.edit().putString(key, value).apply()
     }
 }
+
+private class AppSettingsRepository(
+    private val storage: AppSettingsStorage,
+) : SettingsRepository, SettingsProductController {
+    private val mutex = Mutex()
+    private val appSettings = MutableStateFlow(
+        AppSettings(
+            themeMode = storage.enum(THEME, ThemeMode.SYSTEM),
+            reducedMotionMode = storage.enum(MOTION, ReducedMotionMode.SYSTEM),
+        ),
+    )
+    override val settings: Flow<AppSettings> = appSettings
+    private val productState = MutableStateFlow(
+        SettingsProductState(
+            restoreQueue = storage.boolean(RESTORE_QUEUE, true),
+            pauseOnHeadphoneDisconnect = storage.boolean(HEADPHONE_PAUSE, true),
+            offlineCacheEnabled = storage.boolean(OFFLINE_CACHE, false),
+            backgroundPlayback = storage.boolean(BACKGROUND_PLAYBACK, false),
+            dynamicBackground = storage.boolean(DYNAMIC_BACKGROUND, true),
+            cacheLimitMb = storage.getString(CACHE_LIMIT)?.toIntOrNull()?.coerceIn(64, 8_192) ?: 512,
+        ),
+    )
+    override val productSettings: Flow<SettingsProductState> = productState
+
+    override suspend fun update(command: SettingsCommand) = mutex.withLock {
+        appSettings.value = when (command) {
+            is SettingsCommand.SetTheme -> appSettings.value.copy(themeMode = command.mode)
+                .also { storage.putString(THEME, command.mode.name) }
+            is SettingsCommand.SetReducedMotion -> appSettings.value.copy(reducedMotionMode = command.mode)
+                .also { storage.putString(MOTION, command.mode.name) }
+        }
+    }
+
+    override suspend fun dispatch(command: SettingsProductCommand) = mutex.withLock {
+        productState.value = when (command) {
+            is SettingsProductCommand.SetRestoreQueue -> productState.value.copy(restoreQueue = command.enabled)
+                .persist(RESTORE_QUEUE, command.enabled)
+            is SettingsProductCommand.SetPauseOnHeadphoneDisconnect ->
+                productState.value.copy(pauseOnHeadphoneDisconnect = command.enabled)
+                    .persist(HEADPHONE_PAUSE, command.enabled)
+            is SettingsProductCommand.SetOfflineCacheEnabled -> productState.value.copy(offlineCacheEnabled = command.enabled)
+                .persist(OFFLINE_CACHE, command.enabled)
+            is SettingsProductCommand.SetBackgroundPlayback -> productState.value.copy(backgroundPlayback = command.enabled)
+                .persist(BACKGROUND_PLAYBACK, command.enabled)
+            is SettingsProductCommand.SetDynamicBackground -> productState.value.copy(dynamicBackground = command.enabled)
+                .persist(DYNAMIC_BACKGROUND, command.enabled)
+            is SettingsProductCommand.SetCacheLimitMb -> {
+                val value = command.megabytes.coerceIn(64, 8_192)
+                productState.value.copy(cacheLimitMb = value).also { storage.putString(CACHE_LIMIT, "$value") }
+            }
+            SettingsProductCommand.ScanLibrary,
+            SettingsProductCommand.CleanUpCache,
+            SettingsProductCommand.OpenLicenses,
+            -> productState.value
+        }
+    }
+
+    private fun SettingsProductState.persist(key: String, value: Boolean): SettingsProductState =
+        also { storage.putString(key, value.toString()) }
+
+    private companion object {
+        const val THEME = "theme"
+        const val MOTION = "motion"
+        const val RESTORE_QUEUE = "restore_queue"
+        const val HEADPHONE_PAUSE = "headphone_pause"
+        const val OFFLINE_CACHE = "offline_cache"
+        const val BACKGROUND_PLAYBACK = "background_playback"
+        const val DYNAMIC_BACKGROUND = "dynamic_background"
+        const val CACHE_LIMIT = "cache_limit_mb"
+    }
+}
+
+private inline fun <reified T : Enum<T>> AppSettingsStorage.enum(key: String, default: T): T =
+    enumValues<T>().firstOrNull { it.name == getString(key) } ?: default
+
+private fun AppSettingsStorage.boolean(key: String, default: Boolean): Boolean =
+    getString(key)?.toBooleanStrictOrNull() ?: default
 
 private class SharedPreferencesQueueStorage(context: Context) : QueueStorage {
     private val preferences = context.getSharedPreferences("cleartune_queue", Context.MODE_PRIVATE)
