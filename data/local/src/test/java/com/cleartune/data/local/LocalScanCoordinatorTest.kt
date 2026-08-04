@@ -7,7 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.fail
 import org.junit.Test
-import java.io.IOException
+import java.io.FileNotFoundException
 
 class LocalScanCoordinatorTest {
     @Test
@@ -89,9 +89,21 @@ class LocalScanCoordinatorTest {
     }
 
     @Test
-    fun io_failure_is_classified_as_transient() = runTest {
+    fun permanent_io_failure_is_not_retried() = runTest {
         val coordinator = LocalScanCoordinator(
-            gateway = MediaStoreGateway { throw IOException("provider unavailable") },
+            gateway = MediaStoreGateway { throw FileNotFoundException("media disappeared") },
+            snapshotPort = RecordingSnapshotPort(),
+        )
+
+        val result = coordinator.scan(permissionGranted = true)
+
+        assertEquals(LocalScanOutcome.FAILED, result.outcome)
+    }
+
+    @Test
+    fun explicitly_transient_scan_failure_is_retryable() = runTest {
+        val coordinator = LocalScanCoordinator(
+            gateway = MediaStoreGateway { throw TransientLocalScanException("provider temporarily unavailable") },
             snapshotPort = RecordingSnapshotPort(),
         )
 
@@ -146,6 +158,22 @@ class LocalScanCoordinatorTest {
             assertEquals(cancellation, actual)
             assertEquals("progress write failed", actual.suppressed.single().message)
         }
+    }
+
+    @Test
+    fun terminal_progress_failure_after_snapshot_apply_does_not_relabel_the_scan_failed() = runTest {
+        val port = RecordingSnapshotPort(failOnPhase = LocalScanPhase.COMPLETED)
+        val coordinator = LocalScanCoordinator(
+            gateway = MediaStoreGateway { MediaStoreReadResult(listOf(snapshot("mediastore:1"))) },
+            snapshotPort = port,
+        )
+
+        val result = coordinator.scan(permissionGranted = true)
+
+        assertEquals(1, port.applyCount)
+        assertEquals(LocalScanOutcome.COMPLETED, result.outcome)
+        assertEquals(LocalScanPhase.COMPLETED, coordinator.state.value.phase)
+        assertFalse(port.reported.any { it.state.phase == LocalScanPhase.FAILED })
     }
 
     private fun snapshot(sourceKey: String) = LocalAudioSnapshot(

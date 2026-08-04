@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.io.FileNotFoundException
 
 class LocalScanProgressTest {
     @Test
@@ -27,6 +28,61 @@ class LocalScanProgressTest {
         assertEquals(listOf(0, 100, 200, 205), applying.map(LocalScanState::processed))
         assertTrue(applying.zipWithNext().all { (before, after) -> after.processed >= before.processed })
         assertTrue(applying.all { it.total == 205 })
+    }
+
+    @Test
+    fun failed_scan_preserves_the_complete_monotonic_progress_sequence() = runTest {
+        val port = ProgressRecordingPort(
+            stopAfterProcessed = 100,
+            stopFailure = FileNotFoundException("media disappeared"),
+        )
+        val coordinator = LocalScanCoordinator(
+            gateway = MediaStoreGateway { MediaStoreReadResult((1..205).map { snapshot("mediastore:$it") }) },
+            snapshotPort = port,
+            clock = { 100 },
+        )
+
+        coordinator.scan(permissionGranted = true)
+
+        assertEquals(
+            listOf(
+                ProgressEmission(LocalScanPhase.READING, 0, 0),
+                ProgressEmission(LocalScanPhase.APPLYING, 0, 205),
+                ProgressEmission(LocalScanPhase.APPLYING, 100, 205),
+                ProgressEmission(LocalScanPhase.FAILED, 100, 205),
+            ),
+            port.progress.map { ProgressEmission(it.state.phase, it.state.processed, it.state.total) },
+        )
+    }
+
+    @Test
+    fun cancelled_scan_preserves_the_complete_monotonic_progress_sequence() = runTest {
+        val port = ProgressRecordingPort(
+            stopAfterProcessed = 100,
+            stopFailure = CancellationException("stop"),
+        )
+        val coordinator = LocalScanCoordinator(
+            gateway = MediaStoreGateway { MediaStoreReadResult((1..205).map { snapshot("mediastore:$it") }) },
+            snapshotPort = port,
+            clock = { 100 },
+        )
+
+        try {
+            coordinator.scan(permissionGranted = true)
+            fail("Expected cancellation")
+        } catch (_: CancellationException) {
+            // Expected.
+        }
+
+        assertEquals(
+            listOf(
+                ProgressEmission(LocalScanPhase.READING, 0, 0),
+                ProgressEmission(LocalScanPhase.APPLYING, 0, 205),
+                ProgressEmission(LocalScanPhase.APPLYING, 100, 205),
+                ProgressEmission(LocalScanPhase.CANCELLED, 100, 205),
+            ),
+            port.progress.map { ProgressEmission(it.state.phase, it.state.processed, it.state.total) },
+        )
     }
 
     @Test
@@ -74,7 +130,16 @@ class LocalScanProgressTest {
     )
 }
 
-private class ProgressRecordingPort : LocalSnapshotPort {
+private data class ProgressEmission(
+    val phase: LocalScanPhase,
+    val processed: Int,
+    val total: Int,
+)
+
+private class ProgressRecordingPort(
+    private val stopAfterProcessed: Int? = null,
+    private val stopFailure: Throwable? = null,
+) : LocalSnapshotPort {
     var request: LocalSnapshotRequest? = null
     val progress = mutableListOf<LocalScanProgress>()
 
@@ -84,7 +149,9 @@ private class ProgressRecordingPort : LocalSnapshotPort {
     ): MutationResult {
         this.request = request
         request.records.indices.chunked(request.batchSize).forEach { batch ->
-            onProgress(batch.last() + 1)
+            val processed = batch.last() + 1
+            onProgress(processed)
+            if (stopAfterProcessed != null && processed >= stopAfterProcessed) throw requireNotNull(stopFailure)
         }
         return MutationResult(inserted = request.records.size)
     }

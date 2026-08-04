@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.IOException
 
 data class LocalScanResult(
     val outcome: LocalScanOutcome,
@@ -18,6 +17,11 @@ data class LocalScanResult(
     val warnings: List<String> = emptyList(),
     val errorMessage: String? = null,
 )
+
+class TransientLocalScanException(
+    message: String,
+    cause: Throwable? = null,
+) : Exception(message, cause)
 
 class LocalScanCoordinator(
     private val gateway: MediaStoreGateway,
@@ -48,7 +52,7 @@ class LocalScanCoordinator(
             val readResult = gateway.readAudio()
             if (!readResult.isComplete) {
                 val message = readResult.warnings.firstOrNull() ?: "MediaStore read was incomplete"
-                val failedState = LocalScanState(
+                val failedState = terminalState(
                     phase = LocalScanPhase.FAILED,
                     warningCount = readResult.warnings.size,
                     errorMessage = message,
@@ -104,7 +108,7 @@ class LocalScanCoordinator(
             )
             if (lastProcessed < total) {
                 lastProcessed = total
-                publish(
+                publishAfterSnapshotApplied(
                     sessionId,
                     startedAt,
                     LocalScanState(
@@ -115,7 +119,7 @@ class LocalScanCoordinator(
                     ),
                 )
             }
-            publish(
+            publishAfterSnapshotApplied(
                 sessionId,
                 startedAt,
                 LocalScanState(
@@ -133,7 +137,7 @@ class LocalScanCoordinator(
                     publish(
                         sessionId,
                         startedAt,
-                        LocalScanState(phase = LocalScanPhase.CANCELLED, errorMessage = "Scan cancelled"),
+                        terminalState(LocalScanPhase.CANCELLED, errorMessage = "Scan cancelled"),
                         completedAtEpochMs = clock(),
                     )
                 }
@@ -146,11 +150,11 @@ class LocalScanCoordinator(
             publish(
                 sessionId,
                 startedAt,
-                LocalScanState(phase = LocalScanPhase.PERMISSION_REQUIRED, errorMessage = message),
+                terminalState(LocalScanPhase.PERMISSION_REQUIRED, errorMessage = message),
                 completedAtEpochMs = clock(),
             )
             LocalScanResult(LocalScanOutcome.PERMISSION_REQUIRED, errorMessage = message)
-        } catch (failure: IOException) {
+        } catch (failure: TransientLocalScanException) {
             failedResult(sessionId, startedAt, failure, LocalScanOutcome.TRANSIENT_FAILURE)
         } catch (failure: Exception) {
             failedResult(sessionId, startedAt, failure, LocalScanOutcome.FAILED)
@@ -167,7 +171,7 @@ class LocalScanCoordinator(
         publish(
             sessionId,
             startedAt,
-            LocalScanState(phase = LocalScanPhase.FAILED, errorMessage = safeMessage),
+            terminalState(LocalScanPhase.FAILED, errorMessage = safeMessage),
             completedAtEpochMs = clock(),
         )
         return LocalScanResult(outcome, errorMessage = safeMessage)
@@ -190,6 +194,33 @@ class LocalScanCoordinator(
             ),
         )
     }
+
+    private suspend fun publishAfterSnapshotApplied(
+        sessionId: String,
+        startedAtEpochMs: Long,
+        state: LocalScanState,
+        completedAtEpochMs: Long? = null,
+    ) {
+        try {
+            publish(sessionId, startedAtEpochMs, state, completedAtEpochMs)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            // The authoritative snapshot is already committed. A progress persistence failure
+            // cannot turn that committed snapshot into a failed scan.
+            mutableState.value = state
+        }
+    }
+
+    private fun terminalState(
+        phase: LocalScanPhase,
+        warningCount: Int = mutableState.value.warningCount,
+        errorMessage: String? = null,
+    ): LocalScanState = mutableState.value.copy(
+        phase = phase,
+        warningCount = warningCount,
+        errorMessage = errorMessage,
+    )
 
     companion object {
         val LOCAL_SOURCE_ID = SourceId("local")
