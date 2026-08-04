@@ -1,0 +1,25 @@
+plugins {
+    alias(libs.plugins.android.library)
+}
+
+android {
+    namespace = "com.cleartune.playback"
+    compileSdk = 37
+    defaultConfig { minSdk = 26 }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    testOptions { unitTests.isIncludeAndroidResources = true }
+}
+
+dependencies {
+    implementation(projects.core.model)
+    implementation(projects.core.contracts)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.session)
+    implementation(libs.media3.datasource.okhttp)
+    implementation(libs.coroutines.android)
+    testImplementation(libs.junit4)
+    testImplementation(libs.coroutines.test)
+}

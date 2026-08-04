@@ -61,6 +61,30 @@ foreach ($match in $forbiddenPlugin) {
     $violations.Add("AGP built-in Kotlin violation: ${relative}:$($match.LineNumber)")
 }
 
+$forbiddenEdges = @(
+    @{ File = 'playback/build.gradle.kts'; Pattern = 'projects\.core\.database|project\(["'']?:core:database["'']?\)' },
+    @{ File = 'core/database/build.gradle.kts'; Pattern = 'projects\.(data|feature|playback)|project\(["'']?:(data|feature|playback)' }
+)
+
+foreach ($rule in $forbiddenEdges) {
+    $absolutePath = Join-Path $repoRoot $rule.File
+    if (Test-Path -LiteralPath $absolutePath -PathType Leaf) {
+        $matches = Select-String -LiteralPath $absolutePath -Pattern $rule.Pattern
+        foreach ($match in $matches) {
+            $violations.Add("Forbidden dependency edge: $($rule.File):$($match.LineNumber)")
+        }
+    }
+}
+
+$featureBuildFiles = Get-ChildItem -Path (Join-Path $repoRoot 'feature') -Filter 'build.gradle.kts' -File -Recurse -ErrorAction SilentlyContinue
+foreach ($buildFile in $featureBuildFiles) {
+    $matches = Select-String -LiteralPath $buildFile.FullName -Pattern 'projects\.feature\.|project\(["'']?:feature:'
+    foreach ($match in $matches) {
+        $relative = [System.IO.Path]::GetRelativePath($repoRoot, $match.Path)
+        $violations.Add("Feature-to-feature dependency: ${relative}:$($match.LineNumber)")
+    }
+}
+
 if ($violations.Count -gt 0) {
     $violations | ForEach-Object { [Console]::Error.WriteLine($_) }
     exit 1
