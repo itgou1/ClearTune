@@ -17,9 +17,12 @@ dependencies {
     implementation(projects.core.model)
     implementation(projects.core.contracts)
     implementation(projects.core.network)
+    implementation(platform(libs.okhttp.bom))
+    implementation(libs.okhttp)
     implementation(libs.coroutines.android)
     implementation(libs.work.runtime)
     testImplementation(libs.junit4)
     testImplementation(libs.coroutines.test)
+    testImplementation(platform(libs.okhttp.bom))
     testImplementation(libs.mockwebserver)
 }
