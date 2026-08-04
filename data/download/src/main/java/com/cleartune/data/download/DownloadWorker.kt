@@ -35,9 +35,8 @@ class DownloadWorker(
     override suspend fun doWork(): Result {
         val id = inputData.getString(INPUT_DOWNLOAD_ID)?.takeIf(String::isNotBlank)
             ?: return Result.failure()
-        val runner = (applicationContext as? DownloadWorkerHost)?.downloadWorkerRunner
-            ?: return Result.retry()
-        setForeground(createForegroundInfo())
+        val runner = runnerFrom(applicationContext) ?: return Result.failure()
+        setForeground(createForegroundInfo(DownloadId(id)))
         return when (runner.run(DownloadId(id))) {
             WorkerOutcome.COMPLETED -> Result.success()
             WorkerOutcome.RETRY -> Result.retry()
@@ -45,9 +44,13 @@ class DownloadWorker(
         }
     }
 
-    override suspend fun getForegroundInfo(): ForegroundInfo = createForegroundInfo()
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        val id = inputData.getString(INPUT_DOWNLOAD_ID)?.takeIf(String::isNotBlank)
+            ?.let(::DownloadId) ?: DownloadId("unknown")
+        return createForegroundInfo(id)
+    }
 
-    private fun createForegroundInfo(): ForegroundInfo {
+    private fun createForegroundInfo(id: DownloadId): ForegroundInfo {
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Downloads", NotificationManager.IMPORTANCE_LOW),
@@ -57,15 +60,18 @@ class DownloadWorker(
             .setContentTitle("Downloading music")
             .setOngoing(true)
             .build()
-        return ForegroundInfo(NOTIFICATION_ID, notification)
+        return ForegroundInfo(notificationId(id), notification)
     }
 
     companion object {
         const val INPUT_DOWNLOAD_ID = "download_id"
         const val CHANNEL_ID = "downloads"
-        private const val NOTIFICATION_ID = 0x434C54
-
         fun workName(id: DownloadId): String = "download-${id.value}"
+
+        fun notificationId(id: DownloadId): Int = 0x444C0000 or (id.value.hashCode() and 0x0000ffff)
+
+        fun runnerFrom(application: Any): DownloadWorkerRunner? =
+            (application as? DownloadWorkerHost)?.downloadWorkerRunner
 
         fun request(id: DownloadId) = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(Data.Builder().putString(INPUT_DOWNLOAD_ID, id.value).build())
@@ -87,11 +93,13 @@ class WorkManagerDownloadScheduler(
     private val workManager = WorkManager.getInstance(context)
 
     override suspend fun enqueue(id: DownloadId) {
-        workManager.enqueueUniqueWork(
-            DownloadWorker.workName(id),
-            ExistingWorkPolicy.REPLACE,
-            DownloadWorker.request(id),
-        )
+        withContext(Dispatchers.IO) {
+            workManager.enqueueUniqueWork(
+                DownloadWorker.workName(id),
+                ExistingWorkPolicy.REPLACE,
+                DownloadWorker.request(id),
+            ).result.get()
+        }
     }
 
     override suspend fun stop(id: DownloadId) {

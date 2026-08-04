@@ -9,6 +9,7 @@ import com.cleartune.core.model.TrackId
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -44,9 +45,7 @@ class DownloadCoordinator(
             is DownloadCommand.Resume -> transition(command.downloadId, DownloadState.QUEUED) {
                 scheduler.enqueue(command.downloadId)
             }
-            is DownloadCommand.Retry -> transition(command.downloadId, DownloadState.QUEUED) {
-                scheduler.enqueue(command.downloadId)
-            }
+            is DownloadCommand.Retry -> retry(command.downloadId)
             is DownloadCommand.Cancel -> transition(command.downloadId, DownloadState.CANCELED) {
                 scheduler.stop(command.downloadId)
                 scheduler.deleteFiles(command.downloadId)
@@ -61,13 +60,52 @@ class DownloadCoordinator(
     }
 
     private suspend fun enqueue(trackId: TrackId) {
-        if (records.findByTrack(trackId) != null) return
-        val id = DownloadId(
-            UUID.nameUUIDFromBytes("cleartune-download:${trackId.value}".toByteArray(StandardCharsets.UTF_8))
-                .toString(),
+        val existing = records.findByTrack(trackId)
+        val summary = when {
+            existing == null -> {
+                val id = DownloadId(
+                    UUID.nameUUIDFromBytes("cleartune-download:${trackId.value}".toByteArray(StandardCharsets.UTF_8))
+                        .toString(),
+                )
+                DownloadSummary(id, trackId, DownloadState.QUEUED).also { records.insert(it) }
+            }
+            existing.state == DownloadState.CANCELED -> existing.copy(
+                state = DownloadState.QUEUED,
+                bytesDownloaded = 0,
+                totalBytes = null,
+                finalPath = null,
+                errorMessage = null,
+            ).also { records.replace(it) }
+            else -> return
+        }
+        schedule(summary)
+    }
+
+    private suspend fun retry(id: DownloadId) {
+        val current = records.get(id) ?: return
+        if (current.state != DownloadState.CANCELED) {
+            transition(id, DownloadState.QUEUED) { scheduler.enqueue(id) }
+            return
+        }
+        val revived = current.copy(
+            state = DownloadState.QUEUED,
+            bytesDownloaded = 0,
+            totalBytes = null,
+            finalPath = null,
+            errorMessage = null,
         )
-        records.insert(DownloadSummary(id, trackId, DownloadState.QUEUED))
-        scheduler.enqueue(id)
+        records.replace(revived)
+        schedule(revived)
+    }
+
+    private suspend fun schedule(summary: DownloadSummary) {
+        try {
+            scheduler.enqueue(summary.id)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            records.replace(summary.copy(state = DownloadState.FAILED, errorMessage = "Unable to schedule download"))
+        }
     }
 
     private suspend fun transition(
@@ -77,12 +115,21 @@ class DownloadCoordinator(
     ) {
         val current = records.get(id) ?: return
         if (!DownloadStateMachine.canTransition(current.state, target)) return
-        records.replace(
-            current.copy(
-                state = target,
-                errorMessage = if (target == DownloadState.QUEUED) null else current.errorMessage,
-            ),
+        val persisted = current.copy(
+            state = target,
+            errorMessage = if (target == DownloadState.QUEUED) null else current.errorMessage,
         )
-        afterPersist()
+        records.replace(persisted)
+        try {
+            afterPersist()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            if (target == DownloadState.QUEUED) {
+                records.replace(persisted.copy(state = DownloadState.FAILED, errorMessage = "Unable to schedule download"))
+            } else {
+                records.replace(current.copy(errorMessage = "Unable to update download"))
+            }
+        }
     }
 }

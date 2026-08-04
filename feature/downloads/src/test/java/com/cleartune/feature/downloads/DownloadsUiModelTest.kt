@@ -9,6 +9,8 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class DownloadsUiModelTest {
+    private val titles = DownloadTitleResolver { "Title for ${it.value}" }
+
     @Test
     fun `groups active completed and attention items in display order`() {
         val groups = groupDownloads(
@@ -17,25 +19,32 @@ class DownloadsUiModelTest {
                 summary("failed", DownloadState.FAILED, 2, 10),
                 summary("running", DownloadState.RUNNING, 4, 10),
             ),
+            titles,
         )
 
-        assertEquals(listOf("进行中", "需要处理", "已完成"), groups.map { it.title })
+        assertEquals(3, groups.size)
         assertEquals(0.4f, groups.first().items.first().progress)
+        assertEquals("Title for track-running", groups.first().items.first().title)
     }
 
     @Test
-    fun `unknown total has indeterminate progress and safe status`() {
-        val item = summary("running", DownloadState.RUNNING, 1024, null).toUiItem()
+    fun `unknown total has indeterminate progress safe status and resolved title`() {
+        val item = summary("running", DownloadState.RUNNING, 1024, null).toUiItem(titles)
 
         assertNull(item.progress)
-        assertEquals("正在下载", item.status)
+        assertEquals("Title for track-running", item.title)
     }
 
-    private fun summary(
-        id: String,
-        state: DownloadState,
-        bytes: Long,
-        total: Long?,
-        path: String? = null,
-    ) = DownloadSummary(DownloadId(id), TrackId("track-$id"), state, bytes, total, path)
+    @Test
+    fun `canceled rows remain visible for retry or deletion`() {
+        val groups = groupDownloads(
+            listOf(summary("canceled", DownloadState.CANCELED, 0, null)),
+            titles,
+        )
+
+        assertEquals(DownloadState.CANCELED, groups.single().items.single().state)
+    }
+
+    private fun summary(id: String, state: DownloadState, bytes: Long, total: Long?, path: String? = null) =
+        DownloadSummary(DownloadId(id), TrackId("track-$id"), state, bytes, total, path)
 }

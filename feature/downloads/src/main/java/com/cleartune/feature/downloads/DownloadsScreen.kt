@@ -32,10 +32,11 @@ import com.cleartune.core.model.DownloadSummary
 @Composable
 fun DownloadsScreen(
     downloads: List<DownloadSummary>,
+    titleResolver: DownloadTitleResolver,
     onCommand: (DownloadCommand) -> Unit,
 ) {
     var pendingDelete by remember { mutableStateOf<com.cleartune.core.model.DownloadId?>(null) }
-    val groups = groupDownloads(downloads)
+    val groups = groupDownloads(downloads, titleResolver)
     val completed = downloads.filter { it.state == DownloadState.COMPLETED }
     val offlineBytes = completed.sumOf { it.totalBytes ?: it.bytesDownloaded }
     LazyColumn(
@@ -121,6 +122,9 @@ private fun DownloadActions(item: DownloadUiItem, onCommand: (DownloadCommand) -
             TextButton(onClick = { onCommand(DownloadCommand.Retry(item.id)) }) { Text("重试") }
         DownloadState.COMPLETED ->
             TextButton(onClick = { onCommand(DownloadCommand.Delete(item.id)) }) { Text("删除") }
-        DownloadState.CANCELED -> Unit
+        DownloadState.CANCELED -> {
+            TextButton(onClick = { onCommand(DownloadCommand.Retry(item.id)) }) { Text("Retry") }
+            TextButton(onClick = { onCommand(DownloadCommand.Delete(item.id)) }) { Text("Delete") }
+        }
     }
 }

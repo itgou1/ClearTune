@@ -12,8 +12,18 @@ import com.cleartune.core.network.WebDavUrlPolicy
 import java.nio.charset.StandardCharsets
 import java.util.ArrayDeque
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
-data class SyncFailure(val relativeDirectory: String)
+data class SyncFailure(
+    val relativeDirectory: String,
+    val retryable: Boolean = false,
+)
 
 data class WebDavSyncReport(
     val discoveredTracks: Int,
@@ -25,36 +35,79 @@ class WebDavSyncEngine(
     private val client: DirectoryListingClient,
     private val libraryWriteGateway: LibraryWriteGateway,
     private val supportedExtensions: Set<String> = setOf("mp3", "flac", "m4a", "aac", "ogg", "opus", "wav"),
+    private val fingerprintLookup: RemoteFingerprintLookup = RemoteFingerprintLookup { _, _ -> null },
+    private val metadataEnricher: WebDavMetadataEnricher = WebDavMetadataEnricher { _, entry ->
+        EnrichedTrackMetadata(entry.name.substringBeforeLast('.', entry.name))
+    },
+    private val updatePublisher: RemoteUpdatePublisher = RemoteUpdatePublisher { _, _ -> },
+    private val maxEnrichmentConcurrency: Int = 4,
 ) {
-    suspend fun sync(source: MusicSource): WebDavSyncReport {
+    init {
+        require(maxEnrichmentConcurrency > 0)
+    }
+
+    suspend fun sync(
+        source: MusicSource,
+        checkpoint: WebDavSyncCheckpoint? = null,
+        saveCheckpoint: suspend (WebDavSyncCheckpoint) -> Unit = {},
+    ): WebDavSyncReport {
         val base = WebDavUrlPolicy.normalizeBaseUrl(requireNotNull(source.baseUrl), source.allowCleartext)
-        val queue = ArrayDeque<okhttp3.HttpUrl>().apply { add(base) }
-        val visited = linkedSetOf<String>()
-        val retained = linkedSetOf<String>()
-        val failures = mutableListOf<SyncFailure>()
-        var discovered = 0
+        require(checkpoint == null || checkpoint.sourceId == source.id)
+        val queue = ArrayDeque<okhttp3.HttpUrl>().apply {
+            val pending = checkpoint?.pendingDirectories ?: listOf(base.toString())
+            pending.map { it.toHttpUrl() }.forEach { directory ->
+                require(WebDavUrlPolicy.isInBaseSubtree(base, directory))
+                add(directory)
+            }
+        }
+        val visited = checkpoint?.visitedDirectories?.toMutableSet() ?: linkedSetOf()
+        val retained = checkpoint?.retainedSourceKeys?.toMutableSet() ?: linkedSetOf()
+        val failures = checkpoint?.failures?.toMutableList() ?: mutableListOf()
+        var discovered = checkpoint?.discoveredTracks ?: 0
 
         while (queue.isNotEmpty()) {
             val directory = queue.removeFirst()
             if (!visited.add(directory.toString())) continue
             val entries = try {
                 client.list(source, directory)
-            } catch (_: Exception) {
-                failures += SyncFailure(directory.pathSegments.lastOrNull { it.isNotBlank() } ?: "/")
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: Exception) {
+                val relativeDirectory = directory.relativeDirectory()
+                val retryable = (failure as? WebDavProtocolException)?.failure?.retryable == true ||
+                    failure is java.io.IOException
+                failures.removeAll { it.relativeDirectory == relativeDirectory }
+                failures += SyncFailure(relativeDirectory, retryable)
+                if (retryable) {
+                    visited.remove(directory.toString())
+                    queue.addFirst(directory)
+                }
+                saveCheckpoint(checkpoint(source.id, queue, visited, retained, discovered, failures))
+                if (retryable) break
                 continue
             }
+            failures.removeAll { it.relativeDirectory == directory.relativeDirectory() }
             entries.filter { it.isDirectory }.forEach { entry ->
                 if (WebDavUrlPolicy.isInBaseSubtree(base, entry.href) && entry.href.toString() !in visited) {
                     queue.addLast(entry.href)
                 }
             }
             val audio = entries.filter { !it.isDirectory && it.extension() in supportedExtensions }
-            if (audio.isNotEmpty()) {
-                val tracks = audio.map { entry ->
+            retained += audio.map { it.relativeKey(base) }
+            val changed = audio.mapNotNull { entry ->
+                val sourceKey = entry.relativeKey(base)
+                val previous = fingerprintLookup.find(source.id, sourceKey)
+                if (previous == RemoteFingerprint(entry.sizeBytes, entry.etag)) return@mapNotNull null
+                if (previous != null) updatePublisher.markUpdateAvailable(source.id, sourceKey)
+                entry
+            }
+            if (changed.isNotEmpty()) {
+                val enriched = enrich(source, changed)
+                val tracks = changed.mapIndexed { index, entry ->
                     val sourceKey = entry.relativeKey(base)
-                    Track(TrackId(stableId("track", source.id.value, sourceKey)), entry.name.substringBeforeLast('.', entry.name))
+                    Track(TrackId(stableId("track", source.id.value, sourceKey)), enriched[index].title)
                 }
-                val locations = audio.mapIndexed { index, entry ->
+                val locations = changed.mapIndexed { index, entry ->
                     val sourceKey = entry.relativeKey(base)
                     TrackLocation(
                         id = LocationId(stableId("location", source.id.value, sourceKey)),
@@ -67,19 +120,59 @@ class WebDavSyncEngine(
                         etag = entry.etag,
                     )
                 }
-                retained += audio.map { it.relativeKey(base) }
                 discovered += tracks.size
                 libraryWriteGateway.applyLibraryMutation(LibraryMutation.Upsert(source.id, tracks, locations))
             }
+            saveCheckpoint(checkpoint(source.id, queue, visited, retained, discovered, failures))
         }
         if (failures.isEmpty()) {
             libraryWriteGateway.applyLibraryMutation(LibraryMutation.RetainSourceKeys(source.id, retained))
         }
         return WebDavSyncReport(discovered, visited.size, failures)
     }
+
+    private suspend fun enrich(source: MusicSource, entries: List<WebDavEntry>): List<EnrichedTrackMetadata> = coroutineScope {
+        val semaphore = Semaphore(maxEnrichmentConcurrency)
+        entries.map { entry ->
+            async { semaphore.withPermit { metadataEnricher.enrich(source, entry) } }
+        }.awaitAll()
+    }
+
+    private fun checkpoint(
+        sourceId: com.cleartune.core.model.SourceId,
+        queue: ArrayDeque<okhttp3.HttpUrl>,
+        visited: Set<String>,
+        retained: Set<String>,
+        discovered: Int,
+        failures: List<SyncFailure>,
+    ) = WebDavSyncCheckpoint(
+        sourceId = sourceId,
+        pendingDirectories = queue.map(okhttp3.HttpUrl::toString),
+        visitedDirectories = visited.toSet(),
+        retainedSourceKeys = retained.toSet(),
+        discoveredTracks = discovered,
+        failures = failures.toList(),
+    )
+}
+
+data class EnrichedTrackMetadata(val title: String)
+
+fun interface RemoteFingerprintLookup {
+    suspend fun find(sourceId: com.cleartune.core.model.SourceId, sourceKey: String): RemoteFingerprint?
+}
+
+fun interface WebDavMetadataEnricher {
+    suspend fun enrich(source: MusicSource, entry: WebDavEntry): EnrichedTrackMetadata
+}
+
+fun interface RemoteUpdatePublisher {
+    suspend fun markUpdateAvailable(sourceId: com.cleartune.core.model.SourceId, sourceKey: String)
 }
 
 private fun WebDavEntry.extension(): String = name.substringAfterLast('.', "").lowercase()
+
+private fun okhttp3.HttpUrl.relativeDirectory(): String =
+    pathSegments.lastOrNull { it.isNotBlank() } ?: "/"
 
 private fun WebDavEntry.relativeKey(base: okhttp3.HttpUrl): String =
     href.encodedPath.removePrefix(base.encodedPath).trimStart('/')

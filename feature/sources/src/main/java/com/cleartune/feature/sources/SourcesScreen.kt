@@ -20,12 +20,18 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 
 @Composable
 fun SourcesScreen(
@@ -157,6 +163,64 @@ fun WebDavSourceForm(
                     if (state.testing) CircularProgressIndicator(Modifier.height(20.dp)) else Text("测试连接")
                 }
                 Button(onClick = onSave, enabled = state.connectionResult != null, modifier = Modifier.weight(1f)) { Text("保存") }
+            }
+        }
+    }
+}
+
+@Composable
+fun SourceDetailScreen(
+    source: SourceUiItem,
+    onEdit: () -> Unit,
+    onBrowse: () -> Unit,
+    onSync: suspend () -> SourceResult<Unit>,
+    onDelete: suspend () -> Unit,
+) {
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    Column(
+        Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(source.name, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text(source.location)
+        Text(source.status)
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Button(onClick = onBrowse, modifier = Modifier.fillMaxWidth()) { Text("Browse") }
+        Button(onClick = { scope.launch { error = onSync().failure?.message } }, modifier = Modifier.fillMaxWidth()) {
+            Text("Sync now")
+        }
+        TextButton(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Edit") }
+        TextButton(onClick = { scope.launch { onDelete() } }, modifier = Modifier.fillMaxWidth()) { Text("Delete") }
+    }
+}
+
+@Composable
+fun SourceBrowseScreen(
+    path: String,
+    items: List<SourceBrowseItem>,
+    loading: Boolean,
+    error: String?,
+    onOpen: (SourceBrowseItem) -> Unit,
+    onSync: () -> Unit,
+) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Text(if (path.isBlank()) "Source files" else path, style = MaterialTheme.typography.headlineLarge)
+            Button(onClick = onSync, modifier = Modifier.fillMaxWidth()) { Text("Sync now") }
+        }
+        if (loading) item { CircularProgressIndicator() }
+        error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
+        items(items, key = SourceBrowseItem::key) { entry ->
+            Card(onClick = { onOpen(entry) }, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = if (entry.isDirectory) "${entry.name}/" else entry.name,
+                    modifier = Modifier.padding(16.dp),
+                )
             }
         }
     }

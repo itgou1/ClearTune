@@ -3,6 +3,11 @@ package com.cleartune.feature.downloads
 import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.DownloadSummary
+import com.cleartune.core.model.TrackId
+
+fun interface DownloadTitleResolver {
+    fun titleFor(trackId: TrackId): String
+}
 
 data class DownloadUiItem(
     val id: DownloadId,
@@ -15,8 +20,9 @@ data class DownloadUiItem(
 
 data class DownloadUiGroup(val title: String, val items: List<DownloadUiItem>)
 
-fun DownloadSummary.toUiItem(): DownloadUiItem {
-    val progress = totalBytes?.takeIf { it > 0 }?.let { (bytesDownloaded.toDouble() / it).toFloat().coerceIn(0f, 1f) }
+fun DownloadSummary.toUiItem(titleResolver: DownloadTitleResolver): DownloadUiItem {
+    val progress = totalBytes?.takeIf { it > 0 }
+        ?.let { (bytesDownloaded.toDouble() / it).toFloat().coerceIn(0f, 1f) }
     val status = when (state) {
         DownloadState.QUEUED -> "等待下载"
         DownloadState.RUNNING -> "正在下载"
@@ -28,14 +34,14 @@ fun DownloadSummary.toUiItem(): DownloadUiItem {
     }
     val detail = totalBytes?.let { "${formatBytes(bytesDownloaded)} / ${formatBytes(it)}" }
         ?: formatBytes(bytesDownloaded)
-    return DownloadUiItem(id, trackId.value, status, detail, progress, state)
+    return DownloadUiItem(id, titleResolver.titleFor(trackId), status, detail, progress, state)
 }
 
-fun groupDownloads(downloads: List<DownloadSummary>): List<DownloadUiGroup> {
-    val items = downloads.map(DownloadSummary::toUiItem)
+fun groupDownloads(downloads: List<DownloadSummary>, titleResolver: DownloadTitleResolver): List<DownloadUiGroup> {
+    val items = downloads.map { it.toUiItem(titleResolver) }
     val definitions = listOf(
         "进行中" to setOf(DownloadState.QUEUED, DownloadState.RUNNING),
-        "需要处理" to setOf(DownloadState.PAUSED, DownloadState.FAILED, DownloadState.UPDATE_AVAILABLE),
+        "需要处理" to setOf(DownloadState.PAUSED, DownloadState.FAILED, DownloadState.UPDATE_AVAILABLE, DownloadState.CANCELED),
         "已完成" to setOf(DownloadState.COMPLETED),
     )
     return definitions.mapNotNull { (title, states) ->

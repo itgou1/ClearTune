@@ -3,6 +3,7 @@ package com.cleartune.data.webdav
 import com.cleartune.core.contracts.WebDavCredential
 import com.cleartune.core.model.CredentialAlias
 import javax.crypto.KeyGenerator
+import java.nio.file.Files
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -66,6 +67,20 @@ class EncryptedCredentialStoreTest {
         }
 
         assertTrue(failure.message == "Credential data is unavailable")
+    }
+
+    @Test
+    fun `file blob store round trips and deletes opaque data`() {
+        val root = Files.createTempDirectory("credential-blobs-").toFile()
+        val store = FileCredentialBlobStore(root)
+        val value = byteArrayOf(1, 2, 3, 4)
+
+        store.write(alias.value, value)
+        assertArrayEquals(value, store.read(alias.value))
+
+        store.delete(alias.value)
+        assertNull(store.read(alias.value))
+        assertTrue(root.listFiles().orEmpty().none { it.isFile })
     }
 
     private fun newKey() = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()

@@ -51,6 +51,54 @@ class DownloadCoordinatorTest {
         assertEquals(DownloadState.CANCELED, records.get(id)?.state)
     }
 
+    @Test
+    fun `enqueue revives an existing canceled record`() = runTest {
+        val id = DownloadId("download-1")
+        val track = TrackId("track-1")
+        val records = FakeRecords(DownloadSummary(id, track, DownloadState.CANCELED))
+        val scheduler = FakeScheduler()
+
+        DownloadCoordinator(records, scheduler).dispatch(DownloadCommand.Enqueue(track))
+
+        assertEquals(DownloadState.QUEUED, records.get(id)?.state)
+        assertEquals(listOf(id), scheduler.enqueued)
+    }
+
+    @Test
+    fun `retry explicitly revives a canceled record`() = runTest {
+        val id = DownloadId("download-1")
+        val records = FakeRecords(DownloadSummary(id, TrackId("track-1"), DownloadState.CANCELED))
+        val scheduler = FakeScheduler()
+
+        DownloadCoordinator(records, scheduler).dispatch(DownloadCommand.Retry(id))
+
+        assertEquals(DownloadState.QUEUED, records.get(id)?.state)
+        assertEquals(listOf(id), scheduler.enqueued)
+    }
+
+    @Test
+    fun `scheduler enqueue failure reconciles persisted record to failed`() = runTest {
+        val records = FakeRecords()
+        val scheduler = FakeScheduler().apply { enqueueFailure = IllegalStateException("private detail") }
+
+        DownloadCoordinator(records, scheduler).dispatch(DownloadCommand.Enqueue(TrackId("track-1")))
+
+        assertEquals(DownloadState.FAILED, records.values.value.single().state)
+        assertEquals("Unable to schedule download", records.values.value.single().errorMessage)
+    }
+
+    @Test
+    fun `resume scheduler failure reconciles queued record to failed`() = runTest {
+        val id = DownloadId("download-1")
+        val records = FakeRecords(DownloadSummary(id, TrackId("track-1"), DownloadState.PAUSED))
+        val scheduler = FakeScheduler().apply { enqueueFailure = IllegalStateException("private detail") }
+
+        DownloadCoordinator(records, scheduler).dispatch(DownloadCommand.Resume(id))
+
+        assertEquals(DownloadState.FAILED, records.get(id)?.state)
+        assertEquals("Unable to schedule download", records.get(id)?.errorMessage)
+    }
+
     private class FakeRecords(vararg initial: DownloadSummary) : DownloadRecordStore {
         val values = MutableStateFlow(initial.toList())
         override fun observe(): Flow<List<DownloadSummary>> = values
@@ -66,7 +114,11 @@ class DownloadCoordinatorTest {
     private class FakeScheduler : DownloadScheduler {
         val enqueued = mutableListOf<DownloadId>()
         val stopped = mutableListOf<DownloadId>()
-        override suspend fun enqueue(id: DownloadId) { enqueued += id }
+        var enqueueFailure: Exception? = null
+        override suspend fun enqueue(id: DownloadId) {
+            enqueueFailure?.let { throw it }
+            enqueued += id
+        }
         override suspend fun stop(id: DownloadId) { stopped += id }
         override suspend fun deleteFiles(id: DownloadId) = Unit
     }

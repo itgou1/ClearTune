@@ -3,14 +3,20 @@ package com.cleartune.data.webdav
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.util.Base64
 import com.cleartune.core.contracts.CredentialStore
 import com.cleartune.core.contracts.WebDavCredential
 import com.cleartune.core.model.CredentialAlias
 import java.nio.ByteBuffer
+import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.SecureRandom
+import java.io.File
+import java.io.FileOutputStream
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -35,7 +41,7 @@ class EncryptedCredentialStore(
 ) : CredentialStore {
     override suspend fun put(alias: CredentialAlias, credential: WebDavCredential) {
         val username = credential.username.toByteArray(Charsets.UTF_8)
-        val password = credential.password.concatToString().toByteArray(Charsets.UTF_8)
+        val password = encodeUtf8(credential.password)
         val plaintext = ByteBuffer.allocate(Int.SIZE_BYTES * 2 + username.size + password.size)
             .putInt(username.size)
             .put(username)
@@ -68,6 +74,21 @@ class EncryptedCredentialStore(
     }
 
     override suspend fun delete(alias: CredentialAlias) = blobs.delete(alias.value)
+
+    private fun encodeUtf8(chars: CharArray): ByteArray {
+        val copy = chars.copyOf()
+        var encoded: ByteBuffer? = null
+        return try {
+            encoded = Charsets.UTF_8.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .encode(CharBuffer.wrap(copy))
+            ByteArray(encoded.remaining()).also(encoded::get)
+        } finally {
+            copy.fill('\u0000')
+            encoded?.takeIf(ByteBuffer::hasArray)?.array()?.fill(0)
+        }
+    }
 
     private fun decode(bytes: ByteArray): WebDavCredential {
         val buffer = ByteBuffer.wrap(bytes)
@@ -159,23 +180,62 @@ class AndroidKeystoreCredentialCipher(
     }
 }
 
-class SharedPreferencesCredentialBlobStore(context: Context) : CredentialBlobStore {
-    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+class FileCredentialBlobStore(
+    val rootDirectory: File,
+) : CredentialBlobStore {
+    init {
+        check(rootDirectory.mkdirs() || rootDirectory.isDirectory)
+    }
 
     override fun write(alias: String, ciphertext: ByteArray) {
-        val value = Base64.encodeToString(ciphertext, Base64.NO_WRAP)
-        check(preferences.edit().putString(alias, value).commit())
+        val destination = file(alias)
+        val temporary = File(rootDirectory, "${destination.name}.tmp")
+        try {
+            FileOutputStream(temporary).use { output ->
+                output.write(ciphertext)
+                output.fd.sync()
+            }
+            try {
+                Files.move(
+                    temporary.toPath(),
+                    destination.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temporary.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
     }
 
-    override fun read(alias: String): ByteArray? =
-        preferences.getString(alias, null)?.let { Base64.decode(it, Base64.NO_WRAP) }
+    override fun read(alias: String): ByteArray? = file(alias).takeIf(File::isFile)?.readBytes()
 
     override fun delete(alias: String) {
-        check(preferences.edit().remove(alias).commit())
+        val file = file(alias)
+        if (file.exists()) check(file.delete())
     }
 
+    private fun file(alias: String): File {
+        val digest = MessageDigest.getInstance("SHA-256").digest(alias.toByteArray(Charsets.UTF_8))
+        val name = digest.joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        digest.fill(0)
+        return File(rootDirectory, "$name.blob")
+    }
+}
+
+/** Compatibility name retained for app assembly; blobs now live in Android's no-backup area. */
+class SharedPreferencesCredentialBlobStore(context: Context) : CredentialBlobStore {
+    private val delegate = FileCredentialBlobStore(File(context.noBackupFilesDir, DIRECTORY_NAME))
+    val rootDirectory: File get() = delegate.rootDirectory
+
+    override fun write(alias: String, ciphertext: ByteArray) = delegate.write(alias, ciphertext)
+    override fun read(alias: String): ByteArray? = delegate.read(alias)
+    override fun delete(alias: String) = delegate.delete(alias)
+
     private companion object {
-        const val PREFERENCES_NAME = "cleartune_webdav_credentials"
+        const val DIRECTORY_NAME = "cleartune_webdav_credentials"
     }
 }
 
