@@ -16,6 +16,8 @@ import com.cleartune.core.model.Track
 import com.cleartune.core.model.TrackLocation
 import com.cleartune.core.model.QueueCommand
 import com.cleartune.core.model.PlaylistCommand
+import com.cleartune.core.model.PlaylistId
+import com.cleartune.core.model.PlaylistItemId
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -201,6 +203,43 @@ class RoomLibraryTransactionTest {
         }.onSuccess { error("Expected foreign-key failure") }
 
         assertNull(database.libraryReadDao().track(trackId.value))
+    }
+
+    @Test
+    fun removing_current_queue_item_preserves_shuffle_order_and_resets_position() = runBlocking {
+        repository.applyLocalSnapshot(SOURCE, "Local music", listOf(record()), 100)
+        val trackId = repository.observeSongs().first().single().id
+        val ids = ArrayDeque(listOf("first", "second", "third"))
+        val queueRepository = RoomQueueRepository(database, idFactory = { ids.removeFirst() }, clock = { 200 })
+        queueRepository.apply(QueueCommand.Replace(listOf(trackId, trackId, trackId), startIndex = 1))
+        database.playbackDao().upsertPlaybackState(
+            database.playbackDao().playbackState()!!.copy(
+                positionMs = 999,
+                shuffleEnabled = true,
+                shuffleOrder = "third\u001ffirst\u001fsecond",
+            ),
+        )
+
+        queueRepository.apply(QueueCommand.Remove(com.cleartune.core.model.QueueItemId("second")))
+
+        val state = database.playbackDao().playbackState()!!
+        assertEquals(0L, state.positionMs)
+        assertEquals("third\u001ffirst", state.shuffleOrder)
+    }
+
+    @Test
+    fun playlist_remove_cannot_delete_an_item_from_another_playlist() = runBlocking {
+        repository.applyLocalSnapshot(SOURCE, "Local music", listOf(record()), 100)
+        val trackId = repository.observeSongs().first().single().id
+        val ids = ArrayDeque(listOf("playlist-a", "playlist-b", "item-a"))
+        val playlists = RoomPlaylistRepository(database, idFactory = { ids.removeFirst() }, clock = { 200 })
+        playlists.apply(PlaylistCommand.Create("A"))
+        playlists.apply(PlaylistCommand.Create("B"))
+        playlists.apply(PlaylistCommand.AddTrack(PlaylistId("playlist-a"), trackId))
+
+        playlists.apply(PlaylistCommand.RemoveTrack(PlaylistId("playlist-b"), PlaylistItemId("item-a")))
+
+        assertEquals(1, database.playlistDao().items("playlist-a").size)
     }
 
     private fun RoomLibraryRepository.observeSongs() = observeSongs(com.cleartune.core.model.SongQuery())

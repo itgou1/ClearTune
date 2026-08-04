@@ -31,7 +31,8 @@ interface PlaylistDao {
 
     @Upsert suspend fun upsertPlaylist(playlist: PlaylistEntity)
     @Upsert suspend fun upsertItems(items: List<PlaylistTrackCrossRef>)
-    @Query("DELETE FROM playlist_tracks WHERE id = :itemId") suspend fun deleteItem(itemId: String): Int
+    @Query("DELETE FROM playlist_tracks WHERE id = :itemId AND playlistId = :playlistId")
+    suspend fun deleteItem(playlistId: String, itemId: String): Int
     @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId") suspend fun clearItems(playlistId: String): Int
     @Query("DELETE FROM playlists WHERE id = :playlistId") suspend fun deletePlaylist(playlistId: String): Int
 }

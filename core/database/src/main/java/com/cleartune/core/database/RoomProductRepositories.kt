@@ -56,6 +56,12 @@ class RoomQueueRepository(
         val existingItems = dao.queueItems().toMutableList()
         val existingState = dao.playbackState() ?: defaultPlaybackState()
         var currentIndex = existingState.currentIndex
+        val existingCurrentItemId = existingItems.getOrNull(currentIndex)?.id
+        val existingQueueOrder = existingItems.map(PlaybackQueueItemEntity::id)
+        val existingShuffleOrder = reconcileShuffleOrder(
+            existingOrder = existingState.shuffleOrder.split(SHUFFLE_SEPARATOR).filter(String::isNotBlank),
+            queueOrder = existingQueueOrder,
+        )
         val nextItems = when (command) {
             is QueueCommand.Replace -> {
                 if (command.trackIds.isEmpty()) {
@@ -110,6 +116,22 @@ class RoomQueueRepository(
             }
         }.mapIndexed { index, item -> item.copy(position = index) }
 
+        val nextQueueOrder = nextItems.map(PlaybackQueueItemEntity::id)
+        val proposedShuffleOrder = when (command) {
+            is QueueCommand.Replace -> nextQueueOrder
+            is QueueCommand.AddNext -> {
+                val addedId = nextQueueOrder.first { it !in existingQueueOrder }
+                val insertionIndex = (existingShuffleOrder.indexOf(existingCurrentItemId) + 1)
+                    .coerceIn(0, existingShuffleOrder.size)
+                existingShuffleOrder.toMutableList().apply { add(insertionIndex, addedId) }
+            }
+            is QueueCommand.AddLast -> existingShuffleOrder + nextQueueOrder.filterNot(existingQueueOrder::contains)
+            is QueueCommand.Remove -> existingShuffleOrder.filterNot { it == command.queueItemId.value }
+            is QueueCommand.Move -> existingShuffleOrder
+        }
+        val nextShuffleOrder = reconcileShuffleOrder(proposedShuffleOrder, nextQueueOrder)
+        val removedCurrentItem = command is QueueCommand.Remove && command.queueItemId.value == existingCurrentItemId
+
         dao.upsertQueue(PlaybackQueueEntity(PlaybackDao.DEFAULT_QUEUE_ID, clock()))
         dao.clearQueueItems()
         if (nextItems.isNotEmpty()) dao.upsertQueueItems(nextItems)
@@ -118,9 +140,9 @@ class RoomQueueRepository(
             existingState.copy(
                 queueId = PlaybackDao.DEFAULT_QUEUE_ID,
                 currentIndex = currentIndex,
-                positionMs = if (replacing) 0 else existingState.positionMs,
+                positionMs = if (replacing || removedCurrentItem) 0 else existingState.positionMs,
                 playWhenReady = if (replacing) false else existingState.playWhenReady,
-                shuffleOrder = nextItems.joinToString(SHUFFLE_SEPARATOR) { it.id },
+                shuffleOrder = nextShuffleOrder.joinToString(SHUFFLE_SEPARATOR),
             ),
         )
     }
@@ -175,7 +197,7 @@ class RoomPlaylistRepository(
                     ),
                 )
             }
-            is PlaylistCommand.RemoveTrack -> dao.deleteItem(command.playlistItemId.value)
+            is PlaylistCommand.RemoveTrack -> dao.deleteItem(command.playlistId.value, command.playlistItemId.value)
             is PlaylistCommand.MoveTrack -> {
                 val items = dao.items(command.playlistId.value).toMutableList()
                 require(command.newIndex in items.indices)
@@ -216,3 +238,10 @@ private fun AppSettingsEntity.toDomain() = AppSettings(
     reducedMotionMode = runCatching { ReducedMotionMode.valueOf(reducedMotionMode) }
         .getOrDefault(ReducedMotionMode.SYSTEM),
 )
+
+internal fun reconcileShuffleOrder(existingOrder: List<String>, queueOrder: List<String>): List<String> {
+    val queueIds = queueOrder.toHashSet()
+    val retained = existingOrder.filterTo(linkedSetOf()) { it in queueIds }
+    queueOrder.forEach(retained::add)
+    return retained.toList()
+}
