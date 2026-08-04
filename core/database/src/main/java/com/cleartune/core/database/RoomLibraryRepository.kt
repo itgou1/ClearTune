@@ -9,6 +9,7 @@ import com.cleartune.core.database.dao.LibraryReadDao
 import com.cleartune.core.database.dao.LibraryWriteDao
 import com.cleartune.core.database.dao.SourceDao
 import com.cleartune.core.database.entity.MusicSourceEntity
+import com.cleartune.core.database.entity.SyncSessionEntity
 import com.cleartune.core.database.model.AlbumRow
 import com.cleartune.core.database.model.ArtistRow
 import com.cleartune.core.database.model.FolderRow
@@ -58,6 +59,20 @@ interface LibraryBrowseStore {
     fun observeFolderTracks(relativeFolder: String): Flow<List<TrackSummary>>
 }
 
+interface SyncSessionStore {
+    suspend fun recordSyncSession(
+        sessionId: String,
+        sourceId: SourceId,
+        startedAtEpochMs: Long,
+        completedAtEpochMs: Long?,
+        phase: String,
+        processed: Int = 0,
+        total: Int = 0,
+        warningCount: Int = 0,
+        errorMessage: String? = null,
+    )
+}
+
 class RoomLibraryRepository(
     private val readDao: LibraryReadDao,
     private val writeDao: LibraryWriteDao,
@@ -68,7 +83,8 @@ class RoomLibraryRepository(
     SourceRepository,
     SourceWriteGateway,
     LibrarySnapshotStore,
-    LibraryBrowseStore {
+    LibraryBrowseStore,
+    SyncSessionStore {
 
     constructor(database: ClearTuneDatabase) : this(
         database.libraryReadDao(),
@@ -200,6 +216,30 @@ class RoomLibraryRepository(
         rows.filter { row -> row.belongsToFolder(relativeFolder) }
             .map(LibraryTrackRow::toTrackSummary)
     }
+
+    override suspend fun recordSyncSession(
+        sessionId: String,
+        sourceId: SourceId,
+        startedAtEpochMs: Long,
+        completedAtEpochMs: Long?,
+        phase: String,
+        processed: Int,
+        total: Int,
+        warningCount: Int,
+        errorMessage: String?,
+    ) = writeDao.upsertSyncSession(
+        SyncSessionEntity(
+            id = sessionId,
+            sourceId = sourceId.value,
+            startedAtEpochMs = startedAtEpochMs,
+            completedAtEpochMs = completedAtEpochMs,
+            phase = phase,
+            processed = processed,
+            total = total,
+            warningCount = warningCount,
+            errorMessage = errorMessage,
+        ),
+    )
 }
 
 private fun MusicSourceEntity.toDomain(): MusicSource = MusicSource(

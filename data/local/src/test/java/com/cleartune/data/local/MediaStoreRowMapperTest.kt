@@ -81,4 +81,42 @@ class MediaStoreRowMapperTest {
             ),
         )
     }
+
+    @Test
+    fun damaged_music_rows_with_a_stable_id_retain_the_previous_location() {
+        val missingName = row(id = 10, displayName = null, mimeType = null)
+        val invalidSize = row(id = 11, displayName = "track.mp3", sizeBytes = -1, mimeType = "application/octet-stream")
+
+        assertEquals(true, mapper.shouldRetainPreviousOnMappingFailure(missingName))
+        assertEquals(true, mapper.shouldRetainPreviousOnMappingFailure(invalidSize))
+    }
+
+    @Test
+    fun conclusively_unsupported_rows_do_not_retain_previous_locations() {
+        assertEquals(
+            false,
+            mapper.shouldRetainPreviousOnMappingFailure(
+                row(id = 12, displayName = "notes.pdf", mimeType = "application/pdf"),
+            ),
+        )
+    }
+
+    private fun row(
+        id: Long,
+        displayName: String?,
+        sizeBytes: Long = 10,
+        mimeType: String?,
+    ) = MediaStoreRow(
+        id = id,
+        displayName = displayName,
+        relativePath = "Music",
+        dataPath = null,
+        title = null,
+        album = null,
+        artist = null,
+        durationMs = null,
+        sizeBytes = sizeBytes,
+        modifiedEpochSeconds = 1,
+        mimeType = mimeType,
+    )
 }

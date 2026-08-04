@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "27c8795d7d3fae4f8d3d59dbfe9142f3",
+    "identityHash": "cd3eb73804c923873795ef23104da7a3",
     "entities": [
       {
         "tableName": "music_sources",
@@ -644,7 +644,7 @@
       },
       {
         "tableName": "playback_history",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `trackId` TEXT NOT NULL, `playedAtEpochMs` INTEGER NOT NULL, FOREIGN KEY(`trackId`) REFERENCES `tracks`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `trackId` TEXT NOT NULL, `playedAtEpochMs` INTEGER NOT NULL, `completed` INTEGER NOT NULL, FOREIGN KEY(`trackId`) REFERENCES `tracks`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -661,6 +661,12 @@
           {
             "fieldPath": "playedAtEpochMs",
             "columnName": "playedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completed",
+            "columnName": "completed",
             "affinity": "INTEGER",
             "notNull": true
           }
@@ -707,7 +713,7 @@
       },
       {
         "tableName": "downloads",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `trackId` TEXT NOT NULL, `state` TEXT NOT NULL, `bytesDownloaded` INTEGER NOT NULL, `totalBytes` INTEGER, `finalPath` TEXT, `errorMessage` TEXT, `updatedAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`trackId`) REFERENCES `tracks`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `trackId` TEXT NOT NULL, `state` TEXT NOT NULL, `bytesDownloaded` INTEGER NOT NULL, `totalBytes` INTEGER, `etag` TEXT, `partialPath` TEXT, `finalPath` TEXT, `errorMessage` TEXT, `updatedAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`trackId`) REFERENCES `tracks`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -737,6 +743,16 @@
             "fieldPath": "totalBytes",
             "columnName": "totalBytes",
             "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "etag",
+            "columnName": "etag",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "partialPath",
+            "columnName": "partialPath",
+            "affinity": "TEXT"
           },
           {
             "fieldPath": "finalPath",
@@ -911,7 +927,7 @@
       },
       {
         "tableName": "playback_state",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `queueId` TEXT NOT NULL, `currentIndex` INTEGER NOT NULL, `positionMs` INTEGER NOT NULL, `playWhenReady` INTEGER NOT NULL, `repeatMode` TEXT NOT NULL, `shuffleEnabled` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`queueId`) REFERENCES `playback_queues`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `queueId` TEXT NOT NULL, `currentIndex` INTEGER NOT NULL, `positionMs` INTEGER NOT NULL, `playWhenReady` INTEGER NOT NULL, `repeatMode` TEXT NOT NULL, `shuffleEnabled` INTEGER NOT NULL, `shuffleOrder` TEXT NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`queueId`) REFERENCES `playback_queues`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -953,6 +969,12 @@
             "fieldPath": "shuffleEnabled",
             "columnName": "shuffleEnabled",
             "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "shuffleOrder",
+            "columnName": "shuffleOrder",
+            "affinity": "TEXT",
             "notNull": true
           }
         ],
@@ -1020,7 +1042,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '27c8795d7d3fae4f8d3d59dbfe9142f3')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'cd3eb73804c923873795ef23104da7a3')"
     ]
   }
 }

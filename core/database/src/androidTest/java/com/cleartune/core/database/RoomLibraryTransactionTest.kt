@@ -14,10 +14,13 @@ import com.cleartune.core.model.SourceMutation
 import com.cleartune.core.model.SourceType
 import com.cleartune.core.model.Track
 import com.cleartune.core.model.TrackLocation
+import com.cleartune.core.model.QueueCommand
+import com.cleartune.core.model.PlaylistCommand
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -127,6 +130,77 @@ class RoomLibraryTransactionTest {
         repository.applyLocalSnapshot(SOURCE, "本地音乐", listOf(record(title = "Renamed")), 200)
 
         assertEquals(2, database.libraryReadDao().playableLocations(trackId.value).size)
+    }
+
+    @Test
+    fun cross_source_upsert_updates_search_and_orphan_removal_cleans_it() = runBlocking {
+        val remoteSource = SourceId("webdav-home")
+        repository.applySourceMutation(
+            SourceMutation.Upsert(MusicSource(remoteSource, "Remote", SourceType.WEBDAV, baseUrl = "https://example.test/")),
+        )
+        val trackId = com.cleartune.core.model.TrackId("remote-track")
+        repository.applyLibraryMutation(
+            LibraryMutation.Upsert(
+                sourceId = remoteSource,
+                tracks = listOf(Track(trackId, "Aurora Signal")),
+                locations = listOf(
+                    TrackLocation(
+                        LocationId("remote-location"), trackId, remoteSource, "Music/Aurora.mp3",
+                        LocationType.REMOTE_URL, "https://example.test/Music/Aurora.mp3",
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(trackId, repository.search("Aurora").first().songs.single().id)
+        repository.applyLibraryMutation(LibraryMutation.RetainSourceKeys(remoteSource, emptySet()))
+        assertEquals(emptyList<com.cleartune.core.model.TrackSummary>(), repository.search("Aurora").first().songs)
+    }
+
+    @Test
+    fun queue_and_playlist_contract_adapters_persist_commands() = runBlocking {
+        repository.applyLocalSnapshot(SOURCE, "Local music", listOf(record()), 100)
+        val trackId = repository.observeSongs().first().single().id
+        val queueRepository = RoomQueueRepository(database, idFactory = { "queue-item-1" }, clock = { 200 })
+        val playlistRepository = RoomPlaylistRepository(database, idFactory = { "playlist-id" }, clock = { 200 })
+
+        queueRepository.apply(QueueCommand.Replace(listOf(trackId)))
+        playlistRepository.apply(PlaylistCommand.Create("Favorites"))
+        val playlistId = playlistRepository.observePlaylists().first().single().id
+        playlistRepository.apply(PlaylistCommand.AddTrack(playlistId, trackId))
+
+        assertEquals(trackId, queueRepository.observeQueue().first().items.single().trackId)
+        assertEquals(1, playlistRepository.observePlaylists().first().single().trackCount)
+    }
+
+    @Test
+    fun failed_cross_source_mutation_rolls_back_all_prior_writes() = runBlocking {
+        val remoteSource = SourceId("webdav-home")
+        repository.applySourceMutation(
+            SourceMutation.Upsert(MusicSource(remoteSource, "Remote", SourceType.WEBDAV, baseUrl = "https://example.test/")),
+        )
+        val trackId = com.cleartune.core.model.TrackId("would-be-rolled-back")
+
+        runCatching {
+            repository.applyLibraryMutation(
+                LibraryMutation.Upsert(
+                    sourceId = remoteSource,
+                    tracks = listOf(Track(trackId, "Transient")),
+                    locations = listOf(
+                        TrackLocation(
+                            LocationId("invalid-location"),
+                            com.cleartune.core.model.TrackId("missing-track"),
+                            remoteSource,
+                            "missing.mp3",
+                            LocationType.REMOTE_URL,
+                            "https://example.test/missing.mp3",
+                        ),
+                    ),
+                ),
+            )
+        }.onSuccess { error("Expected foreign-key failure") }
+
+        assertNull(database.libraryReadDao().track(trackId.value))
     }
 
     private fun RoomLibraryRepository.observeSongs() = observeSongs(com.cleartune.core.model.SongQuery())

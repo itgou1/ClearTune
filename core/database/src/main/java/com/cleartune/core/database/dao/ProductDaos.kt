@@ -23,9 +23,16 @@ interface PlaylistDao {
     @Query("SELECT * FROM playlist_tracks WHERE playlistId = :playlistId ORDER BY position")
     fun observeItems(playlistId: String): Flow<List<PlaylistTrackCrossRef>>
 
+    @Query("SELECT * FROM playlists WHERE id = :playlistId LIMIT 1")
+    suspend fun playlist(playlistId: String): PlaylistEntity?
+
+    @Query("SELECT * FROM playlist_tracks WHERE playlistId = :playlistId ORDER BY position")
+    suspend fun items(playlistId: String): List<PlaylistTrackCrossRef>
+
     @Upsert suspend fun upsertPlaylist(playlist: PlaylistEntity)
     @Upsert suspend fun upsertItems(items: List<PlaylistTrackCrossRef>)
     @Query("DELETE FROM playlist_tracks WHERE id = :itemId") suspend fun deleteItem(itemId: String): Int
+    @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId") suspend fun clearItems(playlistId: String): Int
     @Query("DELETE FROM playlists WHERE id = :playlistId") suspend fun deletePlaylist(playlistId: String): Int
 }
 
@@ -49,8 +56,17 @@ interface PlaybackDao {
     @Query("SELECT * FROM playback_queue_items WHERE queueId = :queueId ORDER BY position")
     fun observeQueueItems(queueId: String = DEFAULT_QUEUE_ID): Flow<List<PlaybackQueueItemEntity>>
 
+    @Query("SELECT * FROM playback_queues WHERE id = :queueId LIMIT 1")
+    suspend fun queue(queueId: String = DEFAULT_QUEUE_ID): PlaybackQueueEntity?
+
+    @Query("SELECT * FROM playback_queue_items WHERE queueId = :queueId ORDER BY position")
+    suspend fun queueItems(queueId: String = DEFAULT_QUEUE_ID): List<PlaybackQueueItemEntity>
+
     @Query("SELECT * FROM playback_state WHERE id = 0 LIMIT 1")
     fun observePlaybackState(): Flow<PlaybackStateEntity?>
+
+    @Query("SELECT * FROM playback_state WHERE id = 0 LIMIT 1")
+    suspend fun playbackState(): PlaybackStateEntity?
 
     @Query("SELECT * FROM playback_history ORDER BY playedAtEpochMs DESC LIMIT :limit")
     fun observeRecentHistory(limit: Int): Flow<List<PlaybackHistoryEntity>>
@@ -68,6 +84,9 @@ interface PlaybackDao {
 interface SettingsDao {
     @Query("SELECT * FROM app_settings WHERE id = 0 LIMIT 1")
     fun observeSettings(): Flow<AppSettingsEntity?>
+
+    @Query("SELECT * FROM app_settings WHERE id = 0 LIMIT 1")
+    suspend fun settings(): AppSettingsEntity?
 
     @Upsert suspend fun upsert(settings: AppSettingsEntity)
 }

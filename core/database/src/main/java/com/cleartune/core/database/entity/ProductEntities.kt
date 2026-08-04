@@ -37,6 +37,7 @@ data class PlaybackHistoryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val trackId: String,
     val playedAtEpochMs: Long,
+    val completed: Boolean,
 )
 
 @Entity(
@@ -50,6 +51,8 @@ data class DownloadEntity(
     val state: String,
     val bytesDownloaded: Long,
     val totalBytes: Long?,
+    val etag: String?,
+    val partialPath: String?,
     val finalPath: String?,
     val errorMessage: String?,
     val updatedAtEpochMs: Long,
@@ -89,6 +92,7 @@ data class PlaybackStateEntity(
     val playWhenReady: Boolean,
     val repeatMode: String,
     val shuffleEnabled: Boolean,
+    val shuffleOrder: String,
 ) {
     companion object { const val SINGLETON_ID = 0 }
 }

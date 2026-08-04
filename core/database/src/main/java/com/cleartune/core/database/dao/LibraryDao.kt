@@ -142,6 +142,9 @@ abstract class LibraryWriteDao {
     @Query("DELETE FROM tracks WHERE NOT EXISTS (SELECT 1 FROM track_locations l WHERE l.trackId = tracks.id)")
     abstract suspend fun deleteOrphanTracks(): Int
 
+    @Query("SELECT id FROM tracks WHERE NOT EXISTS (SELECT 1 FROM track_locations l WHERE l.trackId = tracks.id)")
+    abstract suspend fun orphanTrackIds(): List<String>
+
     @Transaction
     open suspend fun applySourceSnapshot(
         sourceId: SourceId,
@@ -233,7 +236,7 @@ abstract class LibraryWriteDao {
             sourceId = sourceId.value,
             retainedKeys = retainedSourceKeys,
         )
-        deleteOrphanTracks()
+        deleteOrphanTracksAndSearch()
         upsertSyncSession(
             SyncSessionEntity(
                 id = "${sourceId.value}:$syncedAtEpochMs",
@@ -264,6 +267,15 @@ abstract class LibraryWriteDao {
                         addedAtEpochMs = track.addedAtEpochMs,
                     ),
                 )
+                deleteSearch(track.id.value)
+                insertSearch(
+                    TrackSearchFtsEntity(
+                        trackId = track.id.value,
+                        title = track.title,
+                        albumTitle = track.albumId?.value?.let { albumTitle(it) }.orEmpty(),
+                        artistNames = artistNames(track.id.value).joinToString(" "),
+                    ),
+                )
             }
             mutation.locations.forEach { location ->
                 upsertLocation(
@@ -287,9 +299,14 @@ abstract class LibraryWriteDao {
         }
         is LibraryMutation.RetainSourceKeys -> {
             val removed = deleteMissingSourceKeys(mutation.sourceId.value, mutation.retainedSourceKeys)
-            deleteOrphanTracks()
+            deleteOrphanTracksAndSearch()
             MutationResult(removed = removed)
         }
+    }
+
+    private suspend fun deleteOrphanTracksAndSearch(): Int {
+        orphanTrackIds().forEach { trackId -> deleteSearch(trackId) }
+        return deleteOrphanTracks()
     }
 
     private suspend fun deleteMissingSourceKeys(sourceId: String, retainedKeys: Collection<String>): Int =

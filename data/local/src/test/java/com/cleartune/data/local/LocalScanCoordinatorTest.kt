@@ -48,6 +48,7 @@ class LocalScanCoordinatorTest {
         assertFalse(gatewayRead)
         assertEquals(LocalScanOutcome.PERMISSION_REQUIRED, result.outcome)
         assertEquals(0, store.applyCount)
+        assertEquals(listOf("PERMISSION_REQUIRED"), store.sessionPhases)
     }
 
     @Test
@@ -64,6 +65,7 @@ class LocalScanCoordinatorTest {
 
         assertEquals(LocalScanOutcome.FAILED, result.outcome)
         assertEquals(0, store.applyCount)
+        assertEquals(listOf("RUNNING", "FAILED"), store.sessionPhases)
     }
 
     @Test
@@ -99,13 +101,14 @@ class LocalScanCoordinatorTest {
     )
 }
 
-private class RecordingSnapshotStore : LibrarySnapshotStore {
+private class RecordingSnapshotStore : LibrarySnapshotStore, com.cleartune.core.database.SyncSessionStore {
     var applyCount = 0
     var records = emptyList<LibraryIngestRecord>()
     var sourceName = ""
     var syncedAtEpochMs = -1L
     var warningCount = -1
     var retainedSourceKeys = emptySet<String>()
+    val sessionPhases = mutableListOf<String>()
 
     override suspend fun applyLocalSnapshot(
         sourceId: SourceId,
@@ -122,5 +125,19 @@ private class RecordingSnapshotStore : LibrarySnapshotStore {
         this.warningCount = warningCount
         this.retainedSourceKeys = retainedSourceKeys
         return MutationResult(inserted = records.size)
+    }
+
+    override suspend fun recordSyncSession(
+        sessionId: String,
+        sourceId: SourceId,
+        startedAtEpochMs: Long,
+        completedAtEpochMs: Long?,
+        phase: String,
+        processed: Int,
+        total: Int,
+        warningCount: Int,
+        errorMessage: String?,
+    ) {
+        sessionPhases += phase
     }
 }

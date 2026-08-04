@@ -27,8 +27,15 @@ class MediaStoreRowMapper {
         )
     }
 
-    fun shouldRetainPreviousOnMappingFailure(row: MediaStoreRow): Boolean =
-        row.id >= 0 && row.mimeType?.substringBefore(';')?.trim()?.startsWith("audio/", ignoreCase = true) == true
+    fun shouldRetainPreviousOnMappingFailure(row: MediaStoreRow): Boolean {
+        if (row.id < 0) return false
+        val displayName = row.displayName?.trim().orEmpty()
+        if (displayName.isBlank() || row.sizeBytes < 0) return true
+        val extension = displayName.substringAfterLast('.', "").lowercase()
+        val normalizedMime = row.mimeType?.substringBefore(';')?.trim()?.lowercase()
+        val mimeIsUnknown = normalizedMime == null || normalizedMime in GENERIC_MIME_TYPES
+        return extension in SUPPORTED_EXTENSIONS || normalizedMime in SUPPORTED_MIME_TYPES || mimeIsUnknown
+    }
 
     private fun isSupported(displayName: String, mimeType: String?): Boolean {
         val extension = displayName.substringAfterLast('.', "").lowercase()
@@ -45,6 +52,7 @@ class MediaStoreRowMapper {
 
     companion object {
         private val SUPPORTED_EXTENSIONS = setOf("mp3", "flac", "m4a", "aac", "ogg", "opus", "wav")
+        private val GENERIC_MIME_TYPES = setOf("", "application/octet-stream", "binary/octet-stream")
         private val SUPPORTED_MIME_TYPES = setOf(
             "audio/mpeg",
             "audio/flac",
