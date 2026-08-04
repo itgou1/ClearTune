@@ -165,7 +165,7 @@ class PlaybackCoordinator(
             )
         }
         if (resolved.isEmpty()) return false
-        val recovery = (queueRepository as? PersistentQueueRepository)?.recoveryState()
+        val recovery = (queueRepository as? PlaybackQueueRecoveryProvider)?.recoveryState()
         val occurrenceOrder = if (queue.shuffleEnabled) {
             recovery?.shuffleOrder.orEmpty()
         } else {
@@ -219,7 +219,7 @@ class PlaybackCoordinator(
                 )
             }
             if (resolved.isNotEmpty()) {
-                val recovery = (queueRepository as? PersistentQueueRepository)?.recoveryState()
+                val recovery = (queueRepository as? PlaybackQueueRecoveryProvider)?.recoveryState()
                 val persistedOrder = if (enabled) recovery?.shuffleOrder.orEmpty() else queue.items.map { it.id }
                 val orderedIds = persistedOrder.filter { it in resolved } +
                     resolved.keys.filterNot { it in persistedOrder }
@@ -330,7 +330,7 @@ class PlaybackCoordinator(
         val queue = queueRepository.observeQueue().first()
         if (next) backend.next() else backend.previous()
         if (queue.items.isEmpty()) return
-        val recovery = (queueRepository as? PersistentQueueRepository)?.recoveryState()
+        val recovery = (queueRepository as? PlaybackQueueRecoveryProvider)?.recoveryState()
         val order = if (queue.shuffleEnabled) {
             recovery?.shuffleOrder.orEmpty().ifEmpty { queue.items.map { it.id } }
         } else {

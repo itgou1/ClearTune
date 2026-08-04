@@ -23,6 +23,7 @@ class SourceControllerTest {
         assertEquals(SourceRoute.Edit(SourceId("s 1")), SourceRoute.parse("sources/s%201/edit"))
         assertEquals(SourceRoute.Root(SourceId("s1")), SourceRoute.parse("sources/s1"))
         assertEquals(SourceRoute.Browse(SourceId("s1"), "album/live"), SourceRoute.parse("sources/s1/browse/album%2Flive"))
+        assertEquals(SourceRoute.Browse(SourceId("s1"), ""), SourceRoute.parse(SourceRoute.Browse(SourceId("s1"), "").encoded()))
     }
 
     @Test

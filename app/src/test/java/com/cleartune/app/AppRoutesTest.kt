@@ -21,6 +21,31 @@ class AppRoutesTest {
         assertEquals("library", AppRoutes.Library)
         assertFalse(AppRoutes.all.contains("bottom_navigation"))
         assertEquals(AppRoutes.all.size, AppRoutes.all.distinct().size)
+        assertEquals(
+            setOf(
+                "library",
+                "library/songs",
+                "library/albums",
+                "library/albums/{albumId}",
+                "library/artists",
+                "library/artists/{artistId}",
+                "library/folders",
+                "library/folders/{folderPath}",
+                "library/search",
+                "player",
+                "playlists",
+                "playlists/{playlistId}",
+                "sources",
+                "sources/add-webdav",
+                "sources/{sourceId}",
+                "sources/{sourceId}/edit",
+                "sources/{sourceId}/browse",
+                "sources/{sourceId}/browse/{relativePath}",
+                "downloads",
+                "settings",
+            ),
+            AppRoutes.all.toSet(),
+        )
     }
 
     @Test
@@ -36,6 +61,23 @@ class AppRoutesTest {
         assertEquals(AppRoutes.Library, AppRoutes.restore("removed-destination"))
         assertTrue(AppRoutes.restorable.contains(AppRoutes.Player))
         assertTrue(AppRoutes.restorable.contains(AppRoutes.Settings))
+    }
+
+    @Test
+    fun `library and source detail routes preserve saved arguments`() {
+        val album = AppRoutes.albumDetail("album / live")
+        val artist = AppRoutes.artistDetail("artist / guest")
+        val folder = AppRoutes.folder("Music/Live Sets")
+        val source = AppRoutes.sourceBrowse("remote 1", "Albums/Live")
+
+        assertEquals("album / live", AppRoutes.albumId(album))
+        assertEquals("artist / guest", AppRoutes.artistId(artist))
+        assertEquals("Music/Live Sets", AppRoutes.folderPath(folder))
+        assertEquals("remote 1" to "Albums/Live", AppRoutes.sourceBrowseArgs(source))
+        assertEquals(album, AppRoutes.restore(album))
+        assertEquals(artist, AppRoutes.restore(artist))
+        assertEquals(folder, AppRoutes.restore(folder))
+        assertEquals(source, AppRoutes.restore(source))
     }
 
     @Test

@@ -37,7 +37,9 @@ class ClearTunePlaybackService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
 
-        val callback = ClearTuneLibrarySessionCallback()
+        val catalog = (application as? LibrarySessionCatalogOwner)?.librarySessionCatalog
+            ?: LibrarySessionCatalog.Empty
+        val callback = ClearTuneLibrarySessionCallback(catalog)
         librarySession = MediaLibrarySession.Builder(this, player, callback)
             .apply { launcherPendingIntent()?.let(::setSessionActivity) }
             .build()

@@ -34,6 +34,10 @@ interface PlaybackQueueStateWriter {
     )
 }
 
+interface PlaybackQueueRecoveryProvider {
+    suspend fun recoveryState(): QueueRecoveryState
+}
+
 class PersistentQueueRepository(
     private val storage: QueueStorage,
     private val createShuffleOrder: (List<QueueItemId>) -> List<QueueItemId> = { occurrences ->
@@ -44,7 +48,7 @@ class PersistentQueueRepository(
         }
     },
     private val createId: () -> QueueItemId = { QueueItemId(UUID.randomUUID().toString()) },
-) : QueueRepository, PlaybackQueueStateWriter {
+) : QueueRepository, PlaybackQueueStateWriter, PlaybackQueueRecoveryProvider {
     private val mutex = Mutex()
     private var recovery = normalize(storage.loadRecovery() ?: QueueRecoveryState(QueueSnapshot()))
     private val queue = MutableStateFlow(recovery.snapshot)
@@ -75,7 +79,7 @@ class PersistentQueueRepository(
         )
     }
 
-    fun recoveryState(): QueueRecoveryState = recovery
+    override suspend fun recoveryState(): QueueRecoveryState = recovery
 
     private fun setAndSave(snapshot: QueueSnapshot) {
         val next = normalize(QueueRecoveryState(snapshot, recovery.shuffleOrder))

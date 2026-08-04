@@ -1,52 +1,52 @@
 package com.cleartune.app
 
+import android.Manifest
 import android.animation.ValueAnimator
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Card
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.NavType
 import androidx.navigation.navArgument
-import com.cleartune.core.designsystem.theme.ClearTuneDimensions
 import com.cleartune.core.designsystem.theme.ClearTuneTheme
-import com.cleartune.core.model.ThemeMode
-import com.cleartune.core.model.PlaylistId
-import com.cleartune.core.model.QueueCommand
-import com.cleartune.core.model.QueueItemId
-import com.cleartune.core.contracts.QueueRepository
 import com.cleartune.core.model.DownloadCommand
 import com.cleartune.core.model.DownloadState
-import com.cleartune.core.model.SongQuery
+import com.cleartune.core.model.PlaybackCommand
+import com.cleartune.core.model.PlaylistId
+import com.cleartune.core.model.QueueItemId
+import com.cleartune.core.model.ThemeMode
+import com.cleartune.core.contracts.QueueRepository
 import com.cleartune.feature.downloads.DownloadsFeatureDependencies
 import com.cleartune.feature.downloads.DownloadsFeatureEntry
 import com.cleartune.feature.library.LibraryFeatureDependencies
 import com.cleartune.feature.library.LibraryFeatureEntry
+import com.cleartune.feature.library.LibraryFeatureUiInputs
+import com.cleartune.feature.library.LibraryRoutes
+import com.cleartune.feature.library.LibrarySyncUiState
+import com.cleartune.feature.library.LocalAccessUiState
 import com.cleartune.feature.player.MiniPlayer
 import com.cleartune.feature.player.PlayerFeatureDependencies
 import com.cleartune.feature.player.PlayerFeatureEntry
@@ -56,39 +56,79 @@ import com.cleartune.feature.playlists.PlaylistsFeatureEntry
 import com.cleartune.feature.settings.SettingsFeatureDependencies
 import com.cleartune.feature.settings.SettingsFeatureEntry
 import com.cleartune.feature.settings.isReducedMotionEnabled
+import com.cleartune.feature.sources.SourceRoute
 import com.cleartune.feature.sources.SourcesFeatureDependencies
 import com.cleartune.feature.sources.SourcesFeatureEntry
+import com.cleartune.playback.PlaybackQueueStateWriter
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
-import com.cleartune.playback.PlaybackQueueStateWriter
+import kotlinx.coroutines.flow.map
 
 object AppRoutes {
     const val Library = "library"
-    const val LibraryDetail = "library/detail"
+    const val LibrarySongs = "library/songs"
+    const val LibraryAlbums = "library/albums"
+    const val LibraryAlbumDetail = "library/albums/{albumId}"
+    const val LibraryArtists = "library/artists"
+    const val LibraryArtistDetail = "library/artists/{artistId}"
+    const val LibraryFolders = "library/folders"
+    const val LibraryFolderDetail = "library/folders/{folderPath}"
+    const val LibrarySearch = "library/search"
     const val Player = "player"
     const val Playlists = "playlists"
     const val PlaylistDetail = "playlists/{playlistId}"
     const val Sources = "sources"
+    const val SourceAdd = "sources/add-webdav"
+    const val SourceDetail = "sources/{sourceId}"
+    const val SourceEdit = "sources/{sourceId}/edit"
+    const val SourceBrowseRoot = "sources/{sourceId}/browse"
+    const val SourceBrowse = "sources/{sourceId}/browse/{relativePath}"
     const val Downloads = "downloads"
     const val Settings = "settings"
-    val all = listOf(Library, LibraryDetail, Player, Playlists, Sources, Downloads, Settings)
+
+    val all = listOf(
+        Library, LibrarySongs, LibraryAlbums, LibraryAlbumDetail, LibraryArtists, LibraryArtistDetail,
+        LibraryFolders, LibraryFolderDetail, LibrarySearch, Player, Playlists, PlaylistDetail,
+        Sources, SourceAdd, SourceDetail, SourceEdit, SourceBrowseRoot, SourceBrowse, Downloads, Settings,
+    )
     val restorable = all
 
-    fun playlistDetail(playlistId: String): String =
-        "$Playlists/${URLEncoder.encode(playlistId, StandardCharsets.UTF_8.name()).replace("+", "%20")}"
-
-    fun playlistId(route: String): String? = route.removePrefix("$Playlists/")
-        .takeIf { route.startsWith("$Playlists/") && it.isNotBlank() }
-        ?.let { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) }
+    fun albumDetail(albumId: String) = "library/albums/${encode(albumId)}"
+    fun albumId(route: String): String? = dynamicId(route, "library/albums/")
+    fun artistDetail(artistId: String) = "library/artists/${encode(artistId)}"
+    fun artistId(route: String): String? = dynamicId(route, "library/artists/")
+    fun folder(path: String) = "library/folders/${encode(path)}"
+    fun folderPath(route: String): String? = dynamicId(route, "library/folders/")
+    fun playlistDetail(playlistId: String) = "$Playlists/${encode(playlistId)}"
+    fun playlistId(route: String): String? = dynamicId(route, "$Playlists/")
+    fun sourceDetail(sourceId: String) = SourceRoute.Root(com.cleartune.core.model.SourceId(sourceId)).encoded()
+    fun sourceEdit(sourceId: String) = SourceRoute.Edit(com.cleartune.core.model.SourceId(sourceId)).encoded()
+    fun sourceBrowse(sourceId: String, relativePath: String) =
+        SourceRoute.Browse(com.cleartune.core.model.SourceId(sourceId), relativePath).encoded()
+    fun sourceBrowseArgs(route: String): Pair<String, String>? =
+        (SourceRoute.parse(route) as? SourceRoute.Browse)?.let { it.sourceId.value to it.relativePath }
 
     fun restore(route: String?): String = when {
-        route in restorable -> route!!
-        route?.let(::playlistId) != null -> route
+        route == null -> Library
+        route in setOf(
+            Library, LibrarySongs, LibraryAlbums, LibraryArtists, LibraryFolders, LibrarySearch,
+            Player, Playlists, Sources, SourceAdd, Downloads, Settings,
+        ) -> route
+        albumId(route) != null || artistId(route) != null || folderPath(route) != null || playlistId(route) != null -> route
+        SourceRoute.parse(route) !is SourceRoute.Invalid -> route
         else -> Library
     }
+
+    private fun dynamicId(route: String, prefix: String): String? = route.removePrefix(prefix)
+        .takeIf { route.startsWith(prefix) && it.isNotBlank() && '/' !in it }
+        ?.let(::decode)
+
+    private fun encode(value: String) = URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
+    private fun decode(value: String) = runCatching {
+        URLDecoder.decode(value, StandardCharsets.UTF_8.name())
+    }.getOrNull()
 }
 
 internal suspend fun playQueueOccurrence(
@@ -109,20 +149,90 @@ internal suspend fun playQueueOccurrence(
 }
 
 @Composable
-fun ClearTuneApp(
-    container: AppContainer,
-    startDestination: String = AppRoutes.Library,
-) {
+fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.Library) {
     val settings by container.settingsRepository.settings.collectAsState(initial = com.cleartune.core.model.AppSettings())
     val darkTheme = when (settings.themeMode) {
         ThemeMode.DARK -> true
         ThemeMode.LIGHT -> false
         ThemeMode.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
     }
-    val reducedMotion = isReducedMotionEnabled(
-        settings.reducedMotionMode,
-        systemAnimationsEnabled = ValueAnimator.areAnimatorsEnabled(),
-    )
+    val reducedMotion = isReducedMotionEnabled(settings.reducedMotionMode, ValueAnimator.areAnimatorsEnabled())
+    val context = LocalContext.current
+    val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
+    else Manifest.permission.READ_EXTERNAL_STORAGE
+    var localAccess by remember(permission) {
+        mutableStateOf(
+            if (context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) LocalAccessUiState.GRANTED
+            else LocalAccessUiState.NOT_REQUESTED,
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        localAccess = if (granted) LocalAccessUiState.GRANTED else LocalAccessUiState.DENIED_CAN_ASK
+        if (granted) container.enqueueLocalScan()
+    }
+    val scan by container.localScanState.collectAsState()
+    val sync = when (scan.phase) {
+        com.cleartune.data.local.LocalScanPhase.READING,
+        com.cleartune.data.local.LocalScanPhase.APPLYING,
+        -> LibrarySyncUiState.Running(scan.processed, scan.total)
+        com.cleartune.data.local.LocalScanPhase.FAILED -> LibrarySyncUiState.Failed(scan.errorMessage ?: "Scan failed")
+        else -> LibrarySyncUiState.Idle
+    }
+    val libraryDependencies = remember(container) {
+        LibraryFeatureDependencies(
+            container.libraryRepository,
+            container.libraryBrowsePort,
+            container.playbackGateway,
+            container.playlistRepository,
+        )
+    }
+    val sourceDependencies = remember(container) {
+        SourcesFeatureDependencies(container.sourceRepository, container.sourceController)
+    }
+    val queueTitles = container.trackTitleFlow
+    val playerDependencies = remember(container) {
+        PlayerFeatureDependencies(
+            playbackGateway = container.playbackGateway,
+            queueRepository = container.queueRepository,
+            onQueueChanged = container.playbackGateway::syncQueue,
+            queueTitles = queueTitles,
+            observeTrackActions = { trackId ->
+                container.downloadRepository.observeDownloads().map { downloads ->
+                    PlayerTrackActionState(
+                        isDownloaded = downloads.any { it.trackId == trackId && it.state == DownloadState.COMPLETED },
+                        canDownload = true,
+                    )
+                }
+            },
+            onToggleDownload = { trackId ->
+                val existing = container.downloadRepository.observeDownloads().first().firstOrNull { it.trackId == trackId }
+                container.downloadRepository.dispatch(
+                    if (existing == null) DownloadCommand.Enqueue(trackId) else DownloadCommand.Delete(existing.id),
+                )
+            },
+            onPlayOccurrence = { occurrenceId ->
+                playQueueOccurrence(
+                    container.queueRepository,
+                    container.queueRepository,
+                    occurrenceId,
+                    container.playbackGateway::syncQueue,
+                )
+                container.playbackGateway.dispatch(PlaybackCommand.Play)
+            },
+            onRetry = { trackId -> container.playbackGateway.dispatch(PlaybackCommand.PlayTrack(trackId)) },
+        )
+    }
+    val playlistDependencies = remember(container) {
+        PlaylistsFeatureDependencies(
+            container.playlistRepository,
+            container.playbackGateway,
+            container.queueRepository,
+            container.playlistDetailsProvider,
+            queueTitles,
+            container.playbackGateway::syncQueue,
+        )
+    }
+
     ClearTuneTheme(darkTheme = darkTheme) {
         Surface(Modifier.fillMaxSize().safeDrawingPadding()) {
             val navController = rememberNavController()
@@ -136,109 +246,106 @@ fun ClearTuneApp(
                     popEnterTransition = { if (reducedMotion) EnterTransition.None else fadeIn() },
                     popExitTransition = { if (reducedMotion) ExitTransition.None else fadeOut() },
                 ) {
-                    composable(AppRoutes.Library) {
-                        LibraryHomeScreen { navController.navigate(it) }
-                    }
-                    composable(AppRoutes.LibraryDetail) {
-                        LibraryFeatureEntry.Content(
-                            dependencies = LibraryFeatureDependencies(
-                                container.libraryRepository,
-                                container.playbackGateway,
-                                container.playlistRepository,
-                            ),
-                            onNavigate = navController::navigateOrBack,
-                        )
-                    }
-                    composable(AppRoutes.Player) {
-                        PlayerFeatureEntry.Content(
-                            PlayerFeatureDependencies(
-                                container.playbackGateway,
-                                container.queueRepository,
-                                container.playbackGateway::syncQueue,
-                                queueTitles = container.libraryRepository.observeSongs(SongQuery()).map { tracks ->
-                                    tracks.associate { it.id to it.title }
-                                },
-                                observeTrackActions = { trackId ->
-                                    container.downloadRepository.observeDownloads().map { downloads ->
-                                        PlayerTrackActionState(
-                                            isDownloaded = downloads.any {
-                                                it.trackId == trackId && it.state == DownloadState.COMPLETED
-                                            },
-                                            canDownload = container.downloadCommandsAvailable,
-                                            downloadUnavailableReason = "Downloads require a configured download adapter",
-                                        )
-                                    }
-                                },
-                                onToggleDownload = { trackId ->
-                                    val existing = container.downloadRepository.observeDownloads().first()
-                                        .firstOrNull { it.trackId == trackId }
-                                    container.downloadRepository.dispatch(
-                                        if (existing == null) DownloadCommand.Enqueue(trackId)
-                                        else DownloadCommand.Delete(existing.id),
-                                    )
-                                },
-                                onPlayOccurrence = { occurrenceId ->
-                                    playQueueOccurrence(
-                                        container.queueRepository,
-                                        container.queueRepository,
-                                        occurrenceId,
-                                        container.playbackGateway::syncQueue,
-                                    )
-                                    container.playbackGateway.dispatch(com.cleartune.core.model.PlaybackCommand.Play)
-                                },
-                                onRetry = { trackId ->
-                                    container.playbackGateway.dispatch(
-                                        com.cleartune.core.model.PlaybackCommand.PlayTrack(trackId),
-                                    )
-                                },
-                            ),
+                    fun libraryInputs() = LibraryFeatureUiInputs(
+                        localAccess = localAccess,
+                        sync = sync,
+                        onRequestLocalAccess = { permissionLauncher.launch(permission) },
+                        onRefreshLocalLibrary = container::enqueueLocalScan,
+                        onOpenSystemSettings = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        },
+                        onAddWebDav = { navController.navigate(AppRoutes.SourceAdd) },
+                        onOpenFolder = { navController.navigate(AppRoutes.folder(it)) },
+                        onOpenAlbum = { navController.navigate(AppRoutes.albumDetail(it.id.value)) },
+                        onOpenArtist = { navController.navigate(AppRoutes.artistDetail(it.id.value)) },
+                    )
+                    fun libraryRoute(pattern: String, featureRoute: String) = composable(pattern) {
+                        LibraryFeatureEntry.Screen(
+                            featureRoute,
+                            libraryDependencies,
                             navController::navigateOrBack,
+                            navController::popBackStack,
+                            libraryInputs(),
                         )
                     }
+                    libraryRoute(AppRoutes.Library, LibraryRoutes.root)
+                    libraryRoute(AppRoutes.LibrarySongs, LibraryRoutes.songs)
+                    libraryRoute(AppRoutes.LibraryAlbums, LibraryRoutes.albums)
+                    libraryRoute(AppRoutes.LibraryArtists, LibraryRoutes.artists)
+                    libraryRoute(AppRoutes.LibraryFolders, LibraryRoutes.folders)
+                    libraryRoute(AppRoutes.LibrarySearch, LibraryRoutes.search)
+                    composable(AppRoutes.LibraryAlbumDetail, listOf(navArgument("albumId") { type = NavType.StringType })) { entry ->
+                        val id = entry.arguments?.getString("albumId")
+                        val albums by container.libraryBrowsePort.observeAlbums().collectAsState(initial = emptyList())
+                        LibraryFeatureEntry.Screen(
+                            LibraryRoutes.albumDetail, libraryDependencies, navController::navigateOrBack,
+                            navController::popBackStack, libraryInputs().copy(selectedAlbum = albums.firstOrNull { it.id.value == id }),
+                        )
+                    }
+                    composable(AppRoutes.LibraryArtistDetail, listOf(navArgument("artistId") { type = NavType.StringType })) { entry ->
+                        val id = entry.arguments?.getString("artistId")
+                        val artists by container.libraryBrowsePort.observeArtists().collectAsState(initial = emptyList())
+                        LibraryFeatureEntry.Screen(
+                            LibraryRoutes.artistDetail, libraryDependencies, navController::navigateOrBack,
+                            navController::popBackStack, libraryInputs().copy(selectedArtist = artists.firstOrNull { it.id.value == id }),
+                        )
+                    }
+                    composable(AppRoutes.LibraryFolderDetail, listOf(navArgument("folderPath") { type = NavType.StringType })) { entry ->
+                        LibraryFeatureEntry.Screen(
+                            LibraryRoutes.folders, libraryDependencies, navController::navigateOrBack,
+                            navController::popBackStack,
+                            libraryInputs().copy(selectedFolder = entry.arguments?.getString("folderPath")),
+                        )
+                    }
+                    composable(AppRoutes.Player) { PlayerFeatureEntry.Content(playerDependencies, navController::navigateOrBack) }
                     composable(AppRoutes.Playlists) {
-                        PlaylistsFeatureEntry.Content(
-                            PlaylistsFeatureDependencies(
-                                container.playlistRepository,
-                                container.playbackGateway,
-                                container.queueRepository,
-                                container.playlistDetailsProvider,
-                                container.libraryRepository.observeSongs(SongQuery()).map { tracks ->
-                                    tracks.associate { it.id to it.title }
-                                },
-                                container.playbackGateway::syncQueue,
-                            ),
-                            navController::navigateOrBack,
-                        )
+                        PlaylistsFeatureEntry.Content(playlistDependencies, navController::navigateOrBack)
                     }
-                    composable(
-                        route = AppRoutes.PlaylistDetail,
-                        arguments = listOf(navArgument("playlistId") { type = NavType.StringType }),
-                    ) { entry ->
-                        val playlistId = entry.arguments?.getString("playlistId")?.let(::PlaylistId)
-                        PlaylistsFeatureEntry.Content(
-                            PlaylistsFeatureDependencies(
-                                container.playlistRepository,
-                                container.playbackGateway,
-                                container.queueRepository,
-                                container.playlistDetailsProvider,
-                                container.libraryRepository.observeSongs(SongQuery()).map { tracks ->
-                                    tracks.associate { it.id to it.title }
-                                },
-                                container.playbackGateway::syncQueue,
-                            ),
-                            navController::navigateOrBack,
-                            playlistId,
-                        )
+                    composable(AppRoutes.PlaylistDetail, listOf(navArgument("playlistId") { type = NavType.StringType })) { entry ->
+                        val id = entry.arguments?.getString("playlistId")?.let(::PlaylistId)
+                        PlaylistsFeatureEntry.Content(playlistDependencies, navController::navigateOrBack, id)
                     }
                     composable(AppRoutes.Sources) {
-                        SourcesFeatureEntry.Content(
-                            SourcesFeatureDependencies(container.sourceRepository),
-                            navController::navigateOrBack,
-                        )
+                        SourcesFeatureEntry.Content(sourceDependencies, navController::navigateOrBack, AppRoutes.Sources)
+                    }
+                    composable(AppRoutes.SourceAdd) {
+                        SourcesFeatureEntry.Content(sourceDependencies, navController::navigateOrBack, AppRoutes.SourceAdd)
+                    }
+                    composable(AppRoutes.SourceDetail, listOf(navArgument("sourceId") { type = NavType.StringType })) { entry ->
+                        val route = entry.arguments?.getString("sourceId")?.let(AppRoutes::sourceDetail) ?: AppRoutes.Sources
+                        SourcesFeatureEntry.Content(sourceDependencies, navController::navigateOrBack, route)
+                    }
+                    composable(AppRoutes.SourceEdit, listOf(navArgument("sourceId") { type = NavType.StringType })) { entry ->
+                        val route = entry.arguments?.getString("sourceId")?.let(AppRoutes::sourceEdit) ?: AppRoutes.Sources
+                        SourcesFeatureEntry.Content(sourceDependencies, navController::navigateOrBack, route)
+                    }
+                    composable(AppRoutes.SourceBrowseRoot, listOf(navArgument("sourceId") { type = NavType.StringType })) { entry ->
+                        val sourceId = entry.arguments?.getString("sourceId")
+                        val route = sourceId?.let { AppRoutes.sourceBrowse(it, "") } ?: AppRoutes.Sources
+                        SourcesFeatureEntry.Content(sourceDependencies, navController::navigateOrBack, route)
+                    }
+                    composable(
+                        AppRoutes.SourceBrowse,
+                        listOf(
+                            navArgument("sourceId") { type = NavType.StringType },
+                            navArgument("relativePath") { type = NavType.StringType },
+                        ),
+                    ) { entry ->
+                        val sourceId = entry.arguments?.getString("sourceId")
+                        val path = entry.arguments?.getString("relativePath")
+                        val route = if (sourceId != null && path != null) AppRoutes.sourceBrowse(sourceId, path) else AppRoutes.Sources
+                        SourcesFeatureEntry.Content(sourceDependencies, navController::navigateOrBack, route)
                     }
                     composable(AppRoutes.Downloads) {
                         DownloadsFeatureEntry.Content(
-                            DownloadsFeatureDependencies(container.downloadRepository, container.playbackGateway),
+                            DownloadsFeatureDependencies(
+                                container.downloadRepository,
+                                container.playbackGateway,
+                                container.downloadTitleResolver,
+                            ),
                             navController::navigateOrBack,
                         )
                     }
@@ -256,67 +363,13 @@ fun ClearTuneApp(
                     }
                 }
                 MiniPlayer(
-                    dependencies = PlayerFeatureDependencies(
-                        container.playbackGateway,
-                        container.queueRepository,
-                        container.playbackGateway::syncQueue,
-                    ),
+                    dependencies = playerDependencies,
                     onOpenPlayer = { navController.navigate(AppRoutes.Player) },
                 )
             }
         }
     }
 }
-
-@Composable
-private fun LibraryHomeScreen(onNavigate: (String) -> Unit) {
-    val categories = listOf(
-        LibraryCategory("歌曲", "按标题、艺术家或专辑浏览", AppRoutes.LibraryDetail),
-        LibraryCategory("专辑", "查看完整唱片收藏", AppRoutes.LibraryDetail),
-        LibraryCategory("艺术家", "使用简洁默认头像展示", AppRoutes.LibraryDetail),
-        LibraryCategory("歌单", "创建和整理自己的播放列表", AppRoutes.Playlists),
-        LibraryCategory("已下载", "离线也能继续听", AppRoutes.Downloads),
-        LibraryCategory("音乐来源", "本地存储与 WebDAV", AppRoutes.Sources),
-    )
-    Column(Modifier.fillMaxSize().padding(horizontal = ClearTuneDimensions.spacingMd)) {
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = ClearTuneDimensions.spacingSm),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("资料库", style = MaterialTheme.typography.headlineLarge)
-                Text("你的全部音乐", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            TextButton(onClick = { onNavigate(AppRoutes.LibraryDetail) }) { Text("搜索") }
-            TextButton(
-                onClick = { onNavigate(AppRoutes.Settings) },
-                modifier = Modifier.semantics { contentDescription = "Open settings" },
-            ) { Text("Settings") }
-        }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(ClearTuneDimensions.spacingSm)) {
-            items(categories) { category ->
-                Card(
-                    Modifier.fillMaxWidth().clickable(onClickLabel = "Open ${category.route}") {
-                        onNavigate(category.route)
-                    },
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(ClearTuneDimensions.spacingMd),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(category.title, style = MaterialTheme.typography.titleLarge)
-                            Text(category.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Text("›", style = MaterialTheme.typography.headlineSmall)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private data class LibraryCategory(val title: String, val subtitle: String, val route: String)
 
 private fun NavHostController.navigateOrBack(route: String) {
     if (route == "back") popBackStack() else navigate(route)

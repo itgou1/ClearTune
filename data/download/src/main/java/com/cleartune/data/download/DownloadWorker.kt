@@ -88,7 +88,7 @@ class DownloadWorker(
         const val CHANNEL_ID = "downloads"
         fun workName(id: DownloadId): String = "download-${id.value}"
 
-        fun notificationId(id: DownloadId): Int = 0x444C0000 or (id.value.hashCode() and 0x0000ffff)
+        fun notificationId(id: DownloadId): Int = id.value.hashCode() xor 0x444C0000
 
         fun runnerFrom(application: Any): DownloadWorkerRunner? =
             (application as? DownloadWorkerHost)?.downloadWorkerRunner

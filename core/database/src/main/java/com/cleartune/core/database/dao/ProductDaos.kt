@@ -45,6 +45,9 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE id = :downloadId LIMIT 1")
     suspend fun download(downloadId: String): DownloadEntity?
 
+    @Query("SELECT * FROM downloads WHERE trackId = :trackId LIMIT 1")
+    suspend fun downloadForTrack(trackId: String): DownloadEntity?
+
     @Upsert suspend fun upsert(download: DownloadEntity)
     @Query("DELETE FROM downloads WHERE id = :downloadId") suspend fun delete(downloadId: String): Int
 }

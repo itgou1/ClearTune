@@ -16,9 +16,11 @@ import com.cleartune.core.database.model.FolderRow
 import com.cleartune.core.database.model.LibraryIngestRecord
 import com.cleartune.core.database.model.LibraryTrackRow
 import com.cleartune.core.database.model.belongsToFolder
+import com.cleartune.core.database.model.hasArtist
 import com.cleartune.core.database.model.toDomain
 import com.cleartune.core.database.model.toTrackSummary
 import com.cleartune.core.model.AlbumId
+import com.cleartune.core.model.ArtistId
 import com.cleartune.core.model.CredentialAlias
 import com.cleartune.core.model.LibraryHome
 import com.cleartune.core.model.LibraryMutation
@@ -57,6 +59,8 @@ interface LibraryBrowseStore {
     fun observeArtists(): Flow<List<ArtistRow>>
     fun observeFolders(): Flow<List<FolderRow>>
     fun observeFolderTracks(relativeFolder: String): Flow<List<TrackSummary>>
+    fun observeArtistTracks(artistId: ArtistId): Flow<List<TrackSummary>>
+    fun observeArtistAlbums(artistId: ArtistId): Flow<List<AlbumRow>>
 }
 
 interface SyncSessionStore {
@@ -215,6 +219,16 @@ class RoomLibraryRepository(
     override fun observeFolderTracks(relativeFolder: String): Flow<List<TrackSummary>> = readDao.observeTrackRows().map { rows ->
         rows.filter { row -> row.belongsToFolder(relativeFolder) }
             .map(LibraryTrackRow::toTrackSummary)
+    }
+    override fun observeArtistTracks(artistId: ArtistId): Flow<List<TrackSummary>> = readDao.observeTrackRows().map { rows ->
+        rows.filter { it.hasArtist(artistId) }.map(LibraryTrackRow::toTrackSummary)
+    }
+    override fun observeArtistAlbums(artistId: ArtistId): Flow<List<AlbumRow>> = combine(
+        readDao.observeTrackRows(),
+        readDao.observeAlbums(),
+    ) { tracks, albums ->
+        val albumIds = tracks.filter { it.hasArtist(artistId) }.mapNotNullTo(hashSetOf(), LibraryTrackRow::albumId)
+        albums.filter { it.albumId in albumIds }
     }
 
     override suspend fun recordSyncSession(

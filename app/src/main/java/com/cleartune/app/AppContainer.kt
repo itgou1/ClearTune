@@ -1,110 +1,187 @@
 package com.cleartune.app
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import android.os.SystemClock
 import android.util.Base64
 import com.cleartune.core.contracts.CredentialStore
 import com.cleartune.core.contracts.DownloadRepository
 import com.cleartune.core.contracts.LibraryRepository
-import com.cleartune.core.contracts.PlaybackLibraryRepository
-import com.cleartune.core.contracts.SourceRepository
 import com.cleartune.core.contracts.PlaylistRepository
+import com.cleartune.core.contracts.QueueRepository
 import com.cleartune.core.contracts.SettingsRepository
+import com.cleartune.core.contracts.SourceRepository
 import com.cleartune.core.contracts.WebDavCredential
-import com.cleartune.core.model.AlbumId
-import com.cleartune.core.model.DownloadCommand
-import com.cleartune.core.model.DownloadSummary
-import com.cleartune.core.model.LibraryHome
-import com.cleartune.core.model.MusicSource
-import com.cleartune.core.model.PlayableTrack
-import com.cleartune.core.model.PlaylistId
-import com.cleartune.core.model.PlaylistItemId
-import com.cleartune.core.model.QueueItem
-import com.cleartune.core.model.QueueItemId
-import com.cleartune.core.model.QueueSnapshot
-import com.cleartune.core.model.RepeatMode
-import com.cleartune.core.model.SearchResults
+import com.cleartune.core.database.ClearTuneDatabase
+import com.cleartune.core.database.RoomLibraryRepository
+import com.cleartune.core.database.RoomPlaylistRepository
+import com.cleartune.core.database.RoomQueueRepository
+import com.cleartune.core.database.RoomSettingsRepository
+import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.SongQuery
-import com.cleartune.core.model.SourceId
-import com.cleartune.core.model.CredentialAlias
-import com.cleartune.core.model.SourceType
 import com.cleartune.core.model.TrackId
-import com.cleartune.core.model.TrackSummary
-import com.cleartune.core.model.AppSettings
-import com.cleartune.core.model.ReducedMotionMode
-import com.cleartune.core.model.SettingsCommand
-import com.cleartune.core.model.ThemeMode
-import com.cleartune.feature.playlists.PersistentPlaylistRepository
+import com.cleartune.core.network.WebDavAuthenticator
+import com.cleartune.core.network.WebDavUrlPolicy
+import com.cleartune.data.download.DownloadCoordinator
+import com.cleartune.data.download.DownloadTransfer
+import com.cleartune.data.download.DownloadWorkerHost
+import com.cleartune.data.download.DownloadWorkerRunner
+import com.cleartune.data.download.ProductionDownloadWorkerRunner
+import com.cleartune.data.download.WorkManagerDownloadScheduler
+import com.cleartune.data.download.asExecutor
+import com.cleartune.data.local.AndroidMediaStoreGateway
+import com.cleartune.data.local.AudioPermissionPolicy
+import com.cleartune.data.local.LocalScanCoordinator
+import com.cleartune.data.local.LocalScanScheduler
+import com.cleartune.data.local.LocalScanWorkerFactory
+import com.cleartune.data.local.LocalScanWorkerRunner
+import com.cleartune.data.webdav.AndroidKeystoreCredentialCipher
+import com.cleartune.data.webdav.DurableWebDavSyncRunner
+import com.cleartune.data.webdav.EncryptedCredentialStore
+import com.cleartune.data.webdav.OkHttpWebDavClient
+import com.cleartune.data.webdav.SharedPreferencesCredentialBlobStore
+import com.cleartune.data.webdav.WebDavConnectionProbe
+import com.cleartune.data.webdav.WebDavSourceManager
+import com.cleartune.data.webdav.WebDavSyncEngine
+import com.cleartune.data.webdav.WebDavSyncRunner
+import com.cleartune.data.webdav.WebDavSyncWorkerHost
+import com.cleartune.data.webdav.WorkManagerWebDavSyncScheduler
+import com.cleartune.feature.downloads.DownloadTitleResolver
+import com.cleartune.feature.library.LibraryBrowsePort
 import com.cleartune.feature.playlists.PlaylistDetailsProvider
-import com.cleartune.feature.playlists.PlaylistDetails
-import com.cleartune.feature.playlists.PlaylistItemRecord
-import com.cleartune.feature.playlists.PlaylistStorage
-import com.cleartune.feature.settings.SettingsProductCommand
 import com.cleartune.feature.settings.SettingsProductController
-import com.cleartune.feature.settings.SettingsProductState
-import com.cleartune.feature.settings.SettingsOperationState
+import com.cleartune.feature.sources.SourceController
+import com.cleartune.playback.LibrarySessionCatalog
 import com.cleartune.playback.Media3PlaybackBackend
-import com.cleartune.playback.PersistentQueueRepository
 import com.cleartune.playback.PlaybackCoordinator
 import com.cleartune.playback.PlaybackEnvironment
-import com.cleartune.playback.QueueStorage
 import com.cleartune.playback.PlaybackRequestHeadersProvider
+import java.io.ByteArrayOutputStream
 import java.io.File
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.collect
+import java.nio.ByteBuffer
+import java.nio.CharBuffer
+import java.nio.charset.CodingErrorAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import org.json.JSONArray
-import org.json.JSONObject
+import okhttp3.OkHttpClient
 
-class AppContainer(
-    context: Context,
-    val libraryRepository: LibraryRepository = EmptyLibraryRepository(),
-    private val playbackLibraryRepository: PlaybackLibraryRepository =
-        libraryRepository as? PlaybackLibraryRepository ?: EmptyPlaybackLibraryRepository,
-    val sourceRepository: SourceRepository = EmptySourceRepository,
-    val downloadRepository: DownloadRepository = EmptyDownloadRepository,
-    val downloadCommandsAvailable: Boolean = downloadRepository !== EmptyDownloadRepository,
-    private val credentialStore: CredentialStore = EmptyCredentialStore,
-) {
+class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost {
     private val appContext = context.applicationContext
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val appPlaylistRepository = PersistentPlaylistRepository(
-        storage = SharedPreferencesPlaylistStorage(appContext),
+    private val database = ClearTuneDatabase.build(appContext)
+    private val roomLibraryRepository = RoomLibraryRepository(database)
+    private val roomPlaylistRepository = RoomPlaylistRepository(database)
+    private val roomQueueRepository = RoomQueueRepository(database)
+    private val baseHttpClient = OkHttpClient.Builder().build()
+
+    val libraryRepository: LibraryRepository = roomLibraryRepository
+    val sourceRepository: SourceRepository = roomLibraryRepository
+    val playlistRepository: PlaylistRepository = roomPlaylistRepository
+    val playlistDetailsProvider: PlaylistDetailsProvider = RoomPlaylistDetailsAdapter(database, roomPlaylistRepository)
+    val libraryBrowsePort: LibraryBrowsePort = RoomLibraryBrowseAdapter(roomLibraryRepository, roomLibraryRepository)
+    val settingsRepository: SettingsRepository = RoomSettingsRepository(database)
+    val queueRepository: RoomPlaybackQueueAdapter = RoomPlaybackQueueAdapter(database, roomQueueRepository)
+
+    val credentialStore: CredentialStore = EncryptedCredentialStore(
+        AndroidKeystoreCredentialCipher(),
+        SharedPreferencesCredentialBlobStore(appContext),
     )
-    val playlistRepository: PlaylistRepository = appPlaylistRepository
-    val playlistDetailsProvider: PlaylistDetailsProvider = appPlaylistRepository
-    private val appSettingsRepository = AppSettingsRepository(SharedPreferencesSettingsStorage(appContext))
-    val settingsRepository: SettingsRepository = appSettingsRepository
-    val settingsProductController: SettingsProductController = appSettingsRepository
-    val queueRepository = PersistentQueueRepository(SharedPreferencesQueueStorage(appContext))
-    private val mediaBackend = Media3PlaybackBackend(appContext)
-    val playbackRequestHeadersProvider = PlaybackRequestHeadersProvider { uri ->
-        runBlocking(Dispatchers.IO) {
-            val source = sourceRepository.observeSources().first().firstOrNull { candidate ->
-                val baseUrl = candidate.baseUrl
-                candidate.type == SourceType.WEBDAV &&
-                    !baseUrl.isNullOrBlank() &&
-                    uri.toString().startsWith(baseUrl, ignoreCase = true)
+
+    private val webDavClient = OkHttpWebDavClient(baseHttpClient, credentialStore)
+    private val webDavPersistence = RoomWebDavPersistenceAdapter(
+        database,
+        sourceRepository,
+        SharedPreferencesWebDavCheckpointStore(appContext),
+    )
+    private val webDavSyncScheduler = WorkManagerWebDavSyncScheduler(appContext)
+    private val webDavSourceManager = WebDavSourceManager(
+        connectionProbe = WebDavConnectionProbe { source, credential ->
+            val temporaryStore = object : CredentialStore {
+                override suspend fun put(alias: com.cleartune.core.model.CredentialAlias, credential: WebDavCredential) = Unit
+                override suspend fun get(alias: com.cleartune.core.model.CredentialAlias) =
+                    WebDavCredential(credential.username, credential.password.copyOf())
+                override suspend fun delete(alias: com.cleartune.core.model.CredentialAlias) = Unit
             }
-            val credential = source?.credentialAlias?.let { credentialStore.get(it) }
-            if (credential == null) emptyMap() else basicAuthorizationHeader(credential)
-        }
+            val probe = OkHttpWebDavClient(baseHttpClient, temporaryStore)
+            val base = WebDavUrlPolicy.normalizeBaseUrl(requireNotNull(source.baseUrl), source.allowCleartext)
+            probe.list(source, base)
+        },
+        sourceGateway = roomLibraryRepository,
+        credentialStore = credentialStore,
+    )
+    val sourceController = SourceController(
+        sourceRepository,
+        WebDavSourceActionAdapter(sourceRepository, webDavSourceManager, webDavClient, webDavSyncScheduler),
+    )
+
+    override val webDavSyncRunner: WebDavSyncRunner = DurableWebDavSyncRunner(
+        webDavPersistence,
+    ) { source, checkpoint, saveCheckpoint ->
+        WebDavSyncEngine(
+            client = webDavClient,
+            libraryWriteGateway = roomLibraryRepository,
+            fingerprintLookup = webDavPersistence::remoteFingerprint,
+            updatePublisher = webDavPersistence::markUpdateAvailable,
+        ).sync(source, checkpoint, saveCheckpoint)
     }
+
+    private val downloadRoot = File(appContext.noBackupFilesDir, "offline_downloads")
+    private val downloadPersistence = RoomDownloadPersistenceAdapter(database, credentialStore, downloadRoot)
+    private val downloadScheduler = WorkManagerDownloadScheduler(appContext, downloadRoot, downloadPersistence)
+    val downloadRepository: DownloadRepository = DownloadCoordinator(downloadPersistence, downloadScheduler)
+    val downloadCommandsAvailable: Boolean = true
+    override val downloadWorkerRunner: DownloadWorkerRunner = ProductionDownloadWorkerRunner(downloadPersistence) { credentials ->
+        val client = baseHttpClient.newBuilder().apply {
+            val protectionBase = credentials?.protectionBase
+            if (credentials != null && protectionBase != null) {
+                authenticator(
+                    WebDavAuthenticator(
+                        baseUrl = protectionBase,
+                        credentialProvider = { WebDavCredential(credentials.username, credentials.password) },
+                    ),
+                )
+            }
+        }.build()
+        DownloadTransfer(client).asExecutor()
+    }
+
+    private val localSnapshotAdapter = LocalSnapshotAdapter(roomLibraryRepository, roomLibraryRepository)
+    private val localScanCoordinator = LocalScanCoordinator(
+        AndroidMediaStoreGateway(appContext.contentResolver),
+        localSnapshotAdapter,
+    )
+    val localScanWorkerRunner = LocalScanWorkerRunner {
+        val permission = AudioPermissionPolicy.requiredPermission(Build.VERSION.SDK_INT)
+        localScanCoordinator.scan(appContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED)
+    }
+    val workerFactory = LocalScanWorkerFactory(localScanWorkerRunner)
+    private val localScanScheduler = LocalScanScheduler(androidx.work.WorkManager.getInstance(appContext))
+
+    val settingsProductController: SettingsProductController = AppProductSettingsController(
+        appContext,
+        scanLibrary = { localScanScheduler.enqueueManualRefresh() },
+        cleanUpCache = { clearContainedCache(appContext.cacheDir) },
+    )
+
+    val librarySessionCatalog: LibrarySessionCatalog = RoomLibrarySessionCatalog(roomLibraryRepository)
+    private val trackTitles = MutableStateFlow<Map<TrackId, String>>(emptyMap())
+    val trackTitleFlow = trackTitles
+    val downloadTitleResolver = DownloadTitleResolver { trackId -> trackTitles.value[trackId] ?: trackId.value }
+
+    private val mediaBackend = Media3PlaybackBackend(appContext)
     val playbackGateway = PlaybackCoordinator(
-        libraryRepository = playbackLibraryRepository,
+        libraryRepository = roomLibraryRepository,
         queueRepository = queueRepository,
         backend = mediaBackend,
         environment = PlaybackEnvironment(
@@ -114,7 +191,20 @@ class AppContainer(
         ),
     )
 
+    val playbackRequestHeadersProvider = PlaybackRequestHeadersProvider { rawUri ->
+        runBlocking(Dispatchers.IO) {
+            val source = SourceOriginMatcher.match(sourceRepository.observeSources().first(), rawUri.toString())
+            val credential = source?.credentialAlias?.let { credentialStore.get(it) }
+            credential?.let(::basicAuthorizationHeader).orEmpty()
+        }
+    }
+
     init {
+        applicationScope.launch {
+            libraryRepository.observeSongs(SongQuery()).collect { tracks ->
+                trackTitles.value = tracks.associate { it.id to it.title }
+            }
+        }
         applicationScope.launch { playbackGateway.syncQueue() }
         applicationScope.launch {
             var lastPositionWriteAt = 0L
@@ -133,9 +223,24 @@ class AppContainer(
         }
     }
 
+    fun scheduleStartupWork() {
+        localScanScheduler.enqueueAutomatic()
+        applicationScope.launch {
+            sourceRepository.observeSources().first()
+                .filter { it.enabled && it.type == com.cleartune.core.model.SourceType.WEBDAV }
+                .forEach { webDavSyncScheduler.enqueue(it.id) }
+        }
+    }
+
+    fun enqueueLocalScan() = localScanScheduler.enqueueManualRefresh()
+
+    val localScanState get() = localScanCoordinator.state
+
     fun close() {
         applicationScope.cancel()
+        sourceController.close()
         mediaBackend.release()
+        database.close()
     }
 
     private fun fileExists(rawUri: String): Boolean {
@@ -161,239 +266,31 @@ class AppContainer(
     }
 }
 
-class EmptyLibraryRepository : LibraryRepository, PlaybackLibraryRepository {
-    override fun observeLibraryHome(): Flow<LibraryHome> = flowOf(LibraryHome())
-    override fun observeSongs(query: SongQuery): Flow<List<TrackSummary>> = flowOf(emptyList())
-    override fun observeAlbumTracks(albumId: AlbumId): Flow<List<TrackSummary>> = flowOf(emptyList())
-    override fun search(query: String): Flow<SearchResults> = flowOf(SearchResults())
-    override suspend fun getPlayableTrack(trackId: TrackId): PlayableTrack? = null
-}
-
-private object EmptyPlaybackLibraryRepository : PlaybackLibraryRepository {
-    override suspend fun getPlayableTrack(trackId: TrackId): PlayableTrack? = null
-}
-
-private object EmptySourceRepository : SourceRepository {
-    override fun observeSources(): Flow<List<MusicSource>> = flowOf(emptyList())
-    override suspend fun getSource(sourceId: SourceId): MusicSource? = null
-}
-
-private object EmptyDownloadRepository : DownloadRepository {
-    override fun observeDownloads(): Flow<List<DownloadSummary>> = flowOf(emptyList())
-    override suspend fun dispatch(command: DownloadCommand) = Unit
-}
-
-private object EmptyCredentialStore : CredentialStore {
-    override suspend fun put(alias: CredentialAlias, credential: WebDavCredential) = Unit
-    override suspend fun get(alias: CredentialAlias): WebDavCredential? = null
-    override suspend fun delete(alias: CredentialAlias) = Unit
-}
-
 private fun basicAuthorizationHeader(credential: WebDavCredential): Map<String, String> {
-    val bytes = "${credential.username}:${credential.password.concatToString()}".toByteArray(Charsets.UTF_8)
+    val username = credential.username.toByteArray(Charsets.UTF_8)
+    val passwordCopy = credential.password.copyOf()
+    var encodedPassword: ByteBuffer? = null
+    var password = ByteArray(0)
+    var combined = ByteArray(0)
     return try {
-        mapOf("Authorization" to "Basic ${Base64.encodeToString(bytes, Base64.NO_WRAP)}")
+        encodedPassword = Charsets.UTF_8.newEncoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .encode(CharBuffer.wrap(passwordCopy))
+        password = ByteArray(requireNotNull(encodedPassword).remaining()).also(requireNotNull(encodedPassword)::get)
+        combined = ByteArrayOutputStream(username.size + password.size + 1).use { output ->
+            output.write(username)
+            output.write(':'.code)
+            output.write(password)
+            output.toByteArray()
+        }
+        mapOf("Authorization" to "Basic ${Base64.encodeToString(combined, Base64.NO_WRAP)}")
     } finally {
-        bytes.fill(0)
+        username.fill(0)
+        passwordCopy.fill('\u0000')
+        password.fill(0)
+        combined.fill(0)
+        encodedPassword?.takeIf(ByteBuffer::hasArray)?.array()?.fill(0)
         credential.password.fill('\u0000')
     }
-}
-
-private interface AppSettingsStorage {
-    fun getString(key: String): String?
-    fun putString(key: String, value: String)
-}
-
-private class SharedPreferencesSettingsStorage(context: Context) : AppSettingsStorage {
-    private val preferences = context.getSharedPreferences("cleartune_settings", Context.MODE_PRIVATE)
-    override fun getString(key: String): String? = preferences.getString(key, null)
-    override fun putString(key: String, value: String) {
-        preferences.edit().putString(key, value).apply()
-    }
-}
-
-private class AppSettingsRepository(
-    private val storage: AppSettingsStorage,
-) : SettingsRepository, SettingsProductController {
-    private val mutex = Mutex()
-    private val appSettings = MutableStateFlow(
-        AppSettings(
-            themeMode = storage.enum(THEME, ThemeMode.SYSTEM),
-            reducedMotionMode = storage.enum(MOTION, ReducedMotionMode.SYSTEM),
-        ),
-    )
-    override val settings: Flow<AppSettings> = appSettings
-    private val productState = MutableStateFlow(
-        SettingsProductState(
-            restoreQueue = storage.boolean(RESTORE_QUEUE, true),
-            pauseOnHeadphoneDisconnect = storage.boolean(HEADPHONE_PAUSE, true),
-            offlineCacheEnabled = storage.boolean(OFFLINE_CACHE, false),
-            backgroundPlayback = storage.boolean(BACKGROUND_PLAYBACK, false),
-            dynamicBackground = storage.boolean(DYNAMIC_BACKGROUND, true),
-            cacheLimitMb = storage.getString(CACHE_LIMIT)?.toIntOrNull()?.coerceIn(64, 8_192) ?: 512,
-        ),
-    )
-    override val productSettings: Flow<SettingsProductState> = productState
-
-    override suspend fun update(command: SettingsCommand) = mutex.withLock {
-        appSettings.value = when (command) {
-            is SettingsCommand.SetTheme -> appSettings.value.copy(themeMode = command.mode)
-                .also { storage.putString(THEME, command.mode.name) }
-            is SettingsCommand.SetReducedMotion -> appSettings.value.copy(reducedMotionMode = command.mode)
-                .also { storage.putString(MOTION, command.mode.name) }
-        }
-    }
-
-    override suspend fun dispatch(command: SettingsProductCommand) = mutex.withLock {
-        productState.value = when (command) {
-            is SettingsProductCommand.SetRestoreQueue -> productState.value.copy(restoreQueue = command.enabled)
-                .persist(RESTORE_QUEUE, command.enabled)
-            is SettingsProductCommand.SetPauseOnHeadphoneDisconnect ->
-                productState.value.copy(pauseOnHeadphoneDisconnect = command.enabled)
-                    .persist(HEADPHONE_PAUSE, command.enabled)
-            is SettingsProductCommand.SetOfflineCacheEnabled -> productState.value.copy(offlineCacheEnabled = command.enabled)
-                .persist(OFFLINE_CACHE, command.enabled)
-            is SettingsProductCommand.SetBackgroundPlayback -> productState.value.copy(backgroundPlayback = command.enabled)
-                .persist(BACKGROUND_PLAYBACK, command.enabled)
-            is SettingsProductCommand.SetDynamicBackground -> productState.value.copy(dynamicBackground = command.enabled)
-                .persist(DYNAMIC_BACKGROUND, command.enabled)
-            is SettingsProductCommand.SetCacheLimitMb -> {
-                val value = command.megabytes.coerceIn(64, 8_192)
-                productState.value.copy(cacheLimitMb = value).also { storage.putString(CACHE_LIMIT, "$value") }
-            }
-            SettingsProductCommand.ScanLibrary,
-            SettingsProductCommand.CleanUpCache,
-            SettingsProductCommand.OpenLicenses,
-            -> {
-                val unavailable = when (command) {
-                    SettingsProductCommand.ScanLibrary -> productState.value.scanLibrary
-                    SettingsProductCommand.CleanUpCache -> productState.value.cleanUpCache
-                    SettingsProductCommand.OpenLicenses -> productState.value.openLicenses
-                } as? SettingsOperationState.Unavailable
-                check(unavailable == null) { unavailable?.reason ?: "Operation unavailable" }
-                error("Operation adapter is not bound")
-            }
-        }
-    }
-
-    private fun SettingsProductState.persist(key: String, value: Boolean): SettingsProductState =
-        also { storage.putString(key, value.toString()) }
-
-    private companion object {
-        const val THEME = "theme"
-        const val MOTION = "motion"
-        const val RESTORE_QUEUE = "restore_queue"
-        const val HEADPHONE_PAUSE = "headphone_pause"
-        const val OFFLINE_CACHE = "offline_cache"
-        const val BACKGROUND_PLAYBACK = "background_playback"
-        const val DYNAMIC_BACKGROUND = "dynamic_background"
-        const val CACHE_LIMIT = "cache_limit_mb"
-    }
-}
-
-private inline fun <reified T : Enum<T>> AppSettingsStorage.enum(key: String, default: T): T =
-    enumValues<T>().firstOrNull { it.name == getString(key) } ?: default
-
-private fun AppSettingsStorage.boolean(key: String, default: Boolean): Boolean =
-    getString(key)?.toBooleanStrictOrNull() ?: default
-
-private class SharedPreferencesQueueStorage(context: Context) : QueueStorage {
-    private val preferences = context.getSharedPreferences("cleartune_queue", Context.MODE_PRIVATE)
-
-    override fun load(): QueueSnapshot? = preferences.getString(SNAPSHOT_KEY, null)?.let { raw ->
-        runCatching {
-            val json = JSONObject(raw)
-            val itemsJson = json.getJSONArray("items")
-            val items = buildList {
-                repeat(itemsJson.length()) { index ->
-                    val item = itemsJson.getJSONObject(index)
-                    add(QueueItem(QueueItemId(item.getString("id")), TrackId(item.getString("trackId"))))
-                }
-            }
-            QueueSnapshot(
-                items = items,
-                currentIndex = json.optInt("currentIndex", -1).let { index ->
-                    if (items.isEmpty()) -1 else index.coerceIn(items.indices)
-                },
-                positionMs = json.optLong("positionMs", 0).coerceAtLeast(0),
-                playWhenReady = json.optBoolean("playWhenReady", false),
-                repeatMode = runCatching { RepeatMode.valueOf(json.optString("repeatMode")) }
-                    .getOrDefault(RepeatMode.OFF),
-                shuffleEnabled = json.optBoolean("shuffleEnabled", false),
-            )
-        }.getOrNull()
-    }
-
-    override fun save(snapshot: QueueSnapshot) {
-        val items = JSONArray().apply {
-            snapshot.items.forEach { item ->
-                put(JSONObject().put("id", item.id.value).put("trackId", item.trackId.value))
-            }
-        }
-        val json = JSONObject()
-            .put("items", items)
-            .put("currentIndex", snapshot.currentIndex)
-            .put("positionMs", snapshot.positionMs)
-            .put("playWhenReady", snapshot.playWhenReady)
-            .put("repeatMode", snapshot.repeatMode.name)
-            .put("shuffleEnabled", snapshot.shuffleEnabled)
-        preferences.edit().putString(SNAPSHOT_KEY, json.toString()).apply()
-    }
-
-    private companion object { const val SNAPSHOT_KEY = "snapshot" }
-}
-
-private class SharedPreferencesPlaylistStorage(context: Context) : PlaylistStorage {
-    private val preferences = context.getSharedPreferences("cleartune_playlists", Context.MODE_PRIVATE)
-
-    override fun load(): List<PlaylistDetails> = preferences.getString(SNAPSHOT_KEY, null)?.let { raw ->
-        runCatching {
-            val array = JSONArray(raw)
-            buildList {
-                repeat(array.length()) { index ->
-                    val playlistJson = array.getJSONObject(index)
-                    val itemArray = playlistJson.getJSONArray("items")
-                    val items = buildList {
-                        repeat(itemArray.length()) { itemIndex ->
-                            val itemJson = itemArray.getJSONObject(itemIndex)
-                            add(
-                                PlaylistItemRecord(
-                                    PlaylistItemId(itemJson.getString("id")),
-                                    TrackId(itemJson.getString("trackId")),
-                                ),
-                            )
-                        }
-                    }
-                    add(
-                        PlaylistDetails(
-                            PlaylistId(playlistJson.getString("id")),
-                            playlistJson.getString("name"),
-                            items,
-                        ),
-                    )
-                }
-            }
-        }.getOrDefault(emptyList())
-    } ?: emptyList()
-
-    override fun save(playlists: List<PlaylistDetails>) {
-        val array = JSONArray().apply {
-            playlists.forEach { playlist ->
-                val items = JSONArray().apply {
-                    playlist.items.forEach { item ->
-                        put(JSONObject().put("id", item.id.value).put("trackId", item.trackId.value))
-                    }
-                }
-                put(
-                    JSONObject()
-                        .put("id", playlist.id.value)
-                        .put("name", playlist.name)
-                        .put("items", items),
-                )
-            }
-        }
-        preferences.edit().putString(SNAPSHOT_KEY, array.toString()).apply()
-    }
-
-    private companion object { const val SNAPSHOT_KEY = "snapshot" }
 }

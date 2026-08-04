@@ -40,7 +40,7 @@ class PlayerCache(
     fun dataSourceFactory(): DataSource.Factory {
         val remote = CacheDataSource.Factory()
             .setCache(cache)
-            .setUpstreamDataSourceFactory(OkHttpDataSource.Factory(OkHttpClient()))
+            .setUpstreamDataSourceFactory(OkHttpDataSource.Factory(securePlaybackHttpClient()))
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         val local = DefaultDataSource.Factory(appContext)
         return RemoteOnlyDataSourceFactory(remote, local, headersProvider)
@@ -55,6 +55,11 @@ class PlayerCache(
         const val MAX_CACHE_BYTES: Long = 512L * 1024L * 1024L
     }
 }
+
+internal fun securePlaybackHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    .followRedirects(false)
+    .followSslRedirects(false)
+    .build()
 
 @UnstableApi
 private class RemoteOnlyDataSourceFactory(

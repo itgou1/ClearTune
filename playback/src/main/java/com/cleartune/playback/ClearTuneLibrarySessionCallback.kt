@@ -1,12 +1,15 @@
 package com.cleartune.playback
 
 import android.net.Uri
+import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionError
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -30,6 +33,10 @@ interface LibrarySessionCatalog {
     }
 }
 
+interface LibrarySessionCatalogOwner {
+    val librarySessionCatalog: LibrarySessionCatalog
+}
+
 data class SessionMediaDescription(
     val mediaId: String,
     val title: String,
@@ -42,6 +49,7 @@ data class SessionMediaDescription(
     val playable: Boolean = false,
 )
 
+@OptIn(markerClass = [UnstableApi::class])
 class ClearTuneLibrarySessionCallback(
     private val catalog: LibrarySessionCatalog = LibrarySessionCatalog.Empty,
 ) : MediaLibrarySession.Callback {
@@ -78,7 +86,7 @@ class ClearTuneLibrarySessionCallback(
             ?.let(::toMediaItem)
         return Futures.immediateFuture(
             item?.let { LibraryResult.ofItem(it, null) }
-                ?: LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE),
+                ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE),
         )
     }
 
@@ -99,8 +107,10 @@ class ClearTuneLibrarySessionCallback(
             else -> emptyList()
         }
         val safePageSize = pageSize.coerceAtLeast(1)
-        val from = (page.coerceAtLeast(0) * safePageSize).coerceAtMost(children.size)
-        val to = (from + safePageSize).coerceAtMost(children.size)
+        val from = (page.coerceAtLeast(0).toLong() * safePageSize.toLong())
+            .coerceAtMost(children.size.toLong())
+            .toInt()
+        val to = (from.toLong() + safePageSize.toLong()).coerceAtMost(children.size.toLong()).toInt()
         return children.subList(from, to)
     }
 

@@ -7,6 +7,7 @@ import okhttp3.HttpUrl
 data class DownloadCredentials(
     val username: String,
     val password: CharArray,
+    val protectionBase: HttpUrl? = null,
 )
 
 data class DownloadWork(

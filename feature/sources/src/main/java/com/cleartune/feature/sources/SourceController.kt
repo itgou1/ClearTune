@@ -24,7 +24,10 @@ sealed interface SourceRoute {
         AddWebDav -> "sources/add-webdav"
         is Edit -> "sources/${encode(sourceId.value)}/edit"
         is Root -> "sources/${encode(sourceId.value)}"
-        is Browse -> "sources/${encode(sourceId.value)}/browse/${encode(relativePath)}"
+        is Browse -> buildString {
+            append("sources/${encode(sourceId.value)}/browse")
+            if (relativePath.isNotBlank()) append('/').append(encode(relativePath))
+        }
         is Invalid -> rawRoute
     }
 
@@ -37,6 +40,8 @@ sealed interface SourceRoute {
                     parts == listOf("sources", "add-webdav") -> AddWebDav
                     parts.size == 2 && parts[0] == "sources" -> Root(SourceId(decode(parts[1])))
                     parts.size == 3 && parts[0] == "sources" && parts[2] == "edit" -> Edit(SourceId(decode(parts[1])))
+                    parts.size == 3 && parts[0] == "sources" && parts[2] == "browse" ->
+                        Browse(SourceId(decode(parts[1])), "")
                     parts.size == 4 && parts[0] == "sources" && parts[2] == "browse" ->
                         Browse(SourceId(decode(parts[1])), decode(parts[3]))
                     else -> Invalid(rawRoute)
@@ -46,8 +51,9 @@ sealed interface SourceRoute {
             }
         }
 
-        private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")
-        private fun decode(value: String): String = URLDecoder.decode(value, StandardCharsets.UTF_8)
+        private fun encode(value: String): String =
+            URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
+        private fun decode(value: String): String = URLDecoder.decode(value, StandardCharsets.UTF_8.name())
     }
 }
 

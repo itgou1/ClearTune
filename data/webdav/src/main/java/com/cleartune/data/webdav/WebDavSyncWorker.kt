@@ -81,7 +81,7 @@ class WebDavSyncWorker(
 
         fun workName(sourceId: SourceId): String = "webdav-sync-${sourceId.value}"
 
-        fun notificationId(sourceId: SourceId): Int = 0x57440000 or (sourceId.value.hashCode() and 0x0000ffff)
+        fun notificationId(sourceId: SourceId): Int = sourceId.value.hashCode() xor 0x57440000
 
         fun runnerFrom(application: Any): WebDavSyncRunner? =
             (application as? WebDavSyncWorkerHost)?.webDavSyncRunner

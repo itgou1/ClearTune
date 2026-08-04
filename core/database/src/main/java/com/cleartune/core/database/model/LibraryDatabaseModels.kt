@@ -19,6 +19,7 @@ data class LibraryTrackRow(
     val albumId: String? = null,
     val albumTitle: String?,
     val artistNames: String?,
+    val artistIds: String? = null,
     val artworkRef: String?,
     val durationMs: Long?,
     val downloadedLocations: Int,
@@ -26,6 +27,11 @@ data class LibraryTrackRow(
     val relativeFolders: String = "",
     val addedAtEpochMs: Long = 0,
 )
+
+fun LibraryTrackRow.hasArtist(artistId: ArtistId): Boolean = artistIds
+    ?.split(ARTIST_SEPARATOR)
+    ?.any { it == artistId.value }
+    ?: false
 
 fun LibraryTrackRow.belongsToFolder(relativeFolder: String): Boolean = relativeFolders
     .split(ARTIST_SEPARATOR)

@@ -56,3 +56,26 @@ git status --short
 ```
 
 If a required change is outside the owned paths, stop and use the contract change procedure in `docs/development/branch-ownership.md`.
+
+## Integrated production assembly
+
+The app module is the only cross-deliverable composition root. Production uses Room for the library,
+sources, playlists, queue/recovery, downloads, and appearance settings. The app module owns the
+local-snapshot, WebDAV-sync, download-publication, source-action, playlist-detail, browse, and media
+catalog adapters; data and feature modules remain independent of one another.
+
+WebDAV credentials are encrypted with Android Keystore and stored under `noBackupFilesDir`. Worker
+process recreation is provisioned by `ClearTuneApplication`: local scans use its WorkManager factory,
+while WebDAV sync and download workers resolve durable runners from application host interfaces.
+Library scans and enabled WebDAV sources are scheduled at application startup.
+
+Run the integration gate from the integration worktree:
+
+```powershell
+& 'D:\DvEnvironment\gradle-9.5.0\bin\gradle.bat' testDebugUnitTest lintDebug :app:assembleDebugAndroidTest :app:assembleDebug --console=plain --no-daemon
+```
+
+`assembleDebugAndroidTest` compiles device assertions but does not execute them. Run those APKs on an
+existing compatible device or emulator when one is available; do not create an AVD solely for this gate.
+License content has no provider in the merged deliverables and therefore remains explicitly unavailable
+instead of being bound to a no-op action.

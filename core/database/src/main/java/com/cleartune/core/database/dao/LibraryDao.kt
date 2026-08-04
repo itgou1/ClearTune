@@ -38,6 +38,10 @@ interface LibraryReadDao {
                     INNER JOIN track_artists ta ON ta.artistId = ar.id
                     WHERE ta.trackId = t.id ORDER BY ar.name COLLATE NOCASE
                )) AS artistNames,
+               (SELECT GROUP_CONCAT(artistId, char(31)) FROM (
+                    SELECT ta.artistId AS artistId FROM track_artists ta
+                    WHERE ta.trackId = t.id ORDER BY ta.artistId
+               )) AS artistIds,
                t.artworkRef, t.durationMs,
                (SELECT COUNT(*) FROM track_locations dl
                     WHERE dl.trackId = t.id AND dl.type = 'DOWNLOADED_FILE' AND dl.available = 1) AS downloadedLocations,
@@ -135,6 +139,9 @@ abstract class LibraryWriteDao {
 
     @Query("UPDATE track_locations SET available = 0 WHERE sourceId = :sourceId AND sourceKey IN (:sourceKeys) AND available != 0")
     abstract suspend fun markSourceKeysUnavailable(sourceId: String, sourceKeys: List<String>): Int
+
+    @Query("UPDATE track_locations SET available = 0 WHERE id = :locationId AND available != 0")
+    abstract suspend fun markLocationUnavailable(locationId: String): Int
 
     @Transaction
     open suspend fun applySourceSnapshot(

@@ -98,10 +98,14 @@ object PlayerFeatureEntry {
         val queue by dependencies.queueRepository.observeQueue().collectAsState(initial = QueueSnapshot())
         val titles by dependencies.queueTitles.collectAsState(initial = emptyMap())
         val trackId = playback.currentTrack?.id
-        val actions by (trackId?.let(dependencies.observeTrackActions) ?: flowOf(PlayerTrackActionState()))
-            .collectAsState(initial = PlayerTrackActionState())
-        val lyrics by (trackId?.let(dependencies.observeLyrics) ?: flowOf(LyricsUiState.Unavailable))
-            .collectAsState(initial = LyricsUiState.Loading)
+        val actionFlow = remember(trackId, dependencies.observeTrackActions) {
+            trackId?.let(dependencies.observeTrackActions) ?: flowOf(PlayerTrackActionState())
+        }
+        val lyricsFlow = remember(trackId, dependencies.observeLyrics) {
+            trackId?.let(dependencies.observeLyrics) ?: flowOf(LyricsUiState.Unavailable)
+        }
+        val actions by actionFlow.collectAsState(initial = PlayerTrackActionState())
+        val lyrics by lyricsFlow.collectAsState(initial = LyricsUiState.Loading)
         FullPlayerScreen(
             playback = playback,
             queue = queue,
@@ -322,7 +326,7 @@ private fun Artwork(artwork: ArtworkPresentation, modifier: Modifier = Modifier)
         if (artwork is ArtworkPresentation.Remote && !failed) {
             AsyncImage(
                 model = artwork.reference,
-                contentDescription = "Album artwork",
+                contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
                 onError = { failed = true },
