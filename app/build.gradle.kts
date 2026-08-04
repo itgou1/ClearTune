@@ -48,7 +48,11 @@ dependencies {
     implementation(projects.feature.settings)
     implementation(platform(libs.compose.bom))
     implementation(libs.activity.compose)
+    implementation(libs.compose.ui)
+    implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
     implementation(libs.navigation.compose)
+    implementation(libs.coroutines.core)
+    testImplementation(libs.junit4)
     debugImplementation(libs.compose.ui.tooling)
 }
