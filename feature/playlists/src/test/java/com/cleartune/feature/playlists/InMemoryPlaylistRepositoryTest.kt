@@ -4,6 +4,11 @@ import com.cleartune.core.model.PlaylistCommand
 import com.cleartune.core.model.PlaylistId
 import com.cleartune.core.model.PlaylistItemId
 import com.cleartune.core.model.TrackId
+import com.cleartune.core.contracts.QueueRepository
+import com.cleartune.core.model.QueueCommand
+import com.cleartune.core.model.QueueSnapshot
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -87,6 +92,32 @@ class InMemoryPlaylistRepositoryTest {
 
         assertEquals("Saved", restored?.name)
         assertEquals(listOf(TrackId("track")), restored?.items?.map { it.trackId })
+    }
+
+    @Test
+    fun `playlist queue action synchronizes only after repository update succeeds`() = runTest {
+        val events = mutableListOf<String>()
+        val queue = RecordingQueueRepository(events)
+
+        applyPlaylistQueueCommand(queue, QueueCommand.AddNext(TrackId("track"))) { events += "sync" }
+
+        assertEquals(listOf("apply", "sync"), events)
+        queue.fail = true
+        try {
+            applyPlaylistQueueCommand(queue, QueueCommand.AddLast(TrackId("track"))) { events += "bad-sync" }
+            fail("Expected queue mutation failure")
+        } catch (_: IllegalStateException) {
+        }
+        assertEquals(listOf("apply", "sync", "apply"), events)
+    }
+}
+
+private class RecordingQueueRepository(private val events: MutableList<String>) : QueueRepository {
+    var fail = false
+    override fun observeQueue(): Flow<QueueSnapshot> = flowOf(QueueSnapshot())
+    override suspend fun apply(command: QueueCommand) {
+        events += "apply"
+        check(!fail) { "failed" }
     }
 }
 

@@ -10,12 +10,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -62,7 +66,15 @@ data class PlayerTrackActionState(
     val isDownloaded: Boolean = false,
     val canFavorite: Boolean = false,
     val canDownload: Boolean = false,
+    val downloadUnavailableReason: String = "Downloads are not configured yet",
 )
+
+val PlayerTrackActionState.downloadLabel: String
+    get() = when {
+        !canDownload -> "Download unavailable"
+        isDownloaded -> "Remove download"
+        else -> "Download"
+    }
 
 data class PlayerFeatureDependencies(
     val playbackGateway: PlaybackGateway,
@@ -71,9 +83,10 @@ data class PlayerFeatureDependencies(
     val queueTitles: Flow<Map<TrackId, String>> = flowOf(emptyMap()),
     val observeTrackActions: (TrackId) -> Flow<PlayerTrackActionState> = { flowOf(PlayerTrackActionState()) },
     val onToggleFavorite: suspend (TrackId) -> Unit = {},
-    val onToggleDownload: suspend (TrackId) -> Unit = {},
+    val onToggleDownload: (suspend (TrackId) -> Unit)? = null,
     val observeLyrics: (TrackId) -> Flow<LyricsUiState> = { flowOf(LyricsUiState.Unavailable) },
     val onPlayOccurrence: suspend (QueueItemId) -> Unit = {},
+    val onRetry: (suspend (TrackId) -> Unit)? = null,
 )
 
 object PlayerFeatureEntry {
@@ -101,8 +114,10 @@ object PlayerFeatureEntry {
                 dependencies.onQueueChanged()
             },
             onToggleFavorite = { trackId?.let { dependencies.onToggleFavorite(it) } },
-            onToggleDownload = { trackId?.let { dependencies.onToggleDownload(it) } },
+            onToggleDownload = { trackId?.let { dependencies.onToggleDownload?.invoke(it) } },
             onPlayOccurrence = dependencies.onPlayOccurrence,
+            retryAvailable = trackId != null && dependencies.onRetry != null,
+            onRetry = { trackId?.let { dependencies.onRetry?.invoke(it) } },
             onClose = { onNavigate("back") },
         )
     }
@@ -119,6 +134,7 @@ fun MiniPlayer(
     val track = playback.currentTrack ?: return
     if (queue.items.isEmpty()) return
     val scope = rememberCoroutineScope()
+    val ui = playback.toPlayerUiState(retryAvailable = dependencies.onRetry != null)
     Card(
         modifier = modifier.fillMaxWidth()
             .padding(horizontal = ClearTuneDimensions.spacingSm, vertical = ClearTuneDimensions.spacingXs)
@@ -129,7 +145,7 @@ fun MiniPlayer(
                 modifier = Modifier.padding(ClearTuneDimensions.spacingSm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Artwork(playback.toPlayerUiState().artwork, Modifier.size(48.dp))
+                Artwork(ui.artwork, Modifier.size(48.dp))
                 Spacer(Modifier.width(ClearTuneDimensions.spacingSm))
                 Column(Modifier.weight(1f)) {
                     Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -151,9 +167,21 @@ fun MiniPlayer(
                 }) { Text("Next") }
             }
             LinearProgressIndicator(
-                progress = { playback.toPlayerUiState().progress },
+                progress = { ui.progress },
                 modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Playback progress" },
             )
+            ui.error?.let { error ->
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = ClearTuneDimensions.spacingSm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(error.message, Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
+                    TextButton(
+                        enabled = error.retryAvailable,
+                        onClick = { scope.launch { dependencies.onRetry?.invoke(track.id) } },
+                    ) { Text(if (error.retryAvailable) "Retry" else "Retry unavailable") }
+                }
+            }
         }
     }
 }
@@ -172,11 +200,13 @@ private fun FullPlayerScreen(
     onToggleFavorite: suspend () -> Unit,
     onToggleDownload: suspend () -> Unit,
     onPlayOccurrence: suspend (QueueItemId) -> Unit,
+    retryAvailable: Boolean,
+    onRetry: suspend () -> Unit,
     onClose: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var panel by remember { mutableStateOf(PlayerPanel.NOW_PLAYING) }
-    val ui = playback.toPlayerUiState()
+    val ui = playback.toPlayerUiState(retryAvailable)
     Column(
         modifier = Modifier.fillMaxSize().padding(ClearTuneDimensions.spacingMd),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -194,8 +224,14 @@ private fun FullPlayerScreen(
             )
             PlayerPanel.LYRICS -> LyricsContent(lyrics, Modifier.weight(1f))
             PlayerPanel.NOW_PLAYING -> {
-                Spacer(Modifier.weight(1f))
-                Artwork(ui.artwork, Modifier.fillMaxWidth().height(280.dp))
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                Artwork(
+                    ui.artwork,
+                    Modifier.fillMaxWidth().aspectRatio(1f).heightIn(max = 280.dp),
+                )
                 Spacer(Modifier.height(ClearTuneDimensions.spacingLg))
                 Text(playback.currentTrack?.title ?: "Nothing playing", style = MaterialTheme.typography.headlineSmall)
                 Text(
@@ -227,8 +263,11 @@ private fun FullPlayerScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(error.message, Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
-                            TextButton(onClick = { scope.launch { onPlaybackCommand(PlaybackCommand.Play) } }) {
-                                Text("Retry")
+                            TextButton(
+                                enabled = error.retryAvailable,
+                                onClick = { scope.launch { onRetry() } },
+                            ) {
+                                Text(if (error.retryAvailable) "Retry" else "Retry unavailable")
                             }
                         }
                     }
@@ -241,7 +280,10 @@ private fun FullPlayerScreen(
                     TextButton(
                         enabled = trackActions.canDownload,
                         onClick = { scope.launch { onToggleDownload() } },
-                    ) { Text(if (trackActions.isDownloaded) "Remove download" else "Download") }
+                    ) { Text(trackActions.downloadLabel) }
+                    if (!trackActions.canDownload) {
+                        Text(trackActions.downloadUnavailableReason, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     TextButton(onClick = { scope.launch {
@@ -256,7 +298,8 @@ private fun FullPlayerScreen(
                         scope.launch { onPlaybackCommand(PlaybackCommand.SetRepeat(next)) }
                     }) { Text("Repeat ${playback.repeatMode.name.lowercase()}") }
                 }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(ClearTuneDimensions.spacingMd))
+                }
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {

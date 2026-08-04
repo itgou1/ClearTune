@@ -45,6 +45,7 @@ import com.cleartune.feature.playlists.PlaylistStorage
 import com.cleartune.feature.settings.SettingsProductCommand
 import com.cleartune.feature.settings.SettingsProductController
 import com.cleartune.feature.settings.SettingsProductState
+import com.cleartune.feature.settings.SettingsOperationState
 import com.cleartune.playback.Media3PlaybackBackend
 import com.cleartune.playback.PersistentQueueRepository
 import com.cleartune.playback.PlaybackCoordinator
@@ -75,6 +76,7 @@ class AppContainer(
         libraryRepository as? PlaybackLibraryRepository ?: EmptyPlaybackLibraryRepository,
     val sourceRepository: SourceRepository = EmptySourceRepository,
     val downloadRepository: DownloadRepository = EmptyDownloadRepository,
+    val downloadCommandsAvailable: Boolean = downloadRepository !== EmptyDownloadRepository,
     private val credentialStore: CredentialStore = EmptyCredentialStore,
 ) {
     private val appContext = context.applicationContext
@@ -262,7 +264,15 @@ private class AppSettingsRepository(
             SettingsProductCommand.ScanLibrary,
             SettingsProductCommand.CleanUpCache,
             SettingsProductCommand.OpenLicenses,
-            -> productState.value
+            -> {
+                val unavailable = when (command) {
+                    SettingsProductCommand.ScanLibrary -> productState.value.scanLibrary
+                    SettingsProductCommand.CleanUpCache -> productState.value.cleanUpCache
+                    SettingsProductCommand.OpenLicenses -> productState.value.openLicenses
+                } as? SettingsOperationState.Unavailable
+                check(unavailable == null) { unavailable?.reason ?: "Operation unavailable" }
+                error("Operation adapter is not bound")
+            }
         }
     }
 

@@ -6,7 +6,11 @@ import kotlin.math.max
 
 enum class PlayerErrorAction { RETRY }
 
-data class PlayerErrorUi(val message: String, val action: PlayerErrorAction = PlayerErrorAction.RETRY)
+data class PlayerErrorUi(
+    val message: String,
+    val action: PlayerErrorAction = PlayerErrorAction.RETRY,
+    val retryAvailable: Boolean,
+)
 
 sealed interface ArtworkPresentation {
     data class Remote(val reference: String) : ArtworkPresentation
@@ -27,7 +31,7 @@ data class PlayerUiState(
     val error: PlayerErrorUi?,
 )
 
-fun PlaybackState.toPlayerUiState(): PlayerUiState {
+fun PlaybackState.toPlayerUiState(retryAvailable: Boolean = false): PlayerUiState {
     val knownDuration = durationMs?.takeIf { it > 0 }
     val progress = if (knownDuration == null) 0f else (positionMs.toFloat() / knownDuration).coerceIn(0f, 1f)
     return PlayerUiState(
@@ -38,7 +42,7 @@ fun PlaybackState.toPlayerUiState(): PlayerUiState {
             ?: ArtworkPresentation.Fallback(
                 currentTrack?.title?.trim()?.firstOrNull()?.uppercase() ?: "♪",
             ),
-        error = errorMessage?.takeIf(String::isNotBlank)?.let(::PlayerErrorUi),
+        error = errorMessage?.takeIf(String::isNotBlank)?.let { PlayerErrorUi(it, retryAvailable = retryAvailable) },
     )
 }
 

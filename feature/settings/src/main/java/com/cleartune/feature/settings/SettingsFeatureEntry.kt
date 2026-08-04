@@ -107,19 +107,31 @@ object SettingsFeatureEntry {
                     val next = if (product.cacheLimitMb >= 2_048) 256 else product.cacheLimitMb * 2
                     dispatch(SettingsProductCommand.SetCacheLimitMb(next))
                 }
-                NavigationRow("Clean up cache", formatBytes(product.cachedBytes)) {
+                NavigationRow(
+                    "Clean up cache",
+                    product.cleanUpCache.label(formatBytes(product.cachedBytes)),
+                    enabled = product.cleanUpCache.isActionable,
+                ) {
                     dispatch(SettingsProductCommand.CleanUpCache)
                 }
                 NavigationRow("Offline downloads", "${downloads.size} tracks") { onNavigate("downloads") }
             } }
             item { SettingsCard("Library") {
                 NavigationRow("Music sources", "${sources.size}") { onNavigate("sources") }
-                NavigationRow("Scan library", "Scan now") { dispatch(SettingsProductCommand.ScanLibrary) }
+                NavigationRow(
+                    "Scan library",
+                    product.scanLibrary.label("Scan now"),
+                    enabled = product.scanLibrary.isActionable,
+                ) { dispatch(SettingsProductCommand.ScanLibrary) }
             } }
             item { SectionTitle("About") }
             item { SettingsCard("ClearTune") {
                 Text("Local and WebDAV music player", modifier = Modifier.padding(ClearTuneDimensions.spacingMd))
-                NavigationRow("Open-source licenses", "View") { dispatch(SettingsProductCommand.OpenLicenses) }
+                NavigationRow(
+                    "Open-source licenses",
+                    product.openLicenses.label("View"),
+                    enabled = product.openLicenses.isActionable,
+                ) { dispatch(SettingsProductCommand.OpenLicenses) }
             } }
         }
     }
@@ -162,14 +174,36 @@ object SettingsFeatureEntry {
     }
 }
 
-@Composable private fun NavigationRow(label: String, value: String, onClick: () -> Unit) {
+@Composable private fun NavigationRow(
+    label: String,
+    value: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(ClearTuneDimensions.spacingMd),
+        Modifier.fillMaxWidth()
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(ClearTuneDimensions.spacingMd),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, Modifier.weight(1f))
-        Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            value,
+            color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+        )
     }
+}
+
+private val SettingsOperationState.isActionable: Boolean
+    get() = this !is SettingsOperationState.Unavailable && this !is SettingsOperationState.Running
+
+private fun SettingsOperationState.label(ready: String): String = when (this) {
+    SettingsOperationState.Ready -> ready
+    SettingsOperationState.Running -> "Working…"
+    is SettingsOperationState.Success -> message
+    is SettingsOperationState.Error -> "Failed: $message"
+    is SettingsOperationState.Unavailable -> reason
 }
 
 private fun formatBytes(bytes: Long): String = when {

@@ -7,8 +7,19 @@ import com.cleartune.core.model.SettingsCommand
 import com.cleartune.core.model.ThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+enum class SettingsOperation { SCAN_LIBRARY, CLEAN_UP_CACHE, OPEN_LICENSES }
+
+sealed interface SettingsOperationState {
+    data class Unavailable(val reason: String) : SettingsOperationState
+    data object Ready : SettingsOperationState
+    data object Running : SettingsOperationState
+    data class Success(val message: String) : SettingsOperationState
+    data class Error(val message: String) : SettingsOperationState
+}
 
 data class SettingsProductState(
     val restoreQueue: Boolean = true,
@@ -19,6 +30,9 @@ data class SettingsProductState(
     val cacheLimitMb: Int = 512,
     val cachedBytes: Long = 0,
     val offlineTrackCount: Int = 0,
+    val scanLibrary: SettingsOperationState = SettingsOperationState.Unavailable("Library scanning is not configured yet"),
+    val cleanUpCache: SettingsOperationState = SettingsOperationState.Unavailable("Cache cleanup is not configured yet"),
+    val openLicenses: SettingsOperationState = SettingsOperationState.Unavailable("License information is not configured yet"),
 )
 
 sealed interface SettingsProductCommand {
@@ -45,6 +59,7 @@ interface SettingsStorage {
 
 class PersistentSettingsRepository(
     private val storage: SettingsStorage,
+    capabilities: Set<SettingsOperation> = emptySet(),
     private val onAction: suspend (SettingsProductCommand) -> Unit = {},
 ) : SettingsRepository, SettingsProductController {
     private val mutex = Mutex()
@@ -64,6 +79,9 @@ class PersistentSettingsRepository(
             backgroundPlayback = storage.boolean(BACKGROUND_PLAYBACK_KEY, false),
             dynamicBackground = storage.boolean(DYNAMIC_BACKGROUND_KEY, true),
             cacheLimitMb = storage.getString(CACHE_LIMIT_KEY)?.toIntOrNull()?.coerceIn(64, 8_192) ?: 512,
+            scanLibrary = operationState(SettingsOperation.SCAN_LIBRARY, capabilities),
+            cleanUpCache = operationState(SettingsOperation.CLEAN_UP_CACHE, capabilities),
+            openLicenses = operationState(SettingsOperation.OPEN_LICENSES, capabilities),
         ),
     )
     override val productSettings: Flow<SettingsProductState> = productState
@@ -100,10 +118,26 @@ class PersistentSettingsRepository(
             SettingsProductCommand.ScanLibrary,
             SettingsProductCommand.CleanUpCache,
             SettingsProductCommand.OpenLicenses,
-            -> {
-                onAction(command)
-                productState.value
-            }
+            -> runOperation(command)
+        }
+    }
+
+    private suspend fun runOperation(command: SettingsProductCommand): SettingsProductState {
+        val operation = command.operation()
+        val current = productState.value.operationState(operation)
+        if (current is SettingsOperationState.Unavailable) error(current.reason)
+        check(current !is SettingsOperationState.Running) { "Operation is already running" }
+        productState.value = productState.value.withOperation(operation, SettingsOperationState.Running)
+        return try {
+            onAction(command)
+            productState.value.withOperation(operation, SettingsOperationState.Success("Completed"))
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            productState.value.withOperation(
+                operation,
+                SettingsOperationState.Error(error.message?.takeIf(String::isNotBlank) ?: "Operation failed"),
+            )
         }
     }
 
@@ -120,6 +154,43 @@ class PersistentSettingsRepository(
         const val DYNAMIC_BACKGROUND_KEY = "dynamic_background"
         const val CACHE_LIMIT_KEY = "cache_limit_mb"
     }
+}
+
+fun SettingsProductState.operationState(operation: SettingsOperation): SettingsOperationState = when (operation) {
+    SettingsOperation.SCAN_LIBRARY -> scanLibrary
+    SettingsOperation.CLEAN_UP_CACHE -> cleanUpCache
+    SettingsOperation.OPEN_LICENSES -> openLicenses
+}
+
+private fun SettingsProductState.withOperation(
+    operation: SettingsOperation,
+    state: SettingsOperationState,
+): SettingsProductState = when (operation) {
+    SettingsOperation.SCAN_LIBRARY -> copy(scanLibrary = state)
+    SettingsOperation.CLEAN_UP_CACHE -> copy(cleanUpCache = state)
+    SettingsOperation.OPEN_LICENSES -> copy(openLicenses = state)
+}
+
+private fun SettingsProductCommand.operation(): SettingsOperation = when (this) {
+    SettingsProductCommand.ScanLibrary -> SettingsOperation.SCAN_LIBRARY
+    SettingsProductCommand.CleanUpCache -> SettingsOperation.CLEAN_UP_CACHE
+    SettingsProductCommand.OpenLicenses -> SettingsOperation.OPEN_LICENSES
+    else -> error("Command is not an operation")
+}
+
+private fun operationState(
+    operation: SettingsOperation,
+    capabilities: Set<SettingsOperation>,
+): SettingsOperationState = if (operation in capabilities) {
+    SettingsOperationState.Ready
+} else {
+    SettingsOperationState.Unavailable(
+        when (operation) {
+            SettingsOperation.SCAN_LIBRARY -> "Library scanning is not configured yet"
+            SettingsOperation.CLEAN_UP_CACHE -> "Cache cleanup is not configured yet"
+            SettingsOperation.OPEN_LICENSES -> "License information is not configured yet"
+        },
+    )
 }
 
 fun isReducedMotionEnabled(mode: ReducedMotionMode, systemAnimationsEnabled: Boolean): Boolean = when (mode) {

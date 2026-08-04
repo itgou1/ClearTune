@@ -38,6 +38,8 @@ import com.cleartune.core.designsystem.theme.ClearTuneTheme
 import com.cleartune.core.model.ThemeMode
 import com.cleartune.core.model.PlaylistId
 import com.cleartune.core.model.QueueCommand
+import com.cleartune.core.model.QueueItemId
+import com.cleartune.core.contracts.QueueRepository
 import com.cleartune.core.model.DownloadCommand
 import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.SongQuery
@@ -61,6 +63,7 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
+import com.cleartune.playback.PlaybackQueueStateWriter
 
 object AppRoutes {
     const val Library = "library"
@@ -88,8 +91,28 @@ object AppRoutes {
     }
 }
 
+internal suspend fun playQueueOccurrence(
+    queueRepository: QueueRepository,
+    stateWriter: PlaybackQueueStateWriter,
+    occurrenceId: QueueItemId,
+    onQueueChanged: suspend () -> Unit,
+) {
+    val snapshot = queueRepository.observeQueue().first()
+    val selectedIndex = snapshot.items.indexOfFirst { it.id == occurrenceId }
+    require(selectedIndex >= 0) { "Queue occurrence not found" }
+    stateWriter.updatePlaybackState(
+        currentIndex = selectedIndex,
+        positionMs = if (selectedIndex == snapshot.currentIndex) null else 0,
+        playWhenReady = false,
+    )
+    onQueueChanged()
+}
+
 @Composable
-fun ClearTuneApp(container: AppContainer) {
+fun ClearTuneApp(
+    container: AppContainer,
+    startDestination: String = AppRoutes.Library,
+) {
     val settings by container.settingsRepository.settings.collectAsState(initial = com.cleartune.core.model.AppSettings())
     val darkTheme = when (settings.themeMode) {
         ThemeMode.DARK -> true
@@ -106,7 +129,7 @@ fun ClearTuneApp(container: AppContainer) {
             Column(Modifier.fillMaxSize()) {
                 NavHost(
                     navController = navController,
-                    startDestination = AppRoutes.Library,
+                    startDestination = AppRoutes.restore(startDestination),
                     modifier = Modifier.weight(1f),
                     enterTransition = { if (reducedMotion) EnterTransition.None else fadeIn() },
                     exitTransition = { if (reducedMotion) ExitTransition.None else fadeOut() },
@@ -141,7 +164,8 @@ fun ClearTuneApp(container: AppContainer) {
                                             isDownloaded = downloads.any {
                                                 it.trackId == trackId && it.state == DownloadState.COMPLETED
                                             },
-                                            canDownload = true,
+                                            canDownload = container.downloadCommandsAvailable,
+                                            downloadUnavailableReason = "Downloads require a configured download adapter",
                                         )
                                     }
                                 },
@@ -154,15 +178,18 @@ fun ClearTuneApp(container: AppContainer) {
                                     )
                                 },
                                 onPlayOccurrence = { occurrenceId ->
-                                    val snapshot = container.queueRepository.observeQueue().first()
-                                    val index = snapshot.items.indexOfFirst { it.id == occurrenceId }
-                                    if (index >= 0) {
-                                        container.queueRepository.apply(
-                                            QueueCommand.Replace(snapshot.items.map { it.trackId }, startIndex = index),
-                                        )
-                                        container.playbackGateway.syncQueue()
-                                        container.playbackGateway.dispatch(com.cleartune.core.model.PlaybackCommand.Play)
-                                    }
+                                    playQueueOccurrence(
+                                        container.queueRepository,
+                                        container.queueRepository,
+                                        occurrenceId,
+                                        container.playbackGateway::syncQueue,
+                                    )
+                                    container.playbackGateway.dispatch(com.cleartune.core.model.PlaybackCommand.Play)
+                                },
+                                onRetry = { trackId ->
+                                    container.playbackGateway.dispatch(
+                                        com.cleartune.core.model.PlaybackCommand.PlayTrack(trackId),
+                                    )
                                 },
                             ),
                             navController::navigateOrBack,
@@ -178,6 +205,7 @@ fun ClearTuneApp(container: AppContainer) {
                                 container.libraryRepository.observeSongs(SongQuery()).map { tracks ->
                                     tracks.associate { it.id to it.title }
                                 },
+                                container.playbackGateway::syncQueue,
                             ),
                             navController::navigateOrBack,
                         )
@@ -196,6 +224,7 @@ fun ClearTuneApp(container: AppContainer) {
                                 container.libraryRepository.observeSongs(SongQuery()).map { tracks ->
                                     tracks.associate { it.id to it.title }
                                 },
+                                container.playbackGateway::syncQueue,
                             ),
                             navController::navigateOrBack,
                             playlistId,
@@ -267,7 +296,9 @@ private fun LibraryHomeScreen(onNavigate: (String) -> Unit) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(ClearTuneDimensions.spacingSm)) {
             items(categories) { category ->
                 Card(
-                    Modifier.fillMaxWidth().clickable { onNavigate(category.route) },
+                    Modifier.fillMaxWidth().clickable(onClickLabel = "Open ${category.route}") {
+                        onNavigate(category.route)
+                    },
                 ) {
                     Row(
                         Modifier.fillMaxWidth().padding(ClearTuneDimensions.spacingMd),

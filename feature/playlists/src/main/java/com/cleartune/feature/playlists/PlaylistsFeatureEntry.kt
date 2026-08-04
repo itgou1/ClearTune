@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -51,7 +52,17 @@ data class PlaylistsFeatureDependencies(
     val queueRepository: QueueRepository? = null,
     val detailsProvider: PlaylistDetailsProvider? = null,
     val trackTitles: Flow<Map<TrackId, String>> = flowOf(emptyMap()),
+    val onQueueChanged: suspend () -> Unit = {},
 )
+
+suspend fun applyPlaylistQueueCommand(
+    queueRepository: QueueRepository,
+    command: QueueCommand,
+    onQueueChanged: suspend () -> Unit,
+) {
+    queueRepository.apply(command)
+    onQueueChanged()
+}
 
 object PlaylistsFeatureEntry {
     const val route = "playlists"
@@ -159,14 +170,18 @@ private fun PlaylistDetailsScreen(
             TextButton(onClick = onBack) { Text("Back") }
             Text(details?.name ?: "Playlist", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(ClearTuneDimensions.spacingSm)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(ClearTuneDimensions.spacingSm)) {
             Button(enabled = trackIds.isNotEmpty(), onClick = { scope.launch {
-                dependencies.queueRepository?.apply(QueueCommand.Replace(trackIds))
+                dependencies.queueRepository?.let {
+                    applyPlaylistQueueCommand(it, QueueCommand.Replace(trackIds), dependencies.onQueueChanged)
+                }
                 trackIds.firstOrNull()?.let { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(it)) }
             } }) { Text("Play") }
             TextButton(enabled = trackIds.size > 1, onClick = { scope.launch {
                 val shuffled = trackIds.shuffled()
-                dependencies.queueRepository?.apply(QueueCommand.Replace(shuffled))
+                dependencies.queueRepository?.let {
+                    applyPlaylistQueueCommand(it, QueueCommand.Replace(shuffled), dependencies.onQueueChanged)
+                }
                 shuffled.firstOrNull()?.let { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(it)) }
             } }) { Text("Shuffle") }
         }
@@ -176,15 +191,27 @@ private fun PlaylistDetailsScreen(
             LazyColumn(Modifier.fillMaxWidth()) {
                 itemsIndexed(details.items, key = { _, item -> item.id.value }) { index, item ->
                     val row = rows[index]
-                    Row(
+                    Column(
                         Modifier.fillMaxWidth().semantics {
                             customActions = listOf(
                                 CustomAccessibilityAction(row.addNextActionLabel) {
-                                    scope.launch { dependencies.queueRepository?.apply(QueueCommand.AddNext(item.trackId)) }
+                                    scope.launch { dependencies.queueRepository?.let {
+                                        applyPlaylistQueueCommand(
+                                            it,
+                                            QueueCommand.AddNext(item.trackId),
+                                            dependencies.onQueueChanged,
+                                        )
+                                    } }
                                     true
                                 },
                                 CustomAccessibilityAction(row.addLastActionLabel) {
-                                    scope.launch { dependencies.queueRepository?.apply(QueueCommand.AddLast(item.trackId)) }
+                                    scope.launch { dependencies.queueRepository?.let {
+                                        applyPlaylistQueueCommand(
+                                            it,
+                                            QueueCommand.AddLast(item.trackId),
+                                            dependencies.onQueueChanged,
+                                        )
+                                    } }
                                     true
                                 },
                                 CustomAccessibilityAction(row.removeActionLabel) {
@@ -195,15 +222,26 @@ private fun PlaylistDetailsScreen(
                                 },
                             )
                         }.padding(vertical = ClearTuneDimensions.spacingXs),
-                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("${index + 1}", modifier = Modifier.padding(end = ClearTuneDimensions.spacingSm))
-                        Text(row.title, modifier = Modifier.weight(1f))
+                        Text("${index + 1}. ${row.title}", style = MaterialTheme.typography.titleMedium)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(ClearTuneDimensions.spacingXs)) {
                         TextButton(onClick = { scope.launch {
-                            dependencies.queueRepository?.apply(QueueCommand.AddNext(item.trackId))
+                            dependencies.queueRepository?.let {
+                                applyPlaylistQueueCommand(
+                                    it,
+                                    QueueCommand.AddNext(item.trackId),
+                                    dependencies.onQueueChanged,
+                                )
+                            }
                         } }) { Text("Next") }
                         TextButton(onClick = { scope.launch {
-                            dependencies.queueRepository?.apply(QueueCommand.AddLast(item.trackId))
+                            dependencies.queueRepository?.let {
+                                applyPlaylistQueueCommand(
+                                    it,
+                                    QueueCommand.AddLast(item.trackId),
+                                    dependencies.onQueueChanged,
+                                )
+                            }
                         } }) { Text("Last") }
                         TextButton(enabled = index > 0, onClick = { scope.launch {
                             dependencies.playlistRepository.apply(PlaylistCommand.MoveTrack(details.id, item.id, index - 1))
@@ -214,6 +252,7 @@ private fun PlaylistDetailsScreen(
                         TextButton(onClick = { scope.launch {
                             dependencies.playlistRepository.apply(PlaylistCommand.RemoveTrack(details.id, item.id))
                         } }) { Text("Remove") }
+                        }
                     }
                 }
             }

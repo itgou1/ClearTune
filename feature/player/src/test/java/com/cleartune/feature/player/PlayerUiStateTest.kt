@@ -7,6 +7,7 @@ import com.cleartune.core.model.QueueSnapshot
 import com.cleartune.core.model.TrackId
 import com.cleartune.core.model.TrackSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -39,6 +40,23 @@ class PlayerUiStateTest {
         assertEquals("Network unavailable", uiState.error?.message)
         assertEquals(PlayerErrorAction.RETRY, uiState.error?.action)
         assertEquals(ArtworkPresentation.Fallback("S"), uiState.artwork)
+    }
+
+    @Test
+    fun `unavailable location error only enables injected retry capability`() {
+        val playback = PlaybackState(errorMessage = "No playable location")
+
+        assertFalse(playback.toPlayerUiState(retryAvailable = false).error!!.retryAvailable)
+        assertTrue(playback.toPlayerUiState(retryAvailable = true).error!!.retryAvailable)
+    }
+
+    @Test
+    fun `download action is explicitly unavailable until a command is bound`() {
+        val actions = PlayerTrackActionState()
+
+        assertFalse(actions.canDownload)
+        assertEquals("Download unavailable", actions.downloadLabel)
+        assertTrue(actions.downloadUnavailableReason.isNotBlank())
     }
 
     @Test
