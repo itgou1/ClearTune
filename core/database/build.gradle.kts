@@ -14,11 +14,16 @@ android {
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(projects.core.model)
     implementation(projects.core.contracts)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
+    implementation(libs.coroutines.core)
     ksp(libs.room.compiler)
     testImplementation(libs.junit4)
 }
