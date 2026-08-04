@@ -183,6 +183,7 @@ WebDAV 凭据不拼接到 URL，也不放进 `MediaItem` 的可序列化元数�
 
 - 下载中使用 `.part` 文件；
 - 支持 Range 的服务器允许断点续传；
+- 暂停任务时保留 `.part` 文件，继续时从已完成位置恢复；取消任务时删除 `.part` 文件；
 - 完成后校验预期大小，再原子改名；
 - Room 事务同时更新 `DownloadEntity` 与 `TrackLocationEntity`；
 - 支持取消、手动重试、删除和仅 Wi-Fi 下载；
