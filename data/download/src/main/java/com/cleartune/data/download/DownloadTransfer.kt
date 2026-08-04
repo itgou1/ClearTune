@@ -70,6 +70,10 @@ class DownloadTransfer(client: OkHttpClient) {
                 }
 
                 val append = offset > 0 && response.code == 206
+                if (append && request.etag != null && response.header("ETag") != request.etag) {
+                    resetPartial(partial)
+                    return DownloadTransferResult.RetryableFailure("etag_changed")
+                }
                 val contentRange = if (response.code == 206) {
                     parseContentRange(response.header("Content-Range"))
                         ?.takeIf { range ->
@@ -78,13 +82,9 @@ class DownloadTransfer(client: OkHttpClient) {
                                 range.total > range.end &&
                                 (request.expectedBytes == null || range.total == request.expectedBytes)
                         }
-                        ?: return DownloadTransferResult.RetryableFailure("invalid_content_range")
+                        ?: return DownloadTransferResult.PermanentFailure("invalid_content_range")
                 } else {
                     null
-                }
-                if (append && request.etag != null && response.header("ETag") != request.etag) {
-                    resetPartial(partial)
-                    return DownloadTransferResult.RetryableFailure("etag_changed")
                 }
                 val body = response.body
                 val declaredLength = body.contentLength().takeIf { it >= 0 }
@@ -94,7 +94,7 @@ class DownloadTransfer(client: OkHttpClient) {
                     declaredLength != request.expectedBytes
                 ) {
                     resetPartial(partial)
-                    return DownloadTransferResult.RetryableFailure("size_mismatch")
+                    return DownloadTransferResult.PermanentFailure("size_mismatch")
                 }
                 partial.parentFile?.mkdirs()
                 val startingSize = if (append) offset else 0L

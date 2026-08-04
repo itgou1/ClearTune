@@ -87,8 +87,22 @@ class DownloadTransferTest {
             DownloadTransferRequest(server.url("/song.mp3"), files),
         )
 
-        assertTrue(result is DownloadTransferResult.RetryableFailure)
+        assertEquals(DownloadTransferResult.RetryableFailure("size_mismatch"), result)
         assertEquals("short", files.partialFile.readText())
+        assertFalse(files.finalFile.exists())
+    }
+
+    @Test
+    fun `200 declared length conflicting with fixed metadata is permanent`() {
+        server.enqueue(MockResponse.Builder().code(200).body("short").build())
+        val files = files()
+
+        val result = DownloadTransfer(OkHttpClient()).execute(
+            DownloadTransferRequest(server.url("/song.mp3"), files, expectedBytes = 11),
+        )
+
+        assertEquals(DownloadTransferResult.PermanentFailure("size_mismatch"), result)
+        assertEquals(0, files.partialFile.length())
         assertFalse(files.finalFile.exists())
     }
 
@@ -97,6 +111,7 @@ class DownloadTransferTest {
         server.enqueue(
             MockResponse.Builder().code(206)
                 .addHeader("Content-Range", "bytes 0-4/11")
+                .addHeader("ETag", "v1")
                 .body("world")
                 .build(),
         )
@@ -106,7 +121,7 @@ class DownloadTransferTest {
             DownloadTransferRequest(server.url("/song.mp3"), files, expectedBytes = 11, etag = "v1"),
         )
 
-        assertTrue(result is DownloadTransferResult.RetryableFailure)
+        assertEquals(DownloadTransferResult.PermanentFailure("invalid_content_range"), result)
         assertEquals("hello ", files.partialFile.readText())
         assertFalse(files.finalFile.exists())
     }
@@ -128,6 +143,26 @@ class DownloadTransferTest {
 
         assertTrue(result is DownloadTransferResult.RetryableFailure)
         assertEquals(0, files.partialFile.length())
+    }
+
+    @Test
+    fun `etag change resets stale partial before invalid range classification`() {
+        server.enqueue(
+            MockResponse.Builder().code(206)
+                .addHeader("Content-Range", "bytes 0-4/11")
+                .addHeader("ETag", "v2")
+                .body("world")
+                .build(),
+        )
+        val files = files().also { it.partialFile.writeText("hello ") }
+
+        val result = DownloadTransfer(OkHttpClient()).execute(
+            DownloadTransferRequest(server.url("/song.mp3"), files, expectedBytes = 11, etag = "v1"),
+        )
+
+        assertEquals(DownloadTransferResult.RetryableFailure("etag_changed"), result)
+        assertEquals(0, files.partialFile.length())
+        assertFalse(files.finalFile.exists())
     }
 
     @Test
@@ -164,7 +199,7 @@ class DownloadTransferTest {
             DownloadTransferRequest(server.url("/song.flac"), files, expectedBytes = null, etag = "v1"),
         )
 
-        assertTrue(result is DownloadTransferResult.RetryableFailure)
+        assertEquals(DownloadTransferResult.RetryableFailure("size_mismatch"), result)
         assertEquals("hello wor", files.partialFile.readText())
         assertFalse(files.finalFile.exists())
     }
@@ -183,8 +218,24 @@ class DownloadTransferTest {
             DownloadTransferRequest(server.url("/song.flac"), files),
         )
 
-        assertTrue(result is DownloadTransferResult.RetryableFailure)
+        assertEquals(DownloadTransferResult.PermanentFailure("invalid_content_range"), result)
         assertFalse(files.finalFile.exists())
+    }
+
+    @Test
+    fun `malformed content range is a permanent protocol mismatch`() {
+        server.enqueue(
+            MockResponse.Builder().code(206)
+                .addHeader("Content-Range", "not-a-range")
+                .body("whole")
+                .build(),
+        )
+
+        val result = DownloadTransfer(OkHttpClient()).execute(
+            DownloadTransferRequest(server.url("/song.flac"), files()),
+        )
+
+        assertEquals(DownloadTransferResult.PermanentFailure("invalid_content_range"), result)
     }
 
     @Test
