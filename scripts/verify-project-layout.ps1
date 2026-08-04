@@ -57,6 +57,14 @@ foreach ($module in $requiredModules) {
     }
 }
 
+$settingsPath = Join-Path $repoRoot 'settings.gradle.kts'
+if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
+    $typeSafeAccessors = Select-String -LiteralPath $settingsPath -Pattern 'enableFeaturePreview\("TYPESAFE_PROJECT_ACCESSORS"\)'
+    if (-not $typeSafeAccessors) {
+        $violations.Add('settings.gradle.kts must enable TYPESAFE_PROJECT_ACCESSORS')
+    }
+}
+
 $gradleFiles = Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter '*.gradle.kts' -File -ErrorAction SilentlyContinue
 $forbiddenPlugin = $gradleFiles | Select-String -Pattern 'org\.jetbrains\.kotlin\.android|kotlin-android'
 foreach ($match in $forbiddenPlugin) {

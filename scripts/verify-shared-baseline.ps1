@@ -38,6 +38,21 @@ if (Test-Path -LiteralPath $appPath) {
     }
 }
 
+$wrapperPropertiesPath = Join-Path $repoRoot 'gradle/wrapper/gradle-wrapper.properties'
+if (Test-Path -LiteralPath $wrapperPropertiesPath) {
+    $networkTimeoutLine = Get-Content -LiteralPath $wrapperPropertiesPath |
+        Where-Object { $_ -match '^networkTimeout=' } |
+        Select-Object -First 1
+    $networkTimeout = if ($networkTimeoutLine) {
+        [int]($networkTimeoutLine -replace '^networkTimeout=', '')
+    } else {
+        0
+    }
+    if ($networkTimeout -lt 120000) {
+        $violations.Add('Gradle wrapper networkTimeout must be at least 120000 milliseconds')
+    }
+}
+
 if ($violations.Count -gt 0) {
     $violations | ForEach-Object { [Console]::Error.WriteLine($_) }
     exit 1

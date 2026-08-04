@@ -17,7 +17,9 @@ class ContractShapeTest {
     @Test
     fun playback_library_repository_exposes_track_resolution() {
         assertTrue(
-            PlaybackLibraryRepository::class.java.methods.any { it.name == "getPlayableTrack" },
+            PlaybackLibraryRepository::class.java.methods.any {
+                it.name.substringBefore('-') == "getPlayableTrack"
+            },
         )
     }
 
