@@ -19,7 +19,6 @@ android {
 dependencies {
     implementation(projects.core.model)
     implementation(projects.core.contracts)
-    implementation(projects.core.database)
     implementation(libs.coroutines.android)
     implementation(libs.work.runtime)
     testImplementation(libs.junit4)

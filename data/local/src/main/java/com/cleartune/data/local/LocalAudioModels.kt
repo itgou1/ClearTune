@@ -68,6 +68,7 @@ data class LocalScanDiff(
 enum class LocalScanOutcome {
     COMPLETED,
     PERMISSION_REQUIRED,
+    TRANSIENT_FAILURE,
     FAILED,
 }
 
@@ -76,6 +77,7 @@ enum class LocalScanPhase {
     READING,
     APPLYING,
     COMPLETED,
+    CANCELLED,
     PERMISSION_REQUIRED,
     FAILED,
 }

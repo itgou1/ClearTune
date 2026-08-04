@@ -119,7 +119,7 @@ abstract class LibraryWriteDao {
     abstract suspend fun deleteSearch(trackId: String)
 
     @Query("SELECT * FROM track_locations WHERE sourceId = :sourceId AND sourceKey = :sourceKey LIMIT 1")
-    abstract suspend fun location(sourceId: String, sourceKey: String): TrackLocationEntity?
+    abstract suspend fun locationIncludingUnavailable(sourceId: String, sourceKey: String): TrackLocationEntity?
 
     @Query("SELECT * FROM tracks WHERE id = :trackId LIMIT 1")
     abstract suspend fun track(trackId: String): TrackEntity?
@@ -133,17 +133,8 @@ abstract class LibraryWriteDao {
     @Query("SELECT sourceKey FROM track_locations WHERE sourceId = :sourceId")
     abstract suspend fun sourceKeys(sourceId: String): List<String>
 
-    @Query("DELETE FROM track_locations WHERE sourceId = :sourceId AND sourceKey IN (:sourceKeys)")
-    abstract suspend fun deleteSourceKeys(sourceId: String, sourceKeys: List<String>): Int
-
-    @Query("DELETE FROM track_locations WHERE sourceId = :sourceId")
-    abstract suspend fun deleteAllSourceLocations(sourceId: String): Int
-
-    @Query("DELETE FROM tracks WHERE NOT EXISTS (SELECT 1 FROM track_locations l WHERE l.trackId = tracks.id)")
-    abstract suspend fun deleteOrphanTracks(): Int
-
-    @Query("SELECT id FROM tracks WHERE NOT EXISTS (SELECT 1 FROM track_locations l WHERE l.trackId = tracks.id)")
-    abstract suspend fun orphanTrackIds(): List<String>
+    @Query("UPDATE track_locations SET available = 0 WHERE sourceId = :sourceId AND sourceKey IN (:sourceKeys) AND available != 0")
+    abstract suspend fun markSourceKeysUnavailable(sourceId: String, sourceKeys: List<String>): Int
 
     @Transaction
     open suspend fun applySourceSnapshot(
@@ -169,7 +160,7 @@ abstract class LibraryWriteDao {
         var inserted = 0
         var updated = 0
         records.forEach { record ->
-            val existing = location(sourceId.value, record.sourceKey)
+            val existing = locationIncludingUnavailable(sourceId.value, record.sourceKey)
             val trackId = existing?.trackId ?: StableLibraryId.track(sourceId, record.sourceKey).value
             val albumId = record.albumTitle?.takeIf(String::isNotBlank)?.let { title ->
                 StableLibraryId.album(sourceId, title).value
@@ -232,11 +223,10 @@ abstract class LibraryWriteDao {
             )
             if (existing == null || existingTrack == null) inserted++ else updated++
         }
-        val removed = deleteMissingSourceKeys(
+        val removed = markMissingSourceKeysUnavailable(
             sourceId = sourceId.value,
             retainedKeys = retainedSourceKeys,
         )
-        deleteOrphanTracksAndSearch()
         upsertSyncSession(
             SyncSessionEntity(
                 id = "${sourceId.value}:$syncedAtEpochMs",
@@ -298,21 +288,15 @@ abstract class LibraryWriteDao {
             MutationResult(inserted = mutation.tracks.size)
         }
         is LibraryMutation.RetainSourceKeys -> {
-            val removed = deleteMissingSourceKeys(mutation.sourceId.value, mutation.retainedSourceKeys)
-            deleteOrphanTracksAndSearch()
+            val removed = markMissingSourceKeysUnavailable(mutation.sourceId.value, mutation.retainedSourceKeys)
             MutationResult(removed = removed)
         }
     }
 
-    private suspend fun deleteOrphanTracksAndSearch(): Int {
-        orphanTrackIds().forEach { trackId -> deleteSearch(trackId) }
-        return deleteOrphanTracks()
-    }
-
-    private suspend fun deleteMissingSourceKeys(sourceId: String, retainedKeys: Collection<String>): Int =
+    private suspend fun markMissingSourceKeysUnavailable(sourceId: String, retainedKeys: Collection<String>): Int =
         missingSourceKeys(sourceKeys(sourceId), retainedKeys)
             .chunked(SQLITE_SAFE_BATCH_SIZE)
-            .sumOf { keys -> deleteSourceKeys(sourceId, keys) }
+            .sumOf { keys -> markSourceKeysUnavailable(sourceId, keys) }
 
     private companion object {
         const val SQLITE_SAFE_BATCH_SIZE = 400

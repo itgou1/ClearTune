@@ -1,8 +1,5 @@
 package com.cleartune.data.local
 
-import com.cleartune.core.database.LibrarySnapshotStore
-import com.cleartune.core.database.SyncSessionStore
-import com.cleartune.core.database.model.LibraryIngestRecord
 import com.cleartune.core.model.MutationResult
 import com.cleartune.core.model.SourceId
 import kotlinx.coroutines.CancellationException
@@ -13,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.IOException
 
 data class LocalScanResult(
     val outcome: LocalScanOutcome,
@@ -23,11 +21,10 @@ data class LocalScanResult(
 
 class LocalScanCoordinator(
     private val gateway: MediaStoreGateway,
-    private val snapshotStore: LibrarySnapshotStore,
-    private val sessionStore: SyncSessionStore? = snapshotStore as? SyncSessionStore,
+    private val snapshotPort: LocalSnapshotPort,
     private val scanEngine: LocalScanEngine = LocalScanEngine(),
     private val sourceId: SourceId = LOCAL_SOURCE_ID,
-    private val sourceName: String = "本地音乐",
+    internal val sourceName: String = "本地音乐",
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val mutex = Mutex()
@@ -38,25 +35,25 @@ class LocalScanCoordinator(
         val startedAt = clock()
         val sessionId = "${sourceId.value}:$startedAt"
         if (!permissionGranted) {
-            mutableState.value = LocalScanState(phase = LocalScanPhase.PERMISSION_REQUIRED)
-            recordSession(sessionId, startedAt, "PERMISSION_REQUIRED", completedAt = startedAt)
+            publish(
+                sessionId,
+                startedAt,
+                LocalScanState(phase = LocalScanPhase.PERMISSION_REQUIRED),
+                completedAtEpochMs = startedAt,
+            )
             return@withLock LocalScanResult(LocalScanOutcome.PERMISSION_REQUIRED)
         }
         try {
-            recordSession(sessionId, startedAt, "RUNNING")
-            mutableState.value = LocalScanState(phase = LocalScanPhase.READING)
+            publish(sessionId, startedAt, LocalScanState(phase = LocalScanPhase.READING))
             val readResult = gateway.readAudio()
             if (!readResult.isComplete) {
                 val message = readResult.warnings.firstOrNull() ?: "MediaStore read was incomplete"
-                mutableState.value = LocalScanState(phase = LocalScanPhase.FAILED, errorMessage = message)
-                recordSession(
-                    sessionId,
-                    startedAt,
-                    "FAILED",
-                    completedAt = clock(),
+                val failedState = LocalScanState(
+                    phase = LocalScanPhase.FAILED,
                     warningCount = readResult.warnings.size,
                     errorMessage = message,
                 )
+                publish(sessionId, startedAt, failedState, completedAtEpochMs = clock())
                 return@withLock LocalScanResult(
                     outcome = LocalScanOutcome.FAILED,
                     warnings = readResult.warnings,
@@ -65,99 +62,138 @@ class LocalScanCoordinator(
             }
             val prepared = scanEngine.diff(emptyList(), readResult.snapshots)
             val warnings = readResult.warnings + prepared.warnings
-            mutableState.value = LocalScanState(
-                phase = LocalScanPhase.APPLYING,
-                processed = 0,
-                total = prepared.accepted.size,
-                warningCount = warnings.size,
-            )
-            val now = startedAt
-            val mutation = snapshotStore.applyLocalSnapshot(
-                sourceId = sourceId,
-                sourceName = sourceName,
-                records = prepared.accepted.map { snapshot -> snapshot.toIngestRecord(now) },
-                syncedAtEpochMs = now,
-                warningCount = warnings.size,
-                retainedSourceKeys = readResult.observedSourceKeys + prepared.accepted.map(LocalAudioSnapshot::sourceKey),
-            )
-            mutableState.value = LocalScanState(
-                phase = LocalScanPhase.COMPLETED,
-                processed = prepared.accepted.size,
-                total = prepared.accepted.size,
-                warningCount = warnings.size,
-            )
-            recordSession(
+            val total = prepared.accepted.size
+            var lastProcessed = 0
+            publish(
                 sessionId,
                 startedAt,
-                "COMPLETED",
-                completedAt = clock(),
-                processed = prepared.accepted.size,
-                total = prepared.accepted.size,
-                warningCount = warnings.size,
+                LocalScanState(
+                    phase = LocalScanPhase.APPLYING,
+                    processed = 0,
+                    total = total,
+                    warningCount = warnings.size,
+                ),
+            )
+            val mutation = snapshotPort.applySnapshot(
+                request = LocalSnapshotRequest(
+                    sourceId = sourceId,
+                    sourceName = sourceName,
+                    records = prepared.accepted,
+                    syncedAtEpochMs = startedAt,
+                    warningCount = warnings.size,
+                    retainedSourceKeys = readResult.observedSourceKeys +
+                        prepared.accepted.map(LocalAudioSnapshot::sourceKey),
+                    batchSize = SNAPSHOT_BATCH_SIZE,
+                ),
+                onProgress = { processed ->
+                    val monotonicProcessed = processed.coerceIn(lastProcessed, total)
+                    if (monotonicProcessed > lastProcessed) {
+                        lastProcessed = monotonicProcessed
+                        publish(
+                            sessionId,
+                            startedAt,
+                            LocalScanState(
+                                phase = LocalScanPhase.APPLYING,
+                                processed = monotonicProcessed,
+                                total = total,
+                                warningCount = warnings.size,
+                            ),
+                        )
+                    }
+                },
+            )
+            if (lastProcessed < total) {
+                lastProcessed = total
+                publish(
+                    sessionId,
+                    startedAt,
+                    LocalScanState(
+                        phase = LocalScanPhase.APPLYING,
+                        processed = lastProcessed,
+                        total = total,
+                        warningCount = warnings.size,
+                    ),
+                )
+            }
+            publish(
+                sessionId,
+                startedAt,
+                LocalScanState(
+                    phase = LocalScanPhase.COMPLETED,
+                    processed = total,
+                    total = total,
+                    warningCount = warnings.size,
+                ),
+                completedAtEpochMs = clock(),
             )
             LocalScanResult(LocalScanOutcome.COMPLETED, mutation, warnings)
         } catch (cancellation: CancellationException) {
-            withContext(NonCancellable) {
-                recordSession(sessionId, startedAt, "CANCELLED", completedAt = clock(), errorMessage = "Scan cancelled")
+            try {
+                withContext(NonCancellable) {
+                    publish(
+                        sessionId,
+                        startedAt,
+                        LocalScanState(phase = LocalScanPhase.CANCELLED, errorMessage = "Scan cancelled"),
+                        completedAtEpochMs = clock(),
+                    )
+                }
+            } catch (progressFailure: Exception) {
+                cancellation.addSuppressed(progressFailure)
             }
             throw cancellation
         } catch (denied: SecurityException) {
-            mutableState.value = LocalScanState(phase = LocalScanPhase.PERMISSION_REQUIRED)
-            recordSession(
+            val message = denied.message?.take(ERROR_MESSAGE_LIMIT)
+            publish(
                 sessionId,
                 startedAt,
-                "PERMISSION_REQUIRED",
-                completedAt = clock(),
-                errorMessage = denied.message?.take(160),
+                LocalScanState(phase = LocalScanPhase.PERMISSION_REQUIRED, errorMessage = message),
+                completedAtEpochMs = clock(),
             )
-            LocalScanResult(LocalScanOutcome.PERMISSION_REQUIRED)
+            LocalScanResult(LocalScanOutcome.PERMISSION_REQUIRED, errorMessage = message)
+        } catch (failure: IOException) {
+            failedResult(sessionId, startedAt, failure, LocalScanOutcome.TRANSIENT_FAILURE)
         } catch (failure: Exception) {
-            val safeMessage = failure.message?.take(160) ?: failure.javaClass.simpleName
-            mutableState.value = LocalScanState(phase = LocalScanPhase.FAILED, errorMessage = safeMessage)
-            recordSession(sessionId, startedAt, "FAILED", completedAt = clock(), errorMessage = safeMessage)
-            LocalScanResult(LocalScanOutcome.FAILED, errorMessage = safeMessage)
+            failedResult(sessionId, startedAt, failure, LocalScanOutcome.FAILED)
         }
     }
 
-    private suspend fun recordSession(
+    private suspend fun failedResult(
         sessionId: String,
         startedAt: Long,
-        phase: String,
-        completedAt: Long? = null,
-        processed: Int = 0,
-        total: Int = 0,
-        warningCount: Int = 0,
-        errorMessage: String? = null,
+        failure: Exception,
+        outcome: LocalScanOutcome,
+    ): LocalScanResult {
+        val safeMessage = failure.message?.take(ERROR_MESSAGE_LIMIT) ?: failure.javaClass.simpleName
+        publish(
+            sessionId,
+            startedAt,
+            LocalScanState(phase = LocalScanPhase.FAILED, errorMessage = safeMessage),
+            completedAtEpochMs = clock(),
+        )
+        return LocalScanResult(outcome, errorMessage = safeMessage)
+    }
+
+    private suspend fun publish(
+        sessionId: String,
+        startedAtEpochMs: Long,
+        state: LocalScanState,
+        completedAtEpochMs: Long? = null,
     ) {
-        sessionStore?.recordSyncSession(
-            sessionId = sessionId,
-            sourceId = sourceId,
-            startedAtEpochMs = startedAt,
-            completedAtEpochMs = completedAt,
-            phase = phase,
-            processed = processed,
-            total = total,
-            warningCount = warningCount,
-            errorMessage = errorMessage,
+        mutableState.value = state
+        snapshotPort.reportProgress(
+            LocalScanProgress(
+                sessionId = sessionId,
+                sourceId = sourceId,
+                startedAtEpochMs = startedAtEpochMs,
+                completedAtEpochMs = completedAtEpochMs,
+                state = state,
+            ),
         )
     }
 
     companion object {
         val LOCAL_SOURCE_ID = SourceId("local")
+        private const val SNAPSHOT_BATCH_SIZE = 100
+        private const val ERROR_MESSAGE_LIMIT = 160
     }
 }
-
-private fun LocalAudioSnapshot.toIngestRecord(addedAtEpochMs: Long): LibraryIngestRecord = LibraryIngestRecord(
-    sourceKey = sourceKey,
-    uri = contentUri,
-    displayName = displayName,
-    relativeFolder = relativeFolder,
-    title = title,
-    albumTitle = album,
-    artistNames = artistNames,
-    durationMs = durationMs,
-    artworkRef = null,
-    sizeBytes = sizeBytes,
-    modifiedEpochSeconds = modifiedEpochSeconds,
-    addedAtEpochMs = addedAtEpochMs,
-)

@@ -5,6 +5,8 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cleartune.core.database.model.LibraryIngestRecord
+import com.cleartune.core.database.entity.DownloadEntity
+import com.cleartune.core.database.entity.PlaybackHistoryEntity
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.LibraryMutation
 import com.cleartune.core.model.LocationId
@@ -135,6 +137,40 @@ class RoomLibraryTransactionTest {
     }
 
     @Test
+    fun missing_location_is_marked_unavailable_without_deleting_product_rows() = runBlocking {
+        val seeded = seedProductGraph()
+
+        repository.applyLocalSnapshot(SOURCE, "Local music", emptyList(), 200)
+
+        assertEquals(
+            false,
+            database.libraryWriteDao().locationIncludingUnavailable(SOURCE.value, record().sourceKey)?.available,
+        )
+        assertEquals(seeded.trackId, database.libraryReadDao().track(seeded.trackId.value)?.id)
+        assertEquals(seeded.trackId.value, database.playlistDao().items(seeded.playlistId.value).single().trackId)
+        assertEquals(seeded.trackId.value, database.playbackDao().queueItems().single().trackId)
+        assertEquals(seeded.trackId.value, database.downloadDao().download("download-1")?.trackId)
+        assertEquals(seeded.trackId.value, database.playbackDao().observeRecentHistory(1).first().single().trackId)
+    }
+
+    @Test
+    fun reappearing_location_reactivates_existing_track_identity() = runBlocking {
+        val seeded = seedProductGraph()
+        val originalLocationId = database.libraryWriteDao()
+            .locationIncludingUnavailable(SOURCE.value, record().sourceKey)!!.id
+        repository.applyLocalSnapshot(SOURCE, "Local music", emptyList(), 200)
+
+        repository.applyLocalSnapshot(SOURCE, "Local music", listOf(record(title = "Reappeared")), 300)
+
+        val reactivated = database.libraryWriteDao()
+            .locationIncludingUnavailable(SOURCE.value, record().sourceKey)!!
+        assertEquals(originalLocationId, reactivated.id)
+        assertEquals(seeded.trackId.value, reactivated.trackId)
+        assertEquals(true, reactivated.available)
+        assertEquals(seeded.trackId, repository.observeSongs().first().single().id)
+    }
+
+    @Test
     fun cross_source_upsert_updates_search_and_orphan_removal_cleans_it() = runBlocking {
         val remoteSource = SourceId("webdav-home")
         repository.applySourceMutation(
@@ -244,6 +280,35 @@ class RoomLibraryTransactionTest {
 
     private fun RoomLibraryRepository.observeSongs() = observeSongs(com.cleartune.core.model.SongQuery())
 
+    private suspend fun seedProductGraph(): SeededProductGraph {
+        repository.applyLocalSnapshot(SOURCE, "Local music", listOf(record()), 100)
+        val trackId = repository.observeSongs().first().single().id
+        val queueRepository = RoomQueueRepository(database, idFactory = { "queue-item-1" }, clock = { 100 })
+        val playlistRepository = RoomPlaylistRepository(database, idFactory = ArrayDeque(listOf("playlist-1", "playlist-item-1"))::removeFirst, clock = { 100 })
+        queueRepository.apply(QueueCommand.Replace(listOf(trackId)))
+        playlistRepository.apply(PlaylistCommand.Create("Retained"))
+        val playlistId = playlistRepository.observePlaylists().first().single().id
+        playlistRepository.apply(PlaylistCommand.AddTrack(playlistId, trackId))
+        database.downloadDao().upsert(
+            DownloadEntity(
+                id = "download-1",
+                trackId = trackId.value,
+                state = "COMPLETED",
+                bytesDownloaded = 10,
+                totalBytes = 10,
+                etag = null,
+                partialPath = null,
+                finalPath = "/downloads/Track.mp3",
+                errorMessage = null,
+                updatedAtEpochMs = 100,
+            ),
+        )
+        database.playbackDao().upsertHistory(
+            PlaybackHistoryEntity(trackId = trackId.value, playedAtEpochMs = 100, completed = true),
+        )
+        return SeededProductGraph(trackId, playlistId)
+    }
+
     private fun record(
         title: String = "Track",
         addedAtEpochMs: Long = 100,
@@ -265,4 +330,9 @@ class RoomLibraryTransactionTest {
     private companion object {
         val SOURCE = SourceId("local")
     }
+
+    private data class SeededProductGraph(
+        val trackId: com.cleartune.core.model.TrackId,
+        val playlistId: PlaylistId,
+    )
 }
