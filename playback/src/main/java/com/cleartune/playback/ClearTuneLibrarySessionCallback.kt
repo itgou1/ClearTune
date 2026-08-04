@@ -73,7 +73,9 @@ class ClearTuneLibrarySessionCallback(
         browser: MediaSession.ControllerInfo,
         mediaId: String,
     ): ListenableFuture<LibraryResult<MediaItem>> {
-        val item = describeForPlayback(listOf(mediaId)).singleOrNull()?.let(::toMediaItem)
+        val item = catalog.resolve(mediaId)
+            ?.let { describeTrack(it, includePlayback = false) }
+            ?.let(::toMediaItem)
         return Futures.immediateFuture(
             item?.let { LibraryResult.ofItem(it, null) }
                 ?: LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE),
@@ -93,7 +95,7 @@ class ClearTuneLibrarySessionCallback(
             ROOT_ID -> ROOT_CATEGORIES.map { (id, title) ->
                 SessionMediaDescription(id, title, browsable = true)
             }
-            in APPROVED_CATEGORY_IDS -> catalog.children(parentId).map(::describeTrack)
+            in APPROVED_CATEGORY_IDS -> catalog.children(parentId).map { describeTrack(it, includePlayback = false) }
             else -> emptyList()
         }
         val safePageSize = pageSize.coerceAtLeast(1)
@@ -104,9 +106,12 @@ class ClearTuneLibrarySessionCallback(
 
     fun describeForPlayback(mediaIds: List<String>): List<SessionMediaDescription> = mediaIds
         .mapNotNull(catalog::resolve)
-        .map(::describeTrack)
+        .map { describeTrack(it, includePlayback = true) }
 
-    private fun describeTrack(track: LibraryCatalogTrack): SessionMediaDescription {
+    private fun describeTrack(
+        track: LibraryCatalogTrack,
+        includePlayback: Boolean,
+    ): SessionMediaDescription {
         val metadata = MediaItemFactory.sanitizeMetadata(
             track.title,
             track.artist,
@@ -119,7 +124,9 @@ class ClearTuneLibrarySessionCallback(
             artist = metadata.artist,
             album = metadata.album,
             artworkUri = metadata.artworkUri,
-            playbackUri = PrivateMediaSourceRegistry.register(track.mediaId, track.playbackUri),
+            playbackUri = track.playbackUri.takeIf { includePlayback }?.let { playbackUri ->
+                PrivateMediaSourceRegistry.register(track.mediaId, playbackUri)
+            },
             mimeType = track.mimeType,
             playable = true,
         )

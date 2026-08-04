@@ -17,6 +17,7 @@ internal object MediaItemFactory {
         descriptor: SecureMediaDescriptor,
         artist: String? = null,
         album: String? = null,
+        mediaId: String = descriptor.mediaId,
     ): MediaItem {
         val sanitized = sanitizeMetadata(descriptor.title, artist, album, descriptor.artworkUri)
         val metadata = MediaMetadata.Builder()
@@ -28,8 +29,8 @@ internal object MediaItemFactory {
             }
             .build()
         return MediaItem.Builder()
-            .setMediaId(descriptor.mediaId)
-            .setUri(PrivateMediaSourceRegistry.register(descriptor.mediaId, descriptor.playbackUri))
+            .setMediaId(mediaId)
+            .setUri(PrivateMediaSourceRegistry.register(mediaId, descriptor.playbackUri))
             .setMimeType(descriptor.mimeType)
             .setMediaMetadata(metadata)
             .build()

@@ -13,6 +13,8 @@ import androidx.media3.session.SessionToken
 import com.cleartune.core.model.RepeatMode
 import com.cleartune.core.model.Track
 import com.cleartune.core.model.TrackLocation
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -60,38 +62,139 @@ internal object Media3ErrorClassifier {
     private val ITEM_HTTP_STATUSES = setOf(404, 410)
 }
 
+internal interface ControllerDispatcher<T : Any> {
+    suspend fun <R> execute(controller: T, command: (T) -> R): R
+    fun release(controller: T)
+}
+
 internal class ControllerLifecycle<T : Any>(
     private val connect: suspend () -> T,
-    private val releaseController: (T) -> Unit,
+    private val dispatcher: ControllerDispatcher<T>,
     private val onConnectionChanged: (Boolean) -> Unit = {},
 ) {
     private val commandMutex = Mutex()
     private val stateLock = Any()
+    private val invalidControllers = Collections.newSetFromMap(IdentityHashMap<T, Boolean>())
+    private val releasedControllers = Collections.newSetFromMap(IdentityHashMap<T, Boolean>())
+    private var generation = 0L
+    private var permanentlyReleased = false
     @Volatile private var current: T? = null
 
     val connected: Boolean get() = current != null
     fun currentOrNull(): T? = current
 
-    suspend fun <R> execute(command: suspend (T) -> R): R = commandMutex.withLock {
-        val controller = current ?: connect().also { connectedController ->
-            synchronized(stateLock) { current = connectedController }
-            onConnectionChanged(true)
+    suspend fun <R> execute(command: (T) -> R): R = commandMutex.withLock {
+        val controller = current ?: acquireController()
+        try {
+            dispatcher.execute(controller, command)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            invalidate(controller)
+            throw error
         }
-        command(controller)
     }
 
     fun disconnect(controller: T) {
-        val released = synchronized(stateLock) {
-            if (current !== controller) null else current.also { current = null }
-        } ?: return
-        releaseController(released)
-        onConnectionChanged(false)
+        val wasCurrent = synchronized(stateLock) {
+            invalidControllers += controller
+            if (current !== controller) {
+                false
+            } else {
+                current = null
+                generation++
+                true
+            }
+        }
+        releaseOnce(controller)
+        if (wasCurrent) onConnectionChanged(false)
     }
 
     fun release() {
-        val released = synchronized(stateLock) { current.also { current = null } } ?: return
-        releaseController(released)
-        onConnectionChanged(false)
+        val released = synchronized(stateLock) {
+            if (permanentlyReleased) return
+            permanentlyReleased = true
+            generation++
+            current.also { current = null }
+        }
+        released?.let(::releaseOnce)
+        if (released != null) onConnectionChanged(false)
+    }
+
+    private suspend fun acquireController(): T {
+        val expectedGeneration = synchronized(stateLock) {
+            check(!permanentlyReleased) { "Controller lifecycle has been released" }
+            generation
+        }
+        val connectedController = connect()
+        val accepted = synchronized(stateLock) {
+            if (
+                permanentlyReleased ||
+                generation != expectedGeneration ||
+                connectedController in invalidControllers
+            ) {
+                false
+            } else {
+                current = connectedController
+                true
+            }
+        }
+        if (!accepted) {
+            releaseOnce(connectedController)
+            error("Controller connection was invalidated before assignment")
+        }
+        onConnectionChanged(true)
+        return connectedController
+    }
+
+    private fun invalidate(controller: T) {
+        val wasCurrent = synchronized(stateLock) {
+            invalidControllers += controller
+            if (current !== controller) {
+                false
+            } else {
+                current = null
+                generation++
+                true
+            }
+        }
+        releaseOnce(controller)
+        if (wasCurrent) onConnectionChanged(false)
+    }
+
+    private fun releaseOnce(controller: T) {
+        val shouldRelease = synchronized(stateLock) { releasedControllers.add(controller) }
+        if (shouldRelease) dispatcher.release(controller)
+    }
+}
+
+private class MediaControllerDispatcher : ControllerDispatcher<MediaController> {
+    override suspend fun <R> execute(
+        controller: MediaController,
+        command: (MediaController) -> R,
+    ): R {
+        if (Looper.myLooper() == controller.applicationLooper) return command(controller)
+        return suspendCancellableCoroutine { continuation ->
+            val posted = Handler(controller.applicationLooper).post {
+                if (!continuation.isActive) return@post
+                try {
+                    continuation.resume(command(controller))
+                } catch (error: Throwable) {
+                    continuation.resumeWithException(error)
+                }
+            }
+            if (!posted && continuation.isActive) {
+                continuation.resumeWithException(IllegalStateException("Controller looper is unavailable"))
+            }
+        }
+    }
+
+    override fun release(controller: MediaController) {
+        if (Looper.myLooper() == controller.applicationLooper) {
+            controller.release()
+        } else {
+            Handler(controller.applicationLooper).post(controller::release)
+        }
     }
 }
 
@@ -102,33 +205,40 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
     private val connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var observer: ((BackendPlaybackSnapshot) -> Unit)? = null
     private var lastSnapshot: BackendPlaybackSnapshot? = null
+    private val configuredControllers = Collections.newSetFromMap(
+        IdentityHashMap<MediaController, Boolean>(),
+    )
     @Volatile private var logicalShuffleEnabled = false
+    @Volatile private var occurrenceTrackIds: Map<String, String> = emptyMap()
     private val controllerLifecycle = ControllerLifecycle(
         connect = ::connectController,
-        releaseController = MediaController::release,
+        dispatcher = MediaControllerDispatcher(),
         onConnectionChanged = { isConnected -> if (!isConnected) emitDisconnected() },
     )
     private val progressUpdate = object : Runnable {
         override fun run() {
-            controllerLifecycle.currentOrNull()
-                ?.takeIf { it.isConnected }
-                ?.let(::emitSnapshot)
+            connectionScope.launch {
+                runCatching { withController(::emitSnapshot) }
+                    .onFailure { emitDisconnected() }
+            }
         }
     }
 
     init {
         connectionScope.launch {
-            runCatching { controllerLifecycle.execute { emitSnapshot(it) } }
+            runCatching { withController(::emitSnapshot) }
                 .onFailure { emitDisconnected() }
         }
     }
 
     override val connected: Boolean
-        get() = controllerLifecycle.currentOrNull()?.isConnected == true
+        get() = controllerLifecycle.connected
 
     override suspend fun load(track: Track, location: TrackLocation) {
         val descriptor = SecureMediaDescriptorFactory.create(track, location)
-        controllerLifecycle.execute { controller ->
+        withController { controller ->
+            controller.playWhenReady = false
+            occurrenceTrackIds = mapOf(descriptor.mediaId to descriptor.mediaId)
             PrivateMediaSourceRegistry.replace(listOf(descriptor.mediaId to descriptor.playbackUri))
             controller.setMediaItem(MediaItemFactory.create(descriptor))
             controller.prepare()
@@ -138,12 +248,18 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
     override suspend fun loadQueue(entries: List<ResolvedQueueEntry>, startIndex: Int, positionMs: Long) {
         require(entries.isNotEmpty())
         val descriptors = entries.map { entry ->
-            SecureMediaDescriptorFactory.create(entry.track, entry.location)
+            entry to SecureMediaDescriptorFactory.create(entry.track, entry.location)
         }
-        controllerLifecycle.execute { controller ->
-            PrivateMediaSourceRegistry.replace(descriptors.map { it.mediaId to it.playbackUri })
+        withController { controller ->
+            controller.playWhenReady = false
+            occurrenceTrackIds = entries.associate { it.occurrenceId to it.track.id.value }
+            PrivateMediaSourceRegistry.replace(descriptors.map { (entry, descriptor) ->
+                entry.occurrenceId to descriptor.playbackUri
+            })
             controller.setMediaItems(
-                descriptors.map(MediaItemFactory::create),
+                descriptors.map { (entry, descriptor) ->
+                    MediaItemFactory.create(descriptor, mediaId = entry.occurrenceId)
+                },
                 startIndex.coerceIn(entries.indices),
                 positionMs.coerceAtLeast(0),
             )
@@ -151,14 +267,29 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
         }
     }
 
-    override suspend fun play() = controllerLifecycle.execute { it.play() }
-    override suspend fun pause() = controllerLifecycle.execute { it.pause() }
-    override suspend fun next() = controllerLifecycle.execute { it.seekToNextMediaItem() }
-    override suspend fun previous() = controllerLifecycle.execute { it.seekToPreviousMediaItem() }
-    override suspend fun seekTo(positionMs: Long) = controllerLifecycle.execute { it.seekTo(positionMs) }
+    override suspend fun replaceCurrent(entry: ResolvedQueueEntry, positionMs: Long) {
+        val descriptor = SecureMediaDescriptorFactory.create(entry.track, entry.location)
+        withController { controller ->
+            val currentIndex = controller.currentMediaItemIndex.coerceAtLeast(0)
+            occurrenceTrackIds = occurrenceTrackIds + (entry.occurrenceId to entry.track.id.value)
+            PrivateMediaSourceRegistry.registerActive(entry.occurrenceId, descriptor.playbackUri)
+            controller.replaceMediaItem(
+                currentIndex,
+                MediaItemFactory.create(descriptor, mediaId = entry.occurrenceId),
+            )
+            controller.seekTo(currentIndex, positionMs.coerceAtLeast(0))
+            controller.prepare()
+        }
+    }
+
+    override suspend fun play() = withController { it.play() }
+    override suspend fun pause() = withController { it.pause() }
+    override suspend fun next() = withController { it.seekToNextMediaItem() }
+    override suspend fun previous() = withController { it.seekToPreviousMediaItem() }
+    override suspend fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
 
     override suspend fun setRepeat(mode: RepeatMode) {
-        controllerLifecycle.execute { controller ->
+        withController { controller ->
             controller.repeatMode = when (mode) {
                 RepeatMode.OFF -> Player.REPEAT_MODE_OFF
                 RepeatMode.ALL -> Player.REPEAT_MODE_ALL
@@ -169,7 +300,7 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
 
     override suspend fun setShuffle(enabled: Boolean) {
         logicalShuffleEnabled = enabled
-        controllerLifecycle.execute { controller ->
+        withController { controller ->
             // The coordinator loads the persisted occurrence order explicitly.
             controller.shuffleModeEnabled = false
             emitSnapshot(controller)
@@ -204,20 +335,9 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
                 try {
                     val controller = future.get()
                     if (!continuation.isActive) {
-                        controller.release()
+                        MediaControllerDispatcher().release(controller)
                         return@addListener
                     }
-                    controller.addListener(
-                        object : Player.Listener {
-                            override fun onEvents(player: Player, events: Player.Events) {
-                                if (!events.contains(Player.EVENT_PLAYER_ERROR)) emitSnapshot(player)
-                            }
-
-                            override fun onPlayerError(error: PlaybackException) {
-                                emitSnapshot(controller, Media3ErrorClassifier.classify(error))
-                            }
-                        },
-                    )
                     continuation.resume(controller)
                 } catch (error: Exception) {
                     if (continuation.isActive) continuation.resumeWithException(error)
@@ -228,12 +348,37 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
         continuation.invokeOnCancellation { MediaController.releaseFuture(future) }
     }
 
+    private suspend fun <R> withController(command: (MediaController) -> R): R =
+        controllerLifecycle.execute { controller ->
+            if (configuredControllers.add(controller)) {
+                controller.addListener(
+                    object : Player.Listener {
+                        override fun onEvents(player: Player, events: Player.Events) {
+                            if (!events.contains(Player.EVENT_PLAYER_ERROR)) emitSnapshot(player)
+                        }
+
+                        override fun onPlayerError(error: PlaybackException) {
+                            emitSnapshot(controller, Media3ErrorClassifier.classify(error))
+                        }
+                    },
+                )
+            }
+            command(controller)
+        }
+
     private fun emitSnapshot(player: Player, failure: BackendPlaybackFailure? = null) {
+        val occurrenceId = player.currentMediaItem?.mediaId
+        val identifiedFailure = when (failure) {
+            is BackendPlaybackFailure.Item -> failure.copy(occurrenceId = failure.occurrenceId ?: occurrenceId)
+            else -> failure
+        }
         val snapshot = BackendPlaybackSnapshot(
             connected = connected,
-            mediaId = player.currentMediaItem?.mediaId,
+            mediaId = occurrenceId?.let(occurrenceTrackIds::get) ?: occurrenceId,
+            occurrenceId = occurrenceId,
             title = player.currentMediaItem?.mediaMetadata?.title?.toString(),
             isPlaying = player.isPlaying,
+            playWhenReady = player.playWhenReady,
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = player.duration.takeUnless { it == C.TIME_UNSET || it < 0 },
             repeatMode = when (player.repeatMode) {
@@ -242,7 +387,7 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
                 else -> RepeatMode.OFF
             },
             shuffleEnabled = logicalShuffleEnabled,
-            failure = failure,
+            failure = identifiedFailure,
         )
         lastSnapshot = snapshot
         observer?.invoke(snapshot)
