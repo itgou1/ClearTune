@@ -11,6 +11,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.cleartune.core.model.DownloadId
@@ -28,19 +29,38 @@ interface DownloadWorkerHost {
     val downloadWorkerRunner: DownloadWorkerRunner
 }
 
+internal enum class DownloadWorkerExecutionResult { SUCCESS, RETRY, FAILURE }
+
+internal object DownloadWorkerExecutor {
+    suspend fun execute(
+        rawDownloadId: String?,
+        application: Any,
+        prepareForeground: suspend (DownloadId) -> Unit,
+    ): DownloadWorkerExecutionResult {
+        val id = rawDownloadId?.takeIf(String::isNotBlank)?.let(::DownloadId)
+            ?: return DownloadWorkerExecutionResult.FAILURE
+        val runner = DownloadWorker.runnerFrom(application) ?: return DownloadWorkerExecutionResult.FAILURE
+        prepareForeground(id)
+        return when (runner.run(id)) {
+            WorkerOutcome.COMPLETED -> DownloadWorkerExecutionResult.SUCCESS
+            WorkerOutcome.RETRY -> DownloadWorkerExecutionResult.RETRY
+            WorkerOutcome.FAILED -> DownloadWorkerExecutionResult.FAILURE
+        }
+    }
+}
+
 class DownloadWorker(
     appContext: Context,
     parameters: WorkerParameters,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
-        val id = inputData.getString(INPUT_DOWNLOAD_ID)?.takeIf(String::isNotBlank)
-            ?: return Result.failure()
-        val runner = runnerFrom(applicationContext) ?: return Result.failure()
-        setForeground(createForegroundInfo(DownloadId(id)))
-        return when (runner.run(DownloadId(id))) {
-            WorkerOutcome.COMPLETED -> Result.success()
-            WorkerOutcome.RETRY -> Result.retry()
-            WorkerOutcome.FAILED -> Result.failure()
+        return when (DownloadWorkerExecutor.execute(
+            inputData.getString(INPUT_DOWNLOAD_ID),
+            applicationContext,
+        ) { id -> setForeground(createForegroundInfo(id)) }) {
+            DownloadWorkerExecutionResult.SUCCESS -> Result.success()
+            DownloadWorkerExecutionResult.RETRY -> Result.retry()
+            DownloadWorkerExecutionResult.FAILURE -> Result.failure()
         }
     }
 
@@ -85,27 +105,44 @@ fun interface DownloadFileLocator {
     fun paths(id: DownloadId): DownloadPaths?
 }
 
-class WorkManagerDownloadScheduler(
-    context: Context,
+internal interface DownloadWorkManagerGateway {
+    suspend fun enqueueUnique(name: String, policy: ExistingWorkPolicy, request: OneTimeWorkRequest)
+    suspend fun cancelUnique(name: String)
+}
+
+private class AndroidDownloadWorkManagerGateway(
+    private val workManager: WorkManager,
+) : DownloadWorkManagerGateway {
+    override suspend fun enqueueUnique(name: String, policy: ExistingWorkPolicy, request: OneTimeWorkRequest) {
+        withContext(Dispatchers.IO) { workManager.enqueueUniqueWork(name, policy, request).result.get() }
+    }
+
+    override suspend fun cancelUnique(name: String) {
+        withContext(Dispatchers.IO) { workManager.cancelUniqueWork(name).result.get() }
+    }
+}
+
+class WorkManagerDownloadScheduler internal constructor(
     private val downloadRoot: File,
     private val fileLocator: DownloadFileLocator,
+    private val workGateway: DownloadWorkManagerGateway,
 ) : DownloadScheduler {
-    private val workManager = WorkManager.getInstance(context)
+    constructor(context: Context, downloadRoot: File, fileLocator: DownloadFileLocator) : this(
+        downloadRoot,
+        fileLocator,
+        AndroidDownloadWorkManagerGateway(WorkManager.getInstance(context)),
+    )
 
     override suspend fun enqueue(id: DownloadId) {
-        withContext(Dispatchers.IO) {
-            workManager.enqueueUniqueWork(
-                DownloadWorker.workName(id),
-                ExistingWorkPolicy.REPLACE,
-                DownloadWorker.request(id),
-            ).result.get()
-        }
+        workGateway.enqueueUnique(
+            DownloadWorker.workName(id),
+            ExistingWorkPolicy.REPLACE,
+            DownloadWorker.request(id),
+        )
     }
 
     override suspend fun stop(id: DownloadId) {
-        withContext(Dispatchers.IO) {
-            workManager.cancelUniqueWork(DownloadWorker.workName(id)).result.get()
-        }
+        workGateway.cancelUnique(DownloadWorker.workName(id))
     }
 
     override suspend fun deleteFiles(id: DownloadId) {

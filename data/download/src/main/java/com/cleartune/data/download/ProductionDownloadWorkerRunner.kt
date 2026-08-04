@@ -2,6 +2,8 @@ package com.cleartune.data.download
 
 import com.cleartune.core.model.DownloadId
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -24,6 +26,7 @@ fun DownloadTransfer.asExecutor(): DownloadTransferExecutor = DownloadTransferEx
 
 class ProductionDownloadWorkerRunner(
     private val persistence: DownloadPersistencePort,
+    private val progressQueueDepth: (Int) -> Unit = {},
     private val transferFactory: (DownloadCredentials?) -> DownloadTransferExecutor,
 ) : DownloadWorkerRunner {
     override suspend fun run(downloadId: DownloadId): WorkerOutcome {
@@ -31,9 +34,9 @@ class ProductionDownloadWorkerRunner(
         val credentials = work.credentials
         return try {
             persistence.markRunning(downloadId)
-            val result = transfer(work, transferFactory(credentials))
-            when (result) {
-                is DownloadTransferResult.Completed -> complete(downloadId, work, result)
+            val execution = transfer(work, transferFactory(credentials))
+            when (val result = execution.result) {
+                is DownloadTransferResult.Completed -> complete(downloadId, work, result, execution.persistedBytes)
                 is DownloadTransferResult.RetryableFailure -> {
                     persistence.recordFailure(downloadId, result.code)
                     WorkerOutcome.RETRY
@@ -56,17 +59,27 @@ class ProductionDownloadWorkerRunner(
     private suspend fun transfer(
         work: DownloadWork,
         executor: DownloadTransferExecutor,
-    ): DownloadTransferResult = coroutineScope {
-        val progress = Channel<Pair<Long, Long?>>(Channel.UNLIMITED)
+    ): CompletedTransferExecution = coroutineScope {
+        val progressSignal = Channel<Unit>(Channel.CONFLATED)
+        val latestProgress = AtomicReference<Pair<Long, Long?>?>(null)
+        val signalPending = AtomicBoolean(false)
         val highest = AtomicLong(work.summary.bytesDownloaded)
+        val persisted = AtomicLong(work.summary.bytesDownloaded)
         val writer = launch {
-            for ((downloaded, total) in progress) {
-                persistence.persistProgress(work.summary.id, downloaded, total)
+            for (ignored in progressSignal) {
+                signalPending.set(false)
+                progressQueueDepth(0)
+                while (true) {
+                    val (downloaded, total) = latestProgress.getAndSet(null) ?: break
+                    persistence.persistProgress(work.summary.id, downloaded, total)
+                    persisted.set(downloaded)
+                }
             }
         }
         val context = currentCoroutineContext()
+        var result: DownloadTransferResult? = null
         try {
-            withContext(Dispatchers.IO) {
+            result = withContext(Dispatchers.IO) {
                 executor.execute(
                     DownloadTransferRequest(work.url, work.paths, work.expectedBytes, work.etag),
                     shouldContinue = { context.isActive },
@@ -75,7 +88,11 @@ class ProductionDownloadWorkerRunner(
                             val previous = highest.get()
                             if (downloaded <= previous) break
                             if (highest.compareAndSet(previous, downloaded)) {
-                                progress.trySend(downloaded to total).getOrThrow()
+                                latestProgress.set(downloaded to total)
+                                if (signalPending.compareAndSet(false, true)) {
+                                    progressQueueDepth(1)
+                                    progressSignal.trySend(Unit).getOrThrow()
+                                }
                                 break
                             }
                         }
@@ -83,15 +100,22 @@ class ProductionDownloadWorkerRunner(
                 )
             }
         } finally {
-            progress.close()
+            progressSignal.close()
             joinAll(writer)
         }
+        CompletedTransferExecution(requireNotNull(result), persisted.get())
     }
+
+    private data class CompletedTransferExecution(
+        val result: DownloadTransferResult,
+        val persistedBytes: Long,
+    )
 
     private suspend fun complete(
         downloadId: DownloadId,
         work: DownloadWork,
         completed: DownloadTransferResult.Completed,
+        persistedBytes: Long,
     ): WorkerOutcome {
         val finalFile = work.paths.finalFile
         val valid = finalFile.isFile &&
@@ -100,6 +124,9 @@ class ProductionDownloadWorkerRunner(
         if (!valid) {
             persistence.recordFailure(downloadId, "final_file_missing")
             return WorkerOutcome.FAILED
+        }
+        if (completed.bytes > persistedBytes) {
+            persistence.persistProgress(downloadId, completed.bytes, work.expectedBytes ?: completed.bytes)
         }
         persistence.publishDownloadedLocation(downloadId, completed.bytes, finalFile.absolutePath)
         return WorkerOutcome.COMPLETED

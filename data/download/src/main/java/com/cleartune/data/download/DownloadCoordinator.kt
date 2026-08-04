@@ -46,16 +46,8 @@ class DownloadCoordinator(
                 scheduler.enqueue(command.downloadId)
             }
             is DownloadCommand.Retry -> retry(command.downloadId)
-            is DownloadCommand.Cancel -> transition(command.downloadId, DownloadState.CANCELED) {
-                scheduler.stop(command.downloadId)
-                scheduler.deleteFiles(command.downloadId)
-            }
-            is DownloadCommand.Delete -> {
-                records.get(command.downloadId) ?: return@withLock
-                scheduler.stop(command.downloadId)
-                scheduler.deleteFiles(command.downloadId)
-                records.remove(command.downloadId)
-            }
+            is DownloadCommand.Cancel -> cancel(command.downloadId)
+            is DownloadCommand.Delete -> delete(command.downloadId)
         }
     }
 
@@ -106,6 +98,46 @@ class DownloadCoordinator(
         } catch (_: Exception) {
             records.replace(summary.copy(state = DownloadState.FAILED, errorMessage = "Unable to schedule download"))
         }
+    }
+
+    private suspend fun cancel(id: DownloadId) {
+        val current = records.get(id) ?: return
+        if (!DownloadStateMachine.canTransition(current.state, DownloadState.CANCELED)) return
+        val canceled = current.copy(state = DownloadState.CANCELED, errorMessage = null)
+        records.replace(canceled)
+        if (!stopForCleanup(id, canceled, "Unable to stop download; cleanup pending")) return
+        try {
+            scheduler.deleteFiles(id)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            records.replace(canceled.copy(errorMessage = "Download canceled; file cleanup pending"))
+        }
+    }
+
+    private suspend fun delete(id: DownloadId) {
+        val current = records.get(id) ?: return
+        val canceled = current.copy(state = DownloadState.CANCELED, errorMessage = null)
+        records.replace(canceled)
+        if (!stopForCleanup(id, canceled, "Delete incomplete; unable to stop download")) return
+        try {
+            scheduler.deleteFiles(id)
+            records.remove(id)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            records.replace(canceled.copy(errorMessage = "Delete incomplete; file cleanup pending"))
+        }
+    }
+
+    private suspend fun stopForCleanup(id: DownloadId, canceled: DownloadSummary, error: String): Boolean = try {
+        scheduler.stop(id)
+        true
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (_: Exception) {
+        records.replace(canceled.copy(errorMessage = error))
+        false
     }
 
     private suspend fun transition(

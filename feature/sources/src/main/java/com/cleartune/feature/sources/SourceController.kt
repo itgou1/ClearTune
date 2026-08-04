@@ -6,6 +6,9 @@ import com.cleartune.core.model.SourceId
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.Collections
+import java.util.IdentityHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 
 sealed interface SourceRoute {
@@ -60,7 +63,9 @@ data class SourceDraft(
 data class SourceBrowseItem(val key: String, val name: String, val isDirectory: Boolean)
 data class SourceFailure(val code: String, val message: String, val retryable: Boolean)
 data class SourceResult<T>(val value: T? = null, val failure: SourceFailure? = null)
-class TestedSourceDraft internal constructor(internal val draft: SourceDraft)
+class TestedSourceDraft internal constructor(internal val draft: SourceDraft) : AutoCloseable {
+    override fun close() = draft.password.fill('\u0000')
+}
 
 class SourceActionException(val failure: SourceFailure) : Exception(failure.message)
 
@@ -75,8 +80,13 @@ interface SourceActionPort {
 class SourceController(
     private val sources: SourceRepository,
     private val actions: SourceActionPort,
-) {
+) : AutoCloseable {
+    private val revision = AtomicLong()
+    private val receiptLock = Any()
+    private val receipts = Collections.newSetFromMap(IdentityHashMap<TestedSourceDraft, Boolean>())
+
     suspend fun testConnection(state: WebDavFormState, sourceId: SourceId?): SourceResult<TestedSourceDraft> {
+        val expectedRevision = revision.get()
         val draft = SourceDraft(
             sourceId,
             state.name,
@@ -85,19 +95,32 @@ class SourceController(
             state.password.toCharArray(),
             state.allowCleartext,
         )
-        return action(draft.password) {
+        val tested = action(draft.password) {
             actions.test(draft)
-            TestedSourceDraft(draft)
+            Unit
+        }
+        tested.failure?.let { return SourceResult(failure = it) }
+        synchronized(receiptLock) {
+            if (revision.get() != expectedRevision) {
+                draft.password.fill('\u0000')
+                return SourceResult(failure = SourceFailure(STALE_TEST_CODE, "Source details changed", false))
+            }
+            return SourceResult(value = TestedSourceDraft(draft).also(receipts::add))
         }
     }
 
     suspend fun save(tested: TestedSourceDraft): SourceResult<MusicSource> = try {
         action(tested.draft.password) { actions.save(tested.draft) }
     } finally {
-        tested.draft.password.fill('\u0000')
+        synchronized(receiptLock) { receipts.remove(tested) }
+        tested.close()
     }
 
-    suspend fun delete(sourceId: SourceId): SourceResult<Unit> = action { actions.delete(sourceId) }
+    suspend fun delete(sourceId: SourceId, onSuccess: () -> Unit = {}): SourceResult<Unit> {
+        val result = action { actions.delete(sourceId) }
+        if (result.failure == null) onSuccess()
+        return result
+    }
 
     suspend fun requestSync(sourceId: SourceId): SourceResult<Unit> = action {
         requireNotNull(sources.getSource(sourceId)) { "Source not found" }
@@ -109,6 +132,30 @@ class SourceController(
         val normalized = relativePath.trim('/')
         require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
         actions.browse(sourceId, normalized)
+    }
+
+    suspend fun syncAndBrowse(sourceId: SourceId, relativePath: String): SourceResult<List<SourceBrowseItem>> {
+        val sync = requestSync(sourceId)
+        sync.failure?.let { return SourceResult(failure = it) }
+        return browse(sourceId, relativePath)
+    }
+
+    fun abandon(tested: TestedSourceDraft?) {
+        synchronized(receiptLock) {
+            revision.incrementAndGet()
+            tested?.let {
+                receipts.remove(it)
+                it.close()
+            }
+        }
+    }
+
+    override fun close() {
+        synchronized(receiptLock) {
+            revision.incrementAndGet()
+            receipts.forEach(TestedSourceDraft::close)
+            receipts.clear()
+        }
     }
 
     suspend fun form(sourceId: SourceId): WebDavFormState? = sources.getSource(sourceId)?.let { source ->
@@ -129,5 +176,9 @@ class SourceController(
     } catch (_: Exception) {
         secret?.fill('\u0000')
         SourceResult(failure = SourceFailure("operation_failed", "Unable to complete source operation", true))
+    }
+
+    private companion object {
+        const val STALE_TEST_CODE = "stale_test"
     }
 }

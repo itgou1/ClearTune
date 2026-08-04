@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -49,8 +50,9 @@ object SourcesFeatureEntry {
                     onBrowse = { onNavigate(SourceRoute.Browse(source.id, "").encoded()) },
                     onSync = { dependencies.controller.requestSync(source.id) },
                     onDelete = {
-                        dependencies.controller.delete(source.id)
-                        onNavigate(SourceRoute.List.encoded())
+                        dependencies.controller.delete(source.id) {
+                            onNavigate(SourceRoute.List.encoded())
+                        }
                     },
                 )
             }
@@ -69,19 +71,26 @@ private fun SourceFormRoute(
     var state by remember(sourceId) { mutableStateOf(WebDavFormState()) }
     var tested by remember(sourceId) { mutableStateOf<TestedSourceDraft?>(null) }
     val scope = rememberCoroutineScope()
+    DisposableEffect(controller, sourceId) {
+        onDispose { controller.close() }
+    }
     LaunchedEffect(sourceId) {
         if (sourceId != null) controller.form(sourceId)?.let { state = it }
     }
     WebDavSourceForm(
         state = state,
         onStateChange = {
+            controller.abandon(tested)
             tested = null
-            state = it.copy(connectionResult = null, error = null)
+            state = it.copy(testing = false, connectionResult = null, error = null)
         },
         onTestConnection = {
+            controller.abandon(tested)
+            tested = null
             state = state.copy(testing = true, error = null, connectionResult = null)
             scope.launch {
                 val result = controller.testConnection(state, sourceId)
+                if (result.failure?.code == "stale_test") return@launch
                 tested = result.value
                 state = state.copy(
                     testing = false,
@@ -115,6 +124,11 @@ private fun SourceBrowseRoute(
         items = result.value
         error = result.failure?.message
     }
+    suspend fun syncAndRefresh() {
+        val result = controller.syncAndBrowse(route.sourceId, route.relativePath)
+        result.value?.let { items = it }
+        error = result.failure?.message
+    }
     LaunchedEffect(route) { refresh() }
     SourceBrowseScreen(
         path = route.relativePath,
@@ -128,7 +142,7 @@ private fun SourceBrowseRoute(
                 onNavigate(SourceRoute.Browse(route.sourceId, child).encoded())
             }
         },
-        onSync = { scope.launch { controller.requestSync(route.sourceId); refresh() } },
+        onSync = { scope.launch { syncAndRefresh() } },
     )
 }
 

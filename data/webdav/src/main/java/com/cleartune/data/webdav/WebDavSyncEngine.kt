@@ -98,16 +98,15 @@ class WebDavSyncEngine(
                 val sourceKey = entry.relativeKey(base)
                 val previous = fingerprintLookup.find(source.id, sourceKey)
                 if (previous == RemoteFingerprint(entry.sizeBytes, entry.etag)) return@mapNotNull null
-                if (previous != null) updatePublisher.markUpdateAvailable(source.id, sourceKey)
-                entry
+                entry to (previous != null)
             }
             if (changed.isNotEmpty()) {
-                val enriched = enrich(source, changed)
-                val tracks = changed.mapIndexed { index, entry ->
+                val enriched = enrich(source, changed.map { it.first })
+                val tracks = changed.mapIndexed { index, (entry, _) ->
                     val sourceKey = entry.relativeKey(base)
                     Track(TrackId(stableId("track", source.id.value, sourceKey)), enriched[index].title)
                 }
-                val locations = changed.mapIndexed { index, entry ->
+                val locations = changed.mapIndexed { index, (entry, _) ->
                     val sourceKey = entry.relativeKey(base)
                     TrackLocation(
                         id = LocationId(stableId("location", source.id.value, sourceKey)),
@@ -122,6 +121,9 @@ class WebDavSyncEngine(
                 }
                 discovered += tracks.size
                 libraryWriteGateway.applyLibraryMutation(LibraryMutation.Upsert(source.id, tracks, locations))
+                changed.filter { it.second }.forEach { (entry, _) ->
+                    updatePublisher.markUpdateAvailable(source.id, entry.relativeKey(base))
+                }
             }
             saveCheckpoint(checkpoint(source.id, queue, visited, retained, discovered, failures))
         }

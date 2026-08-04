@@ -99,6 +99,43 @@ class DownloadCoordinatorTest {
         assertEquals("Unable to schedule download", records.get(id)?.errorMessage)
     }
 
+    @Test
+    fun `cancel stop failure remains canceled and tracked for reconciliation`() = runTest {
+        val id = DownloadId("download-1")
+        val records = FakeRecords(DownloadSummary(id, TrackId("track-1"), DownloadState.RUNNING))
+        val scheduler = FakeScheduler().apply { stopFailure = IllegalStateException("scheduler down") }
+
+        DownloadCoordinator(records, scheduler).dispatch(DownloadCommand.Cancel(id))
+
+        assertEquals(DownloadState.CANCELED, records.get(id)?.state)
+        assertEquals("Unable to stop download; cleanup pending", records.get(id)?.errorMessage)
+    }
+
+    @Test
+    fun `cancel file cleanup failure never rolls record back to running`() = runTest {
+        val id = DownloadId("download-1")
+        val records = FakeRecords(DownloadSummary(id, TrackId("track-1"), DownloadState.RUNNING))
+        val scheduler = FakeScheduler().apply { deleteFailure = java.io.IOException("locked") }
+
+        DownloadCoordinator(records, scheduler).dispatch(DownloadCommand.Cancel(id))
+
+        assertEquals(DownloadState.CANCELED, records.get(id)?.state)
+        assertEquals("Download canceled; file cleanup pending", records.get(id)?.errorMessage)
+        assertEquals(listOf(id), scheduler.stopped)
+    }
+
+    @Test
+    fun `delete cleanup failure keeps a canceled record until cleanup can be retried`() = runTest {
+        val id = DownloadId("download-1")
+        val records = FakeRecords(DownloadSummary(id, TrackId("track-1"), DownloadState.COMPLETED, finalPath = "track.mp3"))
+        val scheduler = FakeScheduler().apply { deleteFailure = java.io.IOException("locked") }
+
+        DownloadCoordinator(records, scheduler).dispatch(DownloadCommand.Delete(id))
+
+        assertEquals(DownloadState.CANCELED, records.get(id)?.state)
+        assertEquals("Delete incomplete; file cleanup pending", records.get(id)?.errorMessage)
+    }
+
     private class FakeRecords(vararg initial: DownloadSummary) : DownloadRecordStore {
         val values = MutableStateFlow(initial.toList())
         override fun observe(): Flow<List<DownloadSummary>> = values
@@ -115,11 +152,18 @@ class DownloadCoordinatorTest {
         val enqueued = mutableListOf<DownloadId>()
         val stopped = mutableListOf<DownloadId>()
         var enqueueFailure: Exception? = null
+        var stopFailure: Exception? = null
+        var deleteFailure: Exception? = null
         override suspend fun enqueue(id: DownloadId) {
             enqueueFailure?.let { throw it }
             enqueued += id
         }
-        override suspend fun stop(id: DownloadId) { stopped += id }
-        override suspend fun deleteFiles(id: DownloadId) = Unit
+        override suspend fun stop(id: DownloadId) {
+            stopFailure?.let { throw it }
+            stopped += id
+        }
+        override suspend fun deleteFiles(id: DownloadId) {
+            deleteFailure?.let { throw it }
+        }
     }
 }

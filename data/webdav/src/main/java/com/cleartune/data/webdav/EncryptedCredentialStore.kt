@@ -35,10 +35,41 @@ interface CredentialBlobStore {
 
 class CredentialUnavailableException : Exception("Credential data is unavailable")
 
+internal class ClearableUtf8Decoder(
+    private val decodeBuffer: (ByteBuffer) -> CharBuffer = { input ->
+        Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(input)
+    },
+    private val copyBuffer: (CharBuffer) -> CharArray = { decoded ->
+        CharArray(decoded.remaining()).also(decoded::get)
+    },
+) {
+    fun decode(bytes: ByteArray): CharArray {
+        var decoded: CharBuffer? = null
+        return try {
+            decoded = decodeBuffer(ByteBuffer.wrap(bytes))
+            copyBuffer(requireNotNull(decoded))
+        } finally {
+            decoded?.clearContents()
+        }
+    }
+
+    private fun CharBuffer.clearContents() {
+        check(!isReadOnly) { "Decoded credential buffer must be writable" }
+        clear()
+        while (hasRemaining()) put('\u0000')
+        clear()
+    }
+}
+
 class EncryptedCredentialStore(
     private val cipher: CredentialCipher,
     private val blobs: CredentialBlobStore,
 ) : CredentialStore {
+    private val passwordDecoder = ClearableUtf8Decoder()
+
     override suspend fun put(alias: CredentialAlias, credential: WebDavCredential) {
         val username = credential.username.toByteArray(Charsets.UTF_8)
         val password = encodeUtf8(credential.password)
@@ -105,11 +136,7 @@ class EncryptedCredentialStore(
                 .onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
             val username = decoder.decode(ByteBuffer.wrap(usernameBytes)).toString()
-            val password = Charsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-                .decode(ByteBuffer.wrap(passwordBytes))
-                .let { chars -> CharArray(chars.remaining()).also(chars::get) }
+            val password = passwordDecoder.decode(passwordBytes)
             WebDavCredential(username, password)
         } finally {
             usernameBytes.fill(0)

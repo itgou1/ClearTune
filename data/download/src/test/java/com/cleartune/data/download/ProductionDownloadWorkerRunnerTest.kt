@@ -7,6 +7,10 @@ import com.cleartune.core.model.TrackId
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequest
 import kotlinx.coroutines.test.runTest
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
@@ -25,6 +29,55 @@ class ProductionDownloadWorkerRunnerTest {
         val host = object : DownloadWorkerHost { override val downloadWorkerRunner = runner }
 
         assertSame(runner, DownloadWorker.runnerFrom(host))
+    }
+
+    @Test
+    fun `worker execution uses application host and maps every runner outcome`() = runTest {
+        for ((runnerOutcome, expected) in listOf(
+            WorkerOutcome.COMPLETED to DownloadWorkerExecutionResult.SUCCESS,
+            WorkerOutcome.RETRY to DownloadWorkerExecutionResult.RETRY,
+            WorkerOutcome.FAILED to DownloadWorkerExecutionResult.FAILURE,
+        )) {
+            var foregroundId: DownloadId? = null
+            val host = object : DownloadWorkerHost {
+                override val downloadWorkerRunner = DownloadWorkerRunner { runnerOutcome }
+            }
+
+            val actual = DownloadWorkerExecutor.execute(id.value, host) { foregroundId = it }
+
+            assertEquals(expected, actual)
+            assertEquals(id, foregroundId)
+        }
+    }
+
+    @Test
+    fun `worker execution rejects missing application host`() = runTest {
+        assertEquals(
+            DownloadWorkerExecutionResult.FAILURE,
+            DownloadWorkerExecutor.execute(id.value, Any()) {},
+        )
+    }
+
+    @Test(expected = CancellationException::class)
+    fun `worker execution rethrows host runner cancellation`() = runTest {
+        val host = object : DownloadWorkerHost {
+            override val downloadWorkerRunner = DownloadWorkerRunner { throw CancellationException("stop") }
+        }
+        DownloadWorkerExecutor.execute(id.value, host) {}
+    }
+
+    @Test
+    fun `download scheduler awaits accepted unique replacement and propagates rejection`() = runTest {
+        val root = Files.createTempDirectory("download-scheduler-").toFile()
+        val gateway = FakeDownloadWorkGateway()
+        val scheduler = WorkManagerDownloadScheduler(root, DownloadFileLocator { null }, gateway)
+
+        scheduler.enqueue(id)
+
+        assertEquals(DownloadWorker.workName(id), gateway.enqueuedName)
+        assertEquals(ExistingWorkPolicy.REPLACE, gateway.enqueuedPolicy)
+        gateway.enqueueFailure = IllegalStateException("rejected")
+        assertTrue(runCatching { scheduler.enqueue(id) }.isFailure)
     }
 
     @Test
@@ -48,7 +101,8 @@ class ProductionDownloadWorkerRunnerTest {
         val outcome = ProductionDownloadWorkerRunner(port) { executor }.run(id)
 
         assertEquals(WorkerOutcome.COMPLETED, outcome)
-        assertEquals(listOf(20L, 80L), port.progress.map { it.first })
+        assertEquals(100L, port.progress.last().first)
+        assertTrue(port.progress.map { it.first }.zipWithNext().all { (left, right) -> left < right })
         assertEquals("publish", port.events.last())
         assertEquals(fixture.final.absolutePath, port.publishedPath)
     }
@@ -86,6 +140,35 @@ class ProductionDownloadWorkerRunnerTest {
         assertEquals("storage_denied", failPort.failureCode)
     }
 
+    @Test
+    fun `fast progress producer has one pending persistence signal and publishes final progress first`() = runTest {
+        val fixture = fixture()
+        val firstPersistence = CompletableDeferred<Unit>()
+        val releasePersistence = CompletableDeferred<Unit>()
+        val port = FakeDownloadPort(fixture.work.copy(expectedBytes = 1_000)) {
+            if (firstPersistence.complete(Unit)) releasePersistence.await()
+        }
+        var maximumPending = 0
+        val executor = DownloadTransferExecutor { _, _, onProgress ->
+            repeat(1_000) { index -> onProgress((index + 1).toLong(), 1_000) }
+            fixture.final.writeBytes(ByteArray(1_000))
+            DownloadTransferResult.Completed(1_000)
+        }
+        val runner = ProductionDownloadWorkerRunner(
+            port,
+            progressQueueDepth = { pending -> maximumPending = maxOf(maximumPending, pending) },
+        ) { executor }
+
+        val result = async { runner.run(id) }
+        firstPersistence.await()
+        assertTrue(maximumPending <= 1)
+        releasePersistence.complete(Unit)
+
+        assertEquals(WorkerOutcome.COMPLETED, result.await())
+        assertEquals(1_000L, port.progress.last().first)
+        assertEquals("publish", port.events.last())
+    }
+
     @Test(expected = CancellationException::class)
     fun `runner rethrows cancellation and clears credential buffer`() = runTest {
         val fixture = fixture()
@@ -115,9 +198,29 @@ class ProductionDownloadWorkerRunnerTest {
     }
 }
 
+private class FakeDownloadWorkGateway : DownloadWorkManagerGateway {
+    var enqueuedName: String? = null
+    var enqueuedPolicy: ExistingWorkPolicy? = null
+    var enqueueFailure: Exception? = null
+    override suspend fun enqueueUnique(
+        name: String,
+        policy: ExistingWorkPolicy,
+        request: OneTimeWorkRequest,
+    ) {
+        enqueueFailure?.let { throw it }
+        enqueuedName = name
+        enqueuedPolicy = policy
+    }
+
+    override suspend fun cancelUnique(name: String) = Unit
+}
+
 private data class Fixture(val work: DownloadWork, val final: File)
 
-private class FakeDownloadPort(private val work: DownloadWork?) : DownloadPersistencePort {
+private class FakeDownloadPort(
+    private val work: DownloadWork?,
+    private val beforeProgress: suspend () -> Unit = {},
+) : DownloadPersistencePort {
     val progress = mutableListOf<Pair<Long, Long?>>()
     val events = mutableListOf<String>()
     var publishedPath: String? = null
@@ -126,6 +229,7 @@ private class FakeDownloadPort(private val work: DownloadWork?) : DownloadPersis
     override suspend fun loadWork(downloadId: DownloadId): DownloadWork? = work
     override suspend fun markRunning(downloadId: DownloadId) { events += "running" }
     override suspend fun persistProgress(downloadId: DownloadId, downloadedBytes: Long, totalBytes: Long?) {
+        beforeProgress()
         progress += downloadedBytes to totalBytes
         events += "progress"
     }

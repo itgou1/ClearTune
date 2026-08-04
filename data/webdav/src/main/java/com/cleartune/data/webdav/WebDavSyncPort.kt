@@ -54,7 +54,16 @@ class DurableWebDavSyncRunner(
     override suspend fun run(sourceId: SourceId): WebDavWorkerOutcome {
         val source = port.loadSource(sourceId) ?: return WebDavWorkerOutcome.FAILED
         return try {
-            val report = operation.sync(source, port.loadCheckpoint(sourceId), port::saveCheckpoint)
+            val persisted = port.loadCheckpoint(sourceId)
+            val checkpoint = if (persisted?.failures?.isNotEmpty() == true &&
+                persisted.failures.none(SyncFailure::retryable)
+            ) {
+                port.clearCheckpoint(sourceId)
+                null
+            } else {
+                persisted
+            }
+            val report = operation.sync(source, checkpoint, port::saveCheckpoint)
             when {
                 report.failures.isEmpty() -> {
                     port.clearCheckpoint(sourceId)

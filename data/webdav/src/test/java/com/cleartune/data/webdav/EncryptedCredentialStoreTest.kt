@@ -3,6 +3,8 @@ package com.cleartune.data.webdav
 import com.cleartune.core.contracts.WebDavCredential
 import com.cleartune.core.model.CredentialAlias
 import javax.crypto.KeyGenerator
+import java.nio.ByteBuffer
+import java.nio.CharBuffer
 import java.nio.file.Files
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
@@ -81,6 +83,30 @@ class EncryptedCredentialStoreTest {
         store.delete(alias.value)
         assertNull(store.read(alias.value))
         assertTrue(root.listFiles().orEmpty().none { it.isFile })
+    }
+
+    @Test
+    fun `decoded password buffer is cleared after copying`() {
+        val backing = charArrayOf('s', 'e', 'c', 'r', 'e', 't')
+        val decoder = ClearableUtf8Decoder(decodeBuffer = { CharBuffer.wrap(backing) })
+
+        val result = decoder.decode(byteArrayOf())
+
+        assertArrayEquals("secret".toCharArray(), result)
+        assertTrue(backing.all { it == '\u0000' })
+    }
+
+    @Test
+    fun `decoded password buffer is cleared when result copying throws`() {
+        val backing = charArrayOf('s', 'e', 'c', 'r', 'e', 't')
+        val decoder = ClearableUtf8Decoder(
+            decodeBuffer = { CharBuffer.wrap(backing) },
+            copyBuffer = { throw IllegalStateException("copy failed") },
+        )
+
+        runCatching { decoder.decode(ByteBuffer.allocate(0).array()) }
+
+        assertTrue(backing.all { it == '\u0000' })
     }
 
     private fun newKey() = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()

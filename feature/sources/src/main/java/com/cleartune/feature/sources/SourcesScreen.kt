@@ -174,7 +174,7 @@ fun SourceDetailScreen(
     onEdit: () -> Unit,
     onBrowse: () -> Unit,
     onSync: suspend () -> SourceResult<Unit>,
-    onDelete: suspend () -> Unit,
+    onDelete: suspend () -> SourceResult<Unit>,
 ) {
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -191,7 +191,10 @@ fun SourceDetailScreen(
             Text("Sync now")
         }
         TextButton(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Edit") }
-        TextButton(onClick = { scope.launch { onDelete() } }, modifier = Modifier.fillMaxWidth()) { Text("Delete") }
+        TextButton(
+            onClick = { scope.launch { error = onDelete().failure?.message } },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Delete") }
     }
 }
 

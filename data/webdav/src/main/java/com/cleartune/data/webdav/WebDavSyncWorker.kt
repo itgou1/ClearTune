@@ -11,6 +11,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.cleartune.core.model.SourceId
@@ -21,19 +22,38 @@ interface WebDavSyncWorkerHost {
     val webDavSyncRunner: WebDavSyncRunner
 }
 
+internal enum class WebDavWorkerExecutionResult { SUCCESS, RETRY, FAILURE }
+
+internal object WebDavWorkerExecutor {
+    suspend fun execute(
+        rawSourceId: String?,
+        application: Any,
+        prepareForeground: suspend (SourceId) -> Unit,
+    ): WebDavWorkerExecutionResult {
+        val sourceId = rawSourceId?.takeIf(String::isNotBlank)?.let(::SourceId)
+            ?: return WebDavWorkerExecutionResult.FAILURE
+        val runner = WebDavSyncWorker.runnerFrom(application) ?: return WebDavWorkerExecutionResult.FAILURE
+        prepareForeground(sourceId)
+        return when (runner.run(sourceId)) {
+            WebDavWorkerOutcome.COMPLETED -> WebDavWorkerExecutionResult.SUCCESS
+            WebDavWorkerOutcome.RETRY -> WebDavWorkerExecutionResult.RETRY
+            WebDavWorkerOutcome.FAILED -> WebDavWorkerExecutionResult.FAILURE
+        }
+    }
+}
+
 class WebDavSyncWorker(
     appContext: Context,
     parameters: WorkerParameters,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
-        val sourceId = inputData.getString(INPUT_SOURCE_ID)?.takeIf(String::isNotBlank)
-            ?.let(::SourceId) ?: return Result.failure()
-        val runner = runnerFrom(applicationContext) ?: return Result.failure()
-        setForeground(createForegroundInfo(sourceId))
-        return when (runner.run(sourceId)) {
-            WebDavWorkerOutcome.COMPLETED -> Result.success()
-            WebDavWorkerOutcome.RETRY -> Result.retry()
-            WebDavWorkerOutcome.FAILED -> Result.failure()
+        return when (WebDavWorkerExecutor.execute(
+            inputData.getString(INPUT_SOURCE_ID),
+            applicationContext,
+        ) { sourceId -> setForeground(createForegroundInfo(sourceId)) }) {
+            WebDavWorkerExecutionResult.SUCCESS -> Result.success()
+            WebDavWorkerExecutionResult.RETRY -> Result.retry()
+            WebDavWorkerExecutionResult.FAILURE -> Result.failure()
         }
     }
 
@@ -74,11 +94,30 @@ class WebDavSyncWorker(
     }
 }
 
-class WorkManagerWebDavSyncScheduler(context: Context) {
-    private val workManager = WorkManager.getInstance(context)
+internal interface WebDavWorkManagerGateway {
+    suspend fun enqueueUnique(name: String, policy: ExistingWorkPolicy, request: OneTimeWorkRequest)
+    suspend fun cancelUnique(name: String)
+}
 
-    fun enqueue(sourceId: SourceId) {
-        workManager.enqueueUniqueWork(
+private class AndroidWebDavWorkManagerGateway(
+    private val workManager: WorkManager,
+) : WebDavWorkManagerGateway {
+    override suspend fun enqueueUnique(name: String, policy: ExistingWorkPolicy, request: OneTimeWorkRequest) {
+        withContext(Dispatchers.IO) { workManager.enqueueUniqueWork(name, policy, request).result.get() }
+    }
+
+    override suspend fun cancelUnique(name: String) {
+        withContext(Dispatchers.IO) { workManager.cancelUniqueWork(name).result.get() }
+    }
+}
+
+class WorkManagerWebDavSyncScheduler internal constructor(
+    private val workGateway: WebDavWorkManagerGateway,
+) {
+    constructor(context: Context) : this(AndroidWebDavWorkManagerGateway(WorkManager.getInstance(context)))
+
+    suspend fun enqueue(sourceId: SourceId) {
+        workGateway.enqueueUnique(
             WebDavSyncWorker.workName(sourceId),
             ExistingWorkPolicy.REPLACE,
             WebDavSyncWorker.request(sourceId),
@@ -86,8 +125,6 @@ class WorkManagerWebDavSyncScheduler(context: Context) {
     }
 
     suspend fun cancel(sourceId: SourceId) {
-        withContext(Dispatchers.IO) {
-            workManager.cancelUniqueWork(WebDavSyncWorker.workName(sourceId)).result.get()
-        }
+        workGateway.cancelUnique(WebDavSyncWorker.workName(sourceId))
     }
 }

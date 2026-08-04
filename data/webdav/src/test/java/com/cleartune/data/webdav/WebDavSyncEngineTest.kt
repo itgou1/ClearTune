@@ -178,6 +178,44 @@ class WebDavSyncEngineTest {
     }
 
     @Test
+    fun `enrichment failure does not publish update availability`() = runTest {
+        val updates = mutableListOf<String>()
+        val engine = WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("changed.mp3")!!, "changed.mp3", false, 11, "v2"))
+            },
+            libraryWriteGateway = RecordingLibraryGateway(),
+            fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
+            metadataEnricher = WebDavMetadataEnricher { _, _ -> error("metadata unavailable") },
+            updatePublisher = RemoteUpdatePublisher { _, sourceKey -> updates += sourceKey },
+        )
+
+        runCatching { engine.sync(source) }
+
+        assertTrue(updates.isEmpty())
+    }
+
+    @Test
+    fun `library upsert failure does not publish update availability`() = runTest {
+        val updates = mutableListOf<String>()
+        val engine = WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("changed.mp3")!!, "changed.mp3", false, 11, "v2"))
+            },
+            libraryWriteGateway = object : LibraryWriteGateway {
+                override suspend fun applyLibraryMutation(mutation: LibraryMutation): MutationResult =
+                    throw IllegalStateException("database unavailable")
+            },
+            fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
+            updatePublisher = RemoteUpdatePublisher { _, sourceKey -> updates += sourceKey },
+        )
+
+        runCatching { engine.sync(source) }
+
+        assertTrue(updates.isEmpty())
+    }
+
+    @Test
     fun `transient listing failure checkpoints failed directory for a later retry`() = runTest {
         val checkpoints = mutableListOf<WebDavSyncCheckpoint>()
         val engine = WebDavSyncEngine(
