@@ -22,6 +22,8 @@ import com.cleartune.core.model.QueueCommand
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.TrackId
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -129,6 +131,91 @@ class WebDavSourceRemovalAndroidTest {
         assertEquals(listOf(DownloadId("queued-download")), effects.stoppedDownloads)
     }
 
+    @Test
+    fun removalTransactionClosesConcurrentEnqueueWindow() = runBlocking {
+        database.sourceDao().upsert(
+            MusicSourceEntity(
+                SOURCE_ID.value, "Remote", "WEBDAV", "https://music.example/dav/", false,
+                "webdav-source", true, null,
+            ),
+        )
+        val beforeTrack = TrackId("before-removal")
+        val afterTrack = TrackId("after-removal")
+        listOf(beforeTrack to "before.flac", afterTrack to "after.flac").forEach { (trackId, path) ->
+            database.libraryWriteDao().upsertTrack(TrackEntity(trackId.value, path, 1_000, null, null, 1))
+            database.libraryWriteDao().upsertLocation(
+                TrackLocationEntity(
+                    "remote-${trackId.value}", trackId.value, SOURCE_ID.value, path,
+                    LocationType.REMOTE_URL.name, "https://music.example/dav/$path", true,
+                    4, "v1", "", path, 1,
+                ),
+            )
+        }
+        val adapter = RoomDownloadPersistenceAdapter(database, NoCredentialStoreForRemoval, root, clock = { 2 })
+        adapter.insert(
+            DownloadSummary(DownloadId("before-download"), beforeTrack, DownloadState.QUEUED),
+        )
+        val effects = BlockingRemovalEffects()
+        val coordinator = RoomWebDavSourceRemovalCoordinator(database, root, effects, effects, effects)
+
+        val removal = async { coordinator.remove(SOURCE_ID, deleteOfflineCopies = false) }
+        effects.sourceCancellationStarted.await()
+        val enqueueFailure = runCatching {
+            adapter.insert(
+                DownloadSummary(DownloadId("after-download"), afterTrack, DownloadState.QUEUED),
+            )
+        }.exceptionOrNull()
+        effects.releaseSourceCancellation.complete(Unit)
+        removal.await()
+
+        assertTrue("enqueue after the removal transaction must fail", enqueueFailure != null)
+        assertNull(database.downloadDao().download("after-download"))
+        val before = requireNotNull(database.downloadDao().download("before-download"))
+        assertEquals(DownloadState.CANCELED.name, before.state)
+        assertFalse(before.cleanupPending)
+        assertEquals(listOf(DownloadId("before-download")), effects.stoppedDownloads)
+    }
+
+    @Test
+    fun tombstoneReconciliationRetriesPostCommitDownloadCancellation() = runBlocking {
+        database.sourceDao().upsert(
+            MusicSourceEntity(
+                SOURCE_ID.value, "Remote", "WEBDAV", "https://music.example/dav/", false,
+                "webdav-source", true, null,
+            ),
+        )
+        val trackId = TrackId("recoverable-track")
+        database.libraryWriteDao().upsertTrack(TrackEntity(trackId.value, "Recoverable", 1_000, null, null, 1))
+        database.libraryWriteDao().upsertLocation(
+            TrackLocationEntity(
+                "recoverable-remote", trackId.value, SOURCE_ID.value, "recoverable.flac",
+                LocationType.REMOTE_URL.name, "https://music.example/dav/recoverable.flac", true,
+                4, "v1", "", "recoverable.flac", 1,
+            ),
+        )
+        RoomDownloadPersistenceAdapter(database, NoCredentialStoreForRemoval, root, clock = { 2 })
+            .insert(DownloadSummary(DownloadId("recoverable-download"), trackId, DownloadState.QUEUED))
+        val effects = FailFirstSourceCancellationEffects()
+        val coordinator = RoomWebDavSourceRemovalCoordinator(database, root, effects, effects, effects)
+
+        val firstFailure = runCatching {
+            coordinator.remove(SOURCE_ID, deleteOfflineCopies = false)
+        }.exceptionOrNull()
+
+        assertTrue(firstFailure is IllegalStateException)
+        assertTrue(requireNotNull(database.sourceDao().tombstone(SOURCE_ID.value)).removed)
+        assertEquals(
+            DownloadState.CANCELED.name,
+            requireNotNull(database.downloadDao().download("recoverable-download")).state,
+        )
+        assertTrue(effects.stoppedDownloads.isEmpty())
+
+        coordinator.reconcile()
+
+        assertEquals(2, effects.sourceCancellationAttempts)
+        assertEquals(listOf(DownloadId("recoverable-download")), effects.stoppedDownloads)
+    }
+
     private suspend fun seedGraph(): Fixture {
         database.sourceDao().upsert(
             MusicSourceEntity(
@@ -196,4 +283,44 @@ private class RecordingRemovalEffects(
     override suspend fun stop(downloadId: DownloadId) { stoppedDownloads += downloadId }
     override suspend fun delete(alias: CredentialAlias) { deletedCredentials += alias }
     override suspend fun deleteFile(file: File): Boolean = if (failFileDeletion) false else !file.exists() || file.delete()
+}
+
+private class BlockingRemovalEffects : SourceWorkCancellation, DownloadWorkCancellation, CredentialDeletion {
+    val sourceCancellationStarted = CompletableDeferred<Unit>()
+    val releaseSourceCancellation = CompletableDeferred<Unit>()
+    val stoppedDownloads = mutableListOf<DownloadId>()
+
+    override suspend fun cancel(sourceId: SourceId) {
+        sourceCancellationStarted.complete(Unit)
+        releaseSourceCancellation.await()
+    }
+
+    override suspend fun stop(downloadId: DownloadId) {
+        stoppedDownloads += downloadId
+    }
+
+    override suspend fun delete(alias: CredentialAlias) = Unit
+
+    override suspend fun deleteFile(file: File): Boolean = !file.exists() || file.delete()
+}
+
+private class FailFirstSourceCancellationEffects :
+    SourceWorkCancellation,
+    DownloadWorkCancellation,
+    CredentialDeletion {
+    var sourceCancellationAttempts = 0
+    val stoppedDownloads = mutableListOf<DownloadId>()
+
+    override suspend fun cancel(sourceId: SourceId) {
+        sourceCancellationAttempts += 1
+        if (sourceCancellationAttempts == 1) error("simulated post-commit cancellation failure")
+    }
+
+    override suspend fun stop(downloadId: DownloadId) {
+        stoppedDownloads += downloadId
+    }
+
+    override suspend fun delete(alias: CredentialAlias) = Unit
+
+    override suspend fun deleteFile(file: File): Boolean = !file.exists() || file.delete()
 }

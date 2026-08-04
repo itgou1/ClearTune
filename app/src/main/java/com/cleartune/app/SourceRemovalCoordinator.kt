@@ -2,6 +2,8 @@ package com.cleartune.app
 
 import androidx.room.withTransaction
 import com.cleartune.core.database.ClearTuneDatabase
+import com.cleartune.core.database.entity.DownloadEntity
+import com.cleartune.core.database.entity.MusicSourceEntity
 import com.cleartune.core.model.CredentialAlias
 import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.DownloadState
@@ -23,6 +25,15 @@ fun interface CredentialDeletion {
     suspend fun delete(alias: CredentialAlias)
 }
 
+internal suspend fun <T> commitSourceRemoval(
+    transaction: suspend () -> T,
+    afterCommit: suspend (T) -> Unit,
+): T {
+    val committed = transaction()
+    afterCommit(committed)
+    return committed
+}
+
 class RoomWebDavSourceRemovalCoordinator(
     private val database: ClearTuneDatabase,
     downloadRoot: File,
@@ -35,41 +46,72 @@ class RoomWebDavSourceRemovalCoordinator(
     private val root = downloadRoot.canonicalFile
 
     suspend fun remove(sourceId: SourceId, deleteOfflineCopies: Boolean) {
-        val source = database.sourceDao().source(sourceId.value)
-            ?: database.sourceDao().tombstone(sourceId.value)
-            ?: error("Source not found")
-        val affected = database.downloadDao().downloadsForSource(sourceId.value)
-        sourceWork.cancel(sourceId)
-        affected.forEach { downloadWork.stop(DownloadId(it.id)) }
-
-        database.withTransaction {
-            database.sourceDao().softDelete(sourceId.value)
-            database.libraryWriteDao().markRemoteLocationsUnavailable(sourceId.value)
-            if (deleteOfflineCopies) {
-                affected.forEach { download ->
-                    database.libraryWriteDao()
-                        .locationIncludingUnavailable(OfflineDownloadSource.ID.value, "download:${download.id}")
-                        ?.let { database.libraryWriteDao().markLocationUnavailable(it.id) }
-                    database.downloadDao().upsert(
-                        download.copy(
-                            state = DownloadState.CANCELED.name,
-                            cleanupPending = true,
-                            errorMessage = CLEANUP_PENDING_MESSAGE,
-                            updatedAtEpochMs = System.currentTimeMillis(),
-                        ),
-                    )
+        val committed = commitSourceRemoval(
+            transaction = {
+                database.withTransaction {
+                    val source = database.sourceDao().source(sourceId.value)
+                        ?: database.sourceDao().tombstone(sourceId.value)
+                        ?: error("Source not found")
+                    database.sourceDao().softDelete(sourceId.value)
+                    database.libraryWriteDao().markRemoteLocationsUnavailable(sourceId.value)
+                    val affected = database.downloadDao().downloadsForSource(sourceId.value)
+                    affected.forEach { download ->
+                        markDownloadRemoved(download, deleteOfflineCopies)
+                    }
+                    CommittedRemoval(source, affected.map { DownloadId(it.id) })
                 }
-            }
-        }
+            },
+            afterCommit = { result ->
+                sourceWork.cancel(sourceId)
+                result.downloadIds.forEach { downloadWork.stop(it) }
+            },
+        )
 
         clearCheckpoint(sourceId)
         clearArtwork(sourceId)
-        source.credentialAlias?.let { alias ->
+        committed.source.credentialAlias?.let { alias ->
             credentials.delete(CredentialAlias(alias))
             database.sourceDao().clearTombstoneCredential(sourceId.value)
         }
         if (deleteOfflineCopies) reconcilePendingCleanup()
     }
+
+    private suspend fun markDownloadRemoved(download: DownloadEntity, deleteOfflineCopies: Boolean) {
+        if (deleteOfflineCopies) {
+            database.libraryWriteDao()
+                .locationIncludingUnavailable(OfflineDownloadSource.ID.value, "download:${download.id}")
+                ?.let { database.libraryWriteDao().markLocationUnavailable(it.id) }
+        }
+        val cleanupPending = deleteOfflineCopies || download.cleanupPending
+        val retainedCompleted = !cleanupPending && download.state == DownloadState.COMPLETED.name
+        database.downloadDao().upsert(
+            download.copy(
+                state = if (retainedCompleted) download.state else DownloadState.CANCELED.name,
+                cleanupPending = cleanupPending,
+                errorMessage = if (cleanupPending) CLEANUP_PENDING_MESSAGE else null,
+                updatedAtEpochMs = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private suspend fun committedDownloadsForTombstone(sourceId: SourceId): List<DownloadId> =
+        database.withTransaction {
+            val affected = database.downloadDao().downloadsForSource(sourceId.value)
+            affected.forEach { download ->
+                if (download.state != DownloadState.COMPLETED.name &&
+                    download.state != DownloadState.CANCELED.name
+                ) {
+                    database.downloadDao().upsert(
+                        download.copy(
+                            state = DownloadState.CANCELED.name,
+                            errorMessage = null,
+                            updatedAtEpochMs = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+            }
+            affected.map { DownloadId(it.id) }
+        }
 
     suspend fun reconcilePendingCleanup() {
         database.downloadDao().pendingCleanup().forEach { download ->
@@ -109,7 +151,9 @@ class RoomWebDavSourceRemovalCoordinator(
     suspend fun reconcile() {
         database.sourceDao().tombstones().forEach { source ->
             val sourceId = SourceId(source.id)
+            val downloadIds = committedDownloadsForTombstone(sourceId)
             sourceWork.cancel(sourceId)
+            downloadIds.forEach { downloadWork.stop(it) }
             clearCheckpoint(sourceId)
             clearArtwork(sourceId)
             source.credentialAlias?.let { alias ->
@@ -132,4 +176,9 @@ class RoomWebDavSourceRemovalCoordinator(
     private companion object {
         const val CLEANUP_PENDING_MESSAGE = "Offline cleanup pending"
     }
+
+    private data class CommittedRemoval(
+        val source: MusicSourceEntity,
+        val downloadIds: List<DownloadId>,
+    )
 }
