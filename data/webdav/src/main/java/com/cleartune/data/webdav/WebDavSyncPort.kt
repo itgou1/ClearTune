@@ -66,6 +66,10 @@ class DurableWebDavSyncRunner(
             }
             val report = operation.sync(source, checkpoint, port::saveCheckpoint)
             when {
+                report.retired -> {
+                    port.clearCheckpoint(sourceId)
+                    WebDavWorkerOutcome.COMPLETED
+                }
                 report.failures.isEmpty() -> {
                     port.clearCheckpoint(sourceId)
                     WebDavWorkerOutcome.COMPLETED

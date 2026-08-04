@@ -96,6 +96,7 @@ class RoomWebDavSourceRemovalCoordinator(
 
     private suspend fun committedDownloadsForTombstone(sourceId: SourceId): List<DownloadId> =
         database.withTransaction {
+            database.libraryWriteDao().markRemoteLocationsUnavailable(sourceId.value)
             val affected = database.downloadDao().downloadsForSource(sourceId.value)
             affected.forEach { download ->
                 if (download.state != DownloadState.COMPLETED.name &&

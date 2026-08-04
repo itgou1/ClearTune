@@ -108,15 +108,17 @@ data class PlayableTrack(val track: Track, val locations: List<TrackLocation>)
 
 sealed interface LibraryMutation {
     data class Upsert(
-        val sourceId: SourceId,
+        override val sourceId: SourceId,
         val tracks: List<Track>,
         val locations: List<TrackLocation>,
     ) : LibraryMutation
 
     data class RetainSourceKeys(
-        val sourceId: SourceId,
+        override val sourceId: SourceId,
         val retainedSourceKeys: Set<String>,
     ) : LibraryMutation
+
+    val sourceId: SourceId
 }
 
 sealed interface SourceMutation {
@@ -124,10 +126,13 @@ sealed interface SourceMutation {
     data class Remove(val sourceId: SourceId) : SourceMutation
 }
 
+enum class MutationDisposition { APPLIED, SOURCE_RETIRED }
+
 data class MutationResult(
     val inserted: Int = 0,
     val updated: Int = 0,
     val removed: Int = 0,
+    val disposition: MutationDisposition = MutationDisposition.APPLIED,
 ) {
     init {
         require(inserted >= 0)

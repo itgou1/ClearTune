@@ -4,10 +4,16 @@ import com.cleartune.core.model.MusicSource
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.SourceType
 import java.io.ByteArrayOutputStream
+import java.awt.image.BufferedImage
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.Files
 import java.util.Base64
+import java.util.zip.CRC32
+import java.util.zip.DeflaterOutputStream
+import javax.imageio.IIOImage
+import javax.imageio.ImageIO
+import javax.imageio.ImageWriteParam
 import kotlinx.coroutines.test.runTest
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertArrayEquals
@@ -199,6 +205,51 @@ class RangeWebDavMetadataEnricherTest {
     }
 
     @Test
+    fun `MP3 APIC accepts an ordinary progressive JPEG`() = runTest {
+        val artwork = progressiveJpeg()
+        val cache = RecordingArtworkCache()
+        val fixture = id3(
+            "TIT2" to text("Progressive Cover"),
+            "APIC" to apic("image/jpeg", artwork),
+        )
+        val enricher = RangeWebDavMetadataEnricher(
+            reader = WebDavRangeReader { _, _, _, _, _ ->
+                RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
+            },
+            artworkCache = cache,
+        )
+
+        val metadata = enricher.enrich(source(), entry("progressive.mp3", fixture.size.toLong()))
+
+        assertEquals("Progressive Cover", metadata.title)
+        assertTrue(metadata.artworkRef != null)
+        assertArrayEquals(artwork, cache.stored.single())
+    }
+
+    @Test
+    fun `MP3 APIC accepts an Adam7 interlaced PNG`() = runTest {
+        val artwork = interlacedPng()
+        assertEquals(1, artwork[28].toInt())
+        val cache = RecordingArtworkCache()
+        val fixture = id3(
+            "TIT2" to text("Interlaced Cover"),
+            "APIC" to apic("image/png", artwork),
+        )
+        val enricher = RangeWebDavMetadataEnricher(
+            reader = WebDavRangeReader { _, _, _, _, _ ->
+                RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
+            },
+            artworkCache = cache,
+        )
+
+        val metadata = enricher.enrich(source(), entry("interlaced.png.mp3", fixture.size.toLong()))
+
+        assertEquals("Interlaced Cover", metadata.title)
+        assertTrue(metadata.artworkRef != null)
+        assertArrayEquals(artwork, cache.stored.single())
+    }
+
+    @Test
     fun `validated artwork still obeys the configured compressed byte limit`() = runTest {
         val cache = RecordingArtworkCache()
         val fixture = id3(
@@ -246,6 +297,80 @@ class RangeWebDavMetadataEnricherTest {
 
             val metadata = enricher.enrich(source(), entry("$case.mp3", fixture.size.toLong()))
 
+            assertNull("$case must not produce an artwork reference", metadata.artworkRef)
+            assertTrue("$case must not reach the cache", cache.stored.isEmpty())
+        }
+    }
+
+    @Test
+    fun `MP3 APIC rejects structurally forged JPEGs but preserves metadata`() = runTest {
+        val invalidArtwork = listOf(
+            "SOF followed directly by EOI" to forgedSofAndEoiJpeg(),
+            "invalid DQT table id" to JPEG_1X1.withJpegByteAfterMarker(0xdb, 2, 0x04),
+            "invalid DHT table class" to JPEG_1X1.withJpegByteAfterMarker(0xc4, 2, 0x20),
+            "zero SOF components" to JPEG_1X1.withJpegByteAfterMarker(0xc0, 7, 0),
+            "zero SOF sampling factor" to JPEG_1X1.withJpegByteAfterMarker(0xc0, 9, 0),
+            "unknown SOS component" to JPEG_1X1.withJpegByteAfterMarker(0xda, 3, 0x7f),
+            "truncated entropy scan" to JPEG_1X1.copyOf(JPEG_1X1.size - 2),
+            "reserved marker in entropy scan" to JPEG_1X1.withReservedEntropyMarker(),
+            "restart marker without DRI" to JPEG_1X1.withEntropyMarker(0xd0),
+            "trailing bytes after EOI" to (JPEG_1X1 + 0),
+        )
+
+        invalidArtwork.forEach { (case, artwork) ->
+            val cache = RecordingArtworkCache()
+            val fixture = id3(
+                "TIT2" to text("Metadata survives $case"),
+                "APIC" to apic("image/jpeg", artwork),
+            )
+            val enricher = RangeWebDavMetadataEnricher(
+                reader = WebDavRangeReader { _, _, _, _, _ ->
+                    RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
+                },
+                artworkCache = cache,
+            )
+
+            val metadata = enricher.enrich(source(), entry("$case.mp3", fixture.size.toLong()))
+
+            assertEquals("Metadata survives $case", metadata.title)
+            assertNull("$case must not produce an artwork reference", metadata.artworkRef)
+            assertTrue("$case must not reach the cache", cache.stored.isEmpty())
+        }
+    }
+
+    @Test
+    fun `MP3 APIC rejects corrupt PNG structure and zlib data but preserves metadata`() = runTest {
+        val validCompressed = deflate(byteArrayOf(0, 0, 0, 0, 0))
+        val invalidArtwork = listOf(
+            "bad IHDR CRC" to PNG_1X1.withCorruptPngChunkCrc("IHDR"),
+            "bad IDAT CRC" to PNG_1X1.withCorruptPngChunkCrc("IDAT"),
+            "empty IDAT" to pngWithIdatChunks(listOf(byteArrayOf())),
+            "invalid zlib stream" to pngWithIdatChunks(listOf(byteArrayOf(1, 2, 3))),
+            "truncated zlib stream" to pngWithIdatChunks(listOf(validCompressed.copyOf(validCompressed.size - 1))),
+            "invalid scanline filter" to pngWithRawScanline(byteArrayOf(5, 0, 0, 0, 0)),
+            "non-contiguous IDAT" to pngWithIdatChunks(
+                listOf(validCompressed.copyOfRange(0, 2), validCompressed.copyOfRange(2, validCompressed.size)),
+                separateIdat = true,
+            ),
+            "trailing bytes after IEND" to (PNG_1X1 + 0),
+        )
+
+        invalidArtwork.forEach { (case, artwork) ->
+            val cache = RecordingArtworkCache()
+            val fixture = id3(
+                "TIT2" to text("Metadata survives $case"),
+                "APIC" to apic("image/png", artwork),
+            )
+            val enricher = RangeWebDavMetadataEnricher(
+                reader = WebDavRangeReader { _, _, _, _, _ ->
+                    RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
+                },
+                artworkCache = cache,
+            )
+
+            val metadata = enricher.enrich(source(), entry("$case.mp3", fixture.size.toLong()))
+
+            assertEquals("Metadata survives $case", metadata.title)
             assertNull("$case must not produce an artwork reference", metadata.artworkRef)
             assertTrue("$case must not reach the cache", cache.stored.isEmpty())
         }
@@ -398,9 +523,131 @@ class RangeWebDavMetadataEnricherTest {
     private fun ByteArray.withPngDimensions(width: Int, height: Int): ByteArray = copyOf().also { png ->
         ByteBuffer.wrap(png, 16, 4).putInt(width)
         ByteBuffer.wrap(png, 20, 4).putInt(height)
+        writePngCrc(png, 12, 29)
+    }
+
+    private fun ByteArray.withCorruptPngChunkCrc(type: String): ByteArray = copyOf().also { png ->
+        var cursor = 8
+        while (cursor + 12 <= png.size) {
+            val length = ByteBuffer.wrap(png, cursor, 4).int
+            val chunkType = png.copyOfRange(cursor + 4, cursor + 8).toString(Charsets.US_ASCII)
+            if (length < 0 || cursor + 12L + length > png.size) error("invalid PNG fixture")
+            if (chunkType == type) {
+                val crcOffset = cursor + 8 + length
+                png[crcOffset] = (png[crcOffset].toInt() xor 1).toByte()
+                return@also
+            }
+            cursor += 12 + length
+        }
+        error("missing $type fixture chunk")
+    }
+
+    private fun ByteArray.withJpegByteAfterMarker(marker: Int, offset: Int, value: Int): ByteArray =
+        copyOf().also { jpeg ->
+            val markerOffset = jpeg.indices.firstOrNull { index ->
+                index + 1 < jpeg.size && (jpeg[index].toInt() and 0xff) == 0xff &&
+                    (jpeg[index + 1].toInt() and 0xff) == marker
+            } ?: error("missing JPEG marker ${marker.toString(16)}")
+            jpeg[markerOffset + 2 + offset] = value.toByte()
+        }
+
+    private fun ByteArray.withReservedEntropyMarker(): ByteArray = withEntropyMarker(0x02)
+
+    private fun ByteArray.withEntropyMarker(marker: Int): ByteArray = copyOf().also { jpeg ->
+        val sos = jpeg.indices.firstOrNull { index ->
+            index + 1 < jpeg.size && (jpeg[index].toInt() and 0xff) == 0xff &&
+                (jpeg[index + 1].toInt() and 0xff) == 0xda
+        } ?: error("missing SOS fixture marker")
+        val segmentLength = ((jpeg[sos + 2].toInt() and 0xff) shl 8) or (jpeg[sos + 3].toInt() and 0xff)
+        val scanStart = sos + 2 + segmentLength
+        jpeg[scanStart] = 0xff.toByte()
+        jpeg[scanStart + 1] = marker.toByte()
+    }
+
+    private fun forgedSofAndEoiJpeg(): ByteArray = byteArrayOf(
+        0xff.toByte(), 0xd8.toByte(),
+        0xff.toByte(), 0xc0.toByte(), 0, 8, 8, 0, 1, 0, 1, 0,
+        0xff.toByte(), 0xd9.toByte(),
+    )
+
+    private fun progressiveJpeg(): ByteArray {
+        val image = BufferedImage(1, 1, BufferedImage.TYPE_INT_RGB).apply { setRGB(0, 0, 0x336699) }
+        val writer = ImageIO.getImageWritersByFormatName("jpeg").next()
+        return ByteArrayOutputStream().use { output ->
+            ImageIO.createImageOutputStream(output).use { imageOutput ->
+                writer.output = imageOutput
+                val parameters = writer.defaultWriteParam.apply { progressiveMode = ImageWriteParam.MODE_DEFAULT }
+                writer.write(null, IIOImage(image, null, null), parameters)
+            }
+            writer.dispose()
+            output.toByteArray()
+        }
+    }
+
+    private fun interlacedPng(): ByteArray {
+        val image = BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB).apply {
+            setRGB(0, 0, 0xff336699.toInt())
+            setRGB(1, 0, 0xff993366.toInt())
+            setRGB(0, 1, 0xff669933.toInt())
+            setRGB(1, 1, 0xff112233.toInt())
+        }
+        val writer = ImageIO.getImageWritersByFormatName("png").next()
+        return ByteArrayOutputStream().use { output ->
+            ImageIO.createImageOutputStream(output).use { imageOutput ->
+                writer.output = imageOutput
+                val parameters = writer.defaultWriteParam.apply { progressiveMode = ImageWriteParam.MODE_DEFAULT }
+                writer.write(null, IIOImage(image, null, null), parameters)
+            }
+            writer.dispose()
+            output.toByteArray()
+        }
+    }
+
+    private fun pngWithRawScanline(raw: ByteArray): ByteArray = pngWithIdatChunks(listOf(deflate(raw)))
+
+    private fun pngWithIdatChunks(idatChunks: List<ByteArray>, separateIdat: Boolean = false): ByteArray {
+        val ihdr = ByteBuffer.allocate(13).apply {
+            putInt(1)
+            putInt(1)
+            put(byteArrayOf(8, 6, 0, 0, 0))
+        }.array()
+        return ByteArrayOutputStream().apply {
+            write(PNG_SIGNATURE_BYTES)
+            writePngChunk("IHDR", ihdr)
+            idatChunks.forEachIndexed { index, data ->
+                if (separateIdat && index > 0) writePngChunk("tEXt", "k\u0000v".toByteArray())
+                writePngChunk("IDAT", data)
+            }
+            writePngChunk("IEND", byteArrayOf())
+        }.toByteArray()
+    }
+
+    private fun deflate(raw: ByteArray): ByteArray = ByteArrayOutputStream().use { output ->
+        DeflaterOutputStream(output).use { it.write(raw) }
+        output.toByteArray()
+    }
+
+    private fun ByteArrayOutputStream.writePngChunk(type: String, data: ByteArray) {
+        val typeBytes = type.toByteArray(Charsets.US_ASCII)
+        write(ByteBuffer.allocate(4).putInt(data.size).array())
+        write(typeBytes)
+        write(data)
+        val crc = CRC32().apply {
+            update(typeBytes)
+            update(data)
+        }.value
+        write(ByteBuffer.allocate(4).putInt(crc.toInt()).array())
+    }
+
+    private fun writePngCrc(bytes: ByteArray, typeOffset: Int, crcOffset: Int) {
+        val crc = CRC32().apply { update(bytes, typeOffset, crcOffset - typeOffset) }.value
+        ByteBuffer.wrap(bytes, crcOffset, 4).putInt(crc.toInt())
     }
 
     private companion object {
+        val PNG_SIGNATURE_BYTES = byteArrayOf(
+            0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        )
         val PNG_1X1: ByteArray = Base64.getDecoder().decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
         )

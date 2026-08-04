@@ -5,6 +5,7 @@ import com.cleartune.core.model.LibraryMutation
 import com.cleartune.core.model.LocationId
 import com.cleartune.core.model.LocationType
 import com.cleartune.core.model.MusicSource
+import com.cleartune.core.model.MutationDisposition
 import com.cleartune.core.model.Track
 import com.cleartune.core.model.TrackId
 import com.cleartune.core.model.TrackLocation
@@ -29,6 +30,7 @@ data class WebDavSyncReport(
     val discoveredTracks: Int,
     val visitedDirectories: Int,
     val failures: List<SyncFailure>,
+    val retired: Boolean = false,
 )
 
 class WebDavSyncEngine(
@@ -130,7 +132,12 @@ class WebDavSyncEngine(
                     )
                 }
                 discovered += tracks.size
-                libraryWriteGateway.applyLibraryMutation(LibraryMutation.Upsert(source.id, tracks, locations))
+                val mutationResult = libraryWriteGateway.applyLibraryMutation(
+                    LibraryMutation.Upsert(source.id, tracks, locations),
+                )
+                if (mutationResult.disposition == MutationDisposition.SOURCE_RETIRED) {
+                    return WebDavSyncReport(discovered, visited.size, failures, retired = true)
+                }
                 changed.filter { it.second }.forEach { (entry, _) ->
                     updatePublisher.markUpdateAvailable(source.id, entry.relativeKey(base))
                 }
@@ -138,7 +145,12 @@ class WebDavSyncEngine(
             saveCheckpoint(checkpoint(source.id, queue, visited, retained, discovered, failures))
         }
         if (failures.isEmpty()) {
-            libraryWriteGateway.applyLibraryMutation(LibraryMutation.RetainSourceKeys(source.id, retained))
+            val mutationResult = libraryWriteGateway.applyLibraryMutation(
+                LibraryMutation.RetainSourceKeys(source.id, retained),
+            )
+            if (mutationResult.disposition == MutationDisposition.SOURCE_RETIRED) {
+                return WebDavSyncReport(discovered, visited.size, failures, retired = true)
+            }
         }
         return WebDavSyncReport(discovered, visited.size, failures)
     }

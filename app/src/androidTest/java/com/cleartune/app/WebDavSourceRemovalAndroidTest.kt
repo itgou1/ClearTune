@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cleartune.core.contracts.CredentialStore
 import com.cleartune.core.contracts.WebDavCredential
 import com.cleartune.core.database.ClearTuneDatabase
+import com.cleartune.core.database.RoomLibraryRepository
 import com.cleartune.core.database.entity.DownloadEntity
 import com.cleartune.core.database.entity.MusicSourceEntity
 import com.cleartune.core.database.entity.PlaybackHistoryEntity
@@ -21,11 +22,21 @@ import com.cleartune.core.model.PlaylistCommand
 import com.cleartune.core.model.QueueCommand
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.TrackId
+import com.cleartune.data.webdav.DirectoryListingClient
+import com.cleartune.data.webdav.DurableWebDavSyncRunner
+import com.cleartune.data.webdav.EnrichedTrackMetadata
+import com.cleartune.data.webdav.RemoteFingerprintLookup
+import com.cleartune.data.webdav.WebDavEntry
+import com.cleartune.data.webdav.WebDavMetadataEnricher
+import com.cleartune.data.webdav.WebDavSyncCheckpoint
+import com.cleartune.data.webdav.WebDavSyncEngine
+import com.cleartune.data.webdav.WebDavWorkerOutcome
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -177,6 +188,79 @@ class WebDavSourceRemovalAndroidTest {
     }
 
     @Test
+    fun loadedSyncCannotRepublishRemoteLocationAfterRemovalCommit() = runBlocking {
+        database.sourceDao().upsert(
+            MusicSourceEntity(
+                SOURCE_ID.value, "Remote", "WEBDAV", "https://music.example/dav/", false,
+                null, true, null,
+            ),
+        )
+        val trackId = TrackId("late-sync-track")
+        database.libraryWriteDao().upsertTrack(TrackEntity(trackId.value, "Before", 1_000, null, null, 1))
+        database.libraryWriteDao().upsertLocation(
+            TrackLocationEntity(
+                "late-sync-location", trackId.value, SOURCE_ID.value, "late.mp3",
+                LocationType.REMOTE_URL.name, "https://music.example/dav/late.mp3", true,
+                10, "v1", "", "late.mp3", 1,
+            ),
+        )
+        val repository = RoomLibraryRepository(database)
+        val checkpoints = object : WebDavCheckpointStore {
+            override suspend fun load(sourceId: SourceId): WebDavSyncCheckpoint? = null
+            override suspend fun save(checkpoint: WebDavSyncCheckpoint) = Unit
+            override suspend fun clear(sourceId: SourceId) = Unit
+        }
+        val persistence = RoomWebDavPersistenceAdapter(database, repository, checkpoints)
+        val syncPausedAfterLoad = CompletableDeferred<Unit>()
+        val resumeSync = CompletableDeferred<Unit>()
+        val runner = DurableWebDavSyncRunner(persistence) { source, checkpoint, saveCheckpoint ->
+            WebDavSyncEngine(
+                client = DirectoryListingClient { _, _ ->
+                    listOf(
+                        WebDavEntry(
+                            "https://music.example/dav/late.mp3".toHttpUrl(),
+                            "late.mp3",
+                            false,
+                            11,
+                            "v2",
+                        ),
+                    )
+                },
+                libraryWriteGateway = repository,
+                fingerprintLookup = RemoteFingerprintLookup(persistence::remoteFingerprint),
+                metadataEnricher = WebDavMetadataEnricher { _, _ ->
+                    syncPausedAfterLoad.complete(Unit)
+                    resumeSync.await()
+                    EnrichedTrackMetadata("After")
+                },
+                updatePublisher = persistence::markUpdateAvailable,
+            ).sync(source, checkpoint, saveCheckpoint)
+        }
+        val effects = RecordingRemovalEffects()
+        val coordinator = RoomWebDavSourceRemovalCoordinator(
+            database,
+            root,
+            effects,
+            effects,
+            effects,
+            clearCheckpoint = persistence::clearCheckpoint,
+        )
+
+        val sync = async { runner.run(SOURCE_ID) }
+        syncPausedAfterLoad.await()
+        coordinator.remove(SOURCE_ID, deleteOfflineCopies = false)
+        assertTrue(requireNotNull(database.sourceDao().tombstone(SOURCE_ID.value)).removed)
+        resumeSync.complete(Unit)
+
+        assertEquals(WebDavWorkerOutcome.COMPLETED, sync.await())
+        val stable = requireNotNull(
+            database.libraryWriteDao().locationIncludingUnavailable(SOURCE_ID.value, "late.mp3"),
+        )
+        assertEquals("late-sync-location", stable.id)
+        assertFalse(stable.available)
+    }
+
+    @Test
     fun tombstoneReconciliationRetriesPostCommitDownloadCancellation() = runBlocking {
         database.sourceDao().upsert(
             MusicSourceEntity(
@@ -210,10 +294,25 @@ class WebDavSourceRemovalAndroidTest {
         )
         assertTrue(effects.stoppedDownloads.isEmpty())
 
+        val lateLocation = requireNotNull(
+            database.libraryWriteDao().locationIncludingUnavailable(SOURCE_ID.value, "recoverable.flac"),
+        )
+        database.libraryWriteDao().upsertLocation(lateLocation.copy(available = true))
+        assertTrue(
+            requireNotNull(
+                database.libraryWriteDao().locationIncludingUnavailable(SOURCE_ID.value, "recoverable.flac"),
+            ).available,
+        )
+
         coordinator.reconcile()
 
         assertEquals(2, effects.sourceCancellationAttempts)
         assertEquals(listOf(DownloadId("recoverable-download")), effects.stoppedDownloads)
+        assertFalse(
+            requireNotNull(
+                database.libraryWriteDao().locationIncludingUnavailable(SOURCE_ID.value, "recoverable.flac"),
+            ).available,
+        )
     }
 
     private suspend fun seedGraph(): Fixture {

@@ -26,6 +26,7 @@ import com.cleartune.core.database.model.MediaCatalogNodeRow
 import com.cleartune.core.database.model.StableLibraryId
 import com.cleartune.core.model.LibraryMutation
 import com.cleartune.core.model.LocationType
+import com.cleartune.core.model.MutationDisposition
 import com.cleartune.core.model.MutationResult
 import com.cleartune.core.model.SourceId
 import kotlinx.coroutines.flow.Flow
@@ -280,6 +281,9 @@ abstract class LibraryWriteDao {
     @Query("SELECT sourceKey FROM track_locations WHERE sourceId = :sourceId")
     abstract suspend fun sourceKeys(sourceId: String): List<String>
 
+    @Query("SELECT EXISTS(SELECT 1 FROM music_sources WHERE id = :sourceId AND removed = 0)")
+    abstract suspend fun isSourceActive(sourceId: String): Boolean
+
     @Query("UPDATE track_locations SET available = 0 WHERE sourceId = :sourceId AND sourceKey IN (:sourceKeys) AND available != 0")
     abstract suspend fun markSourceKeysUnavailable(sourceId: String, sourceKeys: List<String>): Int
 
@@ -403,67 +407,73 @@ abstract class LibraryWriteDao {
     }
 
     @Transaction
-    open suspend fun applyMutation(mutation: LibraryMutation): MutationResult = when (mutation) {
-        is LibraryMutation.Upsert -> {
-            mutation.tracks.forEach { track ->
-                val existing = track(track.id.value)
-                val nextArtworkRef = if (track.artworkResolved) track.artworkRef else existing?.artworkRef
-                val nextAlbumId = track.albumTitle?.takeIf(String::isNotBlank)?.let { title ->
-                    StableLibraryId.album(mutation.sourceId, title).value.also { albumId ->
-                        upsertAlbum(AlbumEntity(albumId, title.trim(), nextArtworkRef))
-                    }
-                } ?: track.albumId?.value ?: existing?.albumId
-                upsertTrack(
-                    TrackEntity(
-                        id = track.id.value,
-                        title = track.title,
-                        durationMs = track.durationMs ?: existing?.durationMs,
-                        albumId = nextAlbumId,
-                        artworkRef = nextArtworkRef,
-                        addedAtEpochMs = existing?.addedAtEpochMs ?: track.addedAtEpochMs,
-                    ),
-                )
-                if (track.artistNames.isNotEmpty()) {
-                    deleteTrackArtists(track.id.value)
-                    track.artistNames.distinctBy(String::lowercase).forEach { name ->
-                        val artistId = StableLibraryId.artist(mutation.sourceId, name)
-                        upsertArtist(ArtistEntity(artistId.value, name.trim()))
-                        insertTrackArtist(TrackArtistCrossRef(track.id.value, artistId.value))
-                    }
-                }
-                deleteSearch(track.id.value)
-                insertSearch(
-                    TrackSearchFtsEntity(
-                        trackId = track.id.value,
-                        title = track.title,
-                        albumTitle = nextAlbumId?.let { albumTitle(it) }.orEmpty(),
-                        artistNames = artistNames(track.id.value).joinToString(" "),
-                    ),
-                )
-            }
-            mutation.locations.forEach { location ->
-                upsertLocation(
-                    TrackLocationEntity(
-                        id = location.id.value,
-                        trackId = location.trackId.value,
-                        sourceId = location.sourceId.value,
-                        sourceKey = location.sourceKey,
-                        type = location.type.name,
-                        uri = location.uri,
-                        available = location.available,
-                        sizeBytes = location.sizeBytes,
-                        etag = location.etag,
-                        relativeFolder = "",
-                        displayName = location.uri.substringAfterLast('/'),
-                        modifiedEpochSeconds = 0,
-                    ),
-                )
-            }
-            MutationResult(inserted = mutation.tracks.size)
+    open suspend fun applyMutation(mutation: LibraryMutation): MutationResult {
+        if (!isSourceActive(mutation.sourceId.value)) {
+            return MutationResult(disposition = MutationDisposition.SOURCE_RETIRED)
         }
-        is LibraryMutation.RetainSourceKeys -> {
-            val removed = markMissingSourceKeysUnavailable(mutation.sourceId.value, mutation.retainedSourceKeys)
-            MutationResult(removed = removed)
+        return when (mutation) {
+            is LibraryMutation.Upsert -> {
+                mutation.tracks.forEach { track ->
+                    val existing = track(track.id.value)
+                    val nextArtworkRef = if (track.artworkResolved) track.artworkRef else existing?.artworkRef
+                    val nextAlbumId = track.albumTitle?.takeIf(String::isNotBlank)?.let { title ->
+                        StableLibraryId.album(mutation.sourceId, title).value.also { albumId ->
+                            upsertAlbum(AlbumEntity(albumId, title.trim(), nextArtworkRef))
+                        }
+                    } ?: track.albumId?.value ?: existing?.albumId
+                    upsertTrack(
+                        TrackEntity(
+                            id = track.id.value,
+                            title = track.title,
+                            durationMs = track.durationMs ?: existing?.durationMs,
+                            albumId = nextAlbumId,
+                            artworkRef = nextArtworkRef,
+                            addedAtEpochMs = existing?.addedAtEpochMs ?: track.addedAtEpochMs,
+                        ),
+                    )
+                    if (track.artistNames.isNotEmpty()) {
+                        deleteTrackArtists(track.id.value)
+                        track.artistNames.distinctBy(String::lowercase).forEach { name ->
+                            val artistId = StableLibraryId.artist(mutation.sourceId, name)
+                            upsertArtist(ArtistEntity(artistId.value, name.trim()))
+                            insertTrackArtist(TrackArtistCrossRef(track.id.value, artistId.value))
+                        }
+                    }
+                    deleteSearch(track.id.value)
+                    insertSearch(
+                        TrackSearchFtsEntity(
+                            trackId = track.id.value,
+                            title = track.title,
+                            albumTitle = nextAlbumId?.let { albumTitle(it) }.orEmpty(),
+                            artistNames = artistNames(track.id.value).joinToString(" "),
+                        ),
+                    )
+                }
+                mutation.locations.forEach { location ->
+                    upsertLocation(
+                        TrackLocationEntity(
+                            id = location.id.value,
+                            trackId = location.trackId.value,
+                            sourceId = location.sourceId.value,
+                            sourceKey = location.sourceKey,
+                            type = location.type.name,
+                            uri = location.uri,
+                            available = location.available,
+                            sizeBytes = location.sizeBytes,
+                            etag = location.etag,
+                            relativeFolder = "",
+                            displayName = location.uri.substringAfterLast('/'),
+                            modifiedEpochSeconds = 0,
+                        ),
+                    )
+                }
+                MutationResult(inserted = mutation.tracks.size)
+            }
+
+            is LibraryMutation.RetainSourceKeys -> {
+                val removed = markMissingSourceKeysUnavailable(mutation.sourceId.value, mutation.retainedSourceKeys)
+                MutationResult(removed = removed)
+            }
         }
     }
 

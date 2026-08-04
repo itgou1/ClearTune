@@ -117,6 +117,23 @@ class WebDavSyncWorkerTest {
     }
 
     @Test
+    fun `retired sync report clears checkpoint and completes despite stale retryable failure`() = runTest {
+        val checkpoint = WebDavSyncCheckpoint(source.id, listOf("https://music.example/dav/"))
+        val port = FakeSyncPort(source, checkpoint)
+        val runner = DurableWebDavSyncRunner(port) { _, _, _ ->
+            WebDavSyncReport(
+                discoveredTracks = 0,
+                visitedDirectories = 1,
+                failures = listOf(SyncFailure("retired", retryable = true)),
+                retired = true,
+            )
+        }
+
+        assertEquals(WebDavWorkerOutcome.COMPLETED, runner.run(source.id))
+        assertEquals(1, port.clearCount)
+    }
+
+    @Test
     fun `explicit run after permanent directory failure restarts from root`() = runTest {
         val port = FakeSyncPort(source, null)
         var attempts = 0

@@ -3,6 +3,7 @@ package com.cleartune.data.webdav
 import com.cleartune.core.contracts.LibraryWriteGateway
 import com.cleartune.core.model.LibraryMutation
 import com.cleartune.core.model.MusicSource
+import com.cleartune.core.model.MutationDisposition
 import com.cleartune.core.model.MutationResult
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.SourceType
@@ -267,6 +268,34 @@ class WebDavSyncEngineTest {
         runCatching { engine.sync(source) }
 
         assertTrue(updates.isEmpty())
+    }
+
+    @Test
+    fun `retired source result stops publication and finalization without retry failure`() = runTest {
+        val mutations = mutableListOf<LibraryMutation>()
+        val updates = mutableListOf<String>()
+        val checkpoints = mutableListOf<WebDavSyncCheckpoint>()
+        val engine = WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("retired.mp3")!!, "retired.mp3", false, 11, "v2"))
+            },
+            libraryWriteGateway = object : LibraryWriteGateway {
+                override suspend fun applyLibraryMutation(mutation: LibraryMutation): MutationResult {
+                    mutations += mutation
+                    return MutationResult(disposition = MutationDisposition.SOURCE_RETIRED)
+                }
+            },
+            fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
+            updatePublisher = RemoteUpdatePublisher { _, key -> updates += key },
+        )
+
+        val report = engine.sync(source, saveCheckpoint = { checkpoints += it })
+
+        assertTrue(report.retired)
+        assertEquals(1, mutations.size)
+        assertTrue(mutations.single() is LibraryMutation.Upsert)
+        assertTrue(updates.isEmpty())
+        assertTrue(checkpoints.isEmpty())
     }
 
     @Test
