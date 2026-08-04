@@ -1,12 +1,19 @@
 package com.cleartune.data.download
 
+import java.io.IOException
 import java.nio.file.Files
+import kotlinx.coroutines.CancellationException
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -56,6 +63,36 @@ class DownloadTransferTest {
     }
 
     @Test
+    fun `200 validates declared content length before publication`() {
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(
+                        object : ResponseBody() {
+                            override fun contentType() = null
+                            override fun contentLength() = 10L
+                            override fun source() = Buffer().writeUtf8("short")
+                        },
+                    )
+                    .build()
+            }
+            .build()
+        val files = files()
+
+        val result = DownloadTransfer(client).execute(
+            DownloadTransferRequest(server.url("/song.mp3"), files),
+        )
+
+        assertTrue(result is DownloadTransferResult.RetryableFailure)
+        assertEquals("short", files.partialFile.readText())
+        assertFalse(files.finalFile.exists())
+    }
+
+    @Test
     fun `mismatched range does not append corrupt bytes`() {
         server.enqueue(
             MockResponse.Builder().code(206)
@@ -90,7 +127,124 @@ class DownloadTransferTest {
         )
 
         assertTrue(result is DownloadTransferResult.RetryableFailure)
-        assertEquals("hello ", files.partialFile.readText())
+        assertEquals(0, files.partialFile.length())
+    }
+
+    @Test
+    fun `unknown expected length uses content range total before publishing`() {
+        server.enqueue(
+            MockResponse.Builder().code(206)
+                .addHeader("Content-Range", "bytes 6-10/11")
+                .addHeader("ETag", "v1")
+                .body("world")
+                .build(),
+        )
+        val files = files().also { it.partialFile.writeText("hello ") }
+
+        val result = DownloadTransfer(OkHttpClient()).execute(
+            DownloadTransferRequest(server.url("/song.flac"), files, expectedBytes = null, etag = "v1"),
+        )
+
+        assertEquals(DownloadTransferResult.Completed(11), result)
+        assertEquals("hello world", files.finalFile.readText())
+    }
+
+    @Test
+    fun `truncated 206 retains bytes but is not published`() {
+        server.enqueue(
+            MockResponse.Builder().code(206)
+                .addHeader("Content-Range", "bytes 6-10/11")
+                .addHeader("ETag", "v1")
+                .body("wor")
+                .build(),
+        )
+        val files = files().also { it.partialFile.writeText("hello ") }
+
+        val result = DownloadTransfer(OkHttpClient()).execute(
+            DownloadTransferRequest(server.url("/song.flac"), files, expectedBytes = null, etag = "v1"),
+        )
+
+        assertTrue(result is DownloadTransferResult.RetryableFailure)
+        assertEquals("hello wor", files.partialFile.readText())
+        assertFalse(files.finalFile.exists())
+    }
+
+    @Test
+    fun `206 with an unknown authoritative total is not published`() {
+        server.enqueue(
+            MockResponse.Builder().code(206)
+                .addHeader("Content-Range", "bytes 0-4/*")
+                .body("whole")
+                .build(),
+        )
+        val files = files()
+
+        val result = DownloadTransfer(OkHttpClient()).execute(
+            DownloadTransferRequest(server.url("/song.flac"), files),
+        )
+
+        assertTrue(result is DownloadTransferResult.RetryableFailure)
+        assertFalse(files.finalFile.exists())
+    }
+
+    @Test
+    fun `client protocol statuses are permanent according to network failure classification`() {
+        listOf(400, 405, 410, 423).forEach { status ->
+            server.enqueue(MockResponse.Builder().code(status).build())
+            val result = DownloadTransfer(OkHttpClient()).execute(
+                DownloadTransferRequest(server.url("/song-$status.flac"), files()),
+            )
+            assertTrue("HTTP $status produced $result", result is DownloadTransferResult.PermanentFailure)
+        }
+    }
+
+    @Test
+    fun `server failures remain retryable according to network failure classification`() {
+        server.enqueue(MockResponse.Builder().code(503).build())
+
+        val result = DownloadTransfer(OkHttpClient()).execute(
+            DownloadTransferRequest(server.url("/song.flac"), files()),
+        )
+
+        assertTrue(result is DownloadTransferResult.RetryableFailure)
+    }
+
+    @Test
+    fun `valid newly received bytes survive a cooperative interruption`() {
+        server.enqueue(
+            MockResponse.Builder().code(206)
+                .addHeader("Content-Range", "bytes 6-10/11")
+                .addHeader("ETag", "v1")
+                .body("world")
+                .build(),
+        )
+        val files = files().also { it.partialFile.writeText("hello ") }
+        var checks = 0
+
+        val result = DownloadTransfer(OkHttpClient()).execute(
+            DownloadTransferRequest(server.url("/song.flac"), files, expectedBytes = 11, etag = "v1"),
+            shouldContinue = { checks++ == 0 },
+        )
+
+        assertEquals(DownloadTransferResult.RetryableFailure("interrupted"), result)
+        assertEquals("hello world", files.partialFile.readText())
+        assertFalse(files.finalFile.exists())
+    }
+
+    @Test
+    fun `wrapped coroutine cancellation is rethrown`() {
+        val cancellation = CancellationException("worker stopped")
+        val client = OkHttpClient.Builder()
+            .addInterceptor { throw IOException("call cancelled", cancellation) }
+            .build()
+
+        val thrown = assertThrows(CancellationException::class.java) {
+            DownloadTransfer(client).execute(
+                DownloadTransferRequest(server.url("/song.flac"), files()),
+            )
+        }
+
+        assertEquals(cancellation, thrown)
     }
 
     @Test

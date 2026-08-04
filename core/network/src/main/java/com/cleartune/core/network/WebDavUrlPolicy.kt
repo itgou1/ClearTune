@@ -7,13 +7,18 @@ class UnsafeWebDavUrl(message: String) : IllegalArgumentException(message)
 
 object WebDavUrlPolicy {
     private val traversalSegment = Regex("(?i)(?:^|/)(?:\\.|%2e){1,2}(?:/|$)")
+    private val encodedSeparator = Regex("(?i)%2f|%5c")
+    private val encodedTraversalSegment = Regex("(?i)(?:\\.|%2e){1,2}")
 
     fun normalizeBaseUrl(raw: String, allowCleartext: Boolean): HttpUrl {
         val candidate = raw.trim()
         if (candidate.isEmpty()) throw UnsafeWebDavUrl("WebDAV URL is empty")
         val pathAndBeyond = candidate.substringAfter("://", candidate)
         val rawPath = pathAndBeyond.substringAfter('/', "").substringBefore('?').substringBefore('#')
-        if (traversalSegment.containsMatchIn("/$rawPath")) {
+        if (traversalSegment.containsMatchIn("/$rawPath") ||
+            encodedSeparator.containsMatchIn(rawPath) ||
+            rawPath.contains('\\')
+        ) {
             throw UnsafeWebDavUrl("WebDAV URL contains a traversal segment")
         }
 
@@ -41,6 +46,37 @@ object WebDavUrlPolicy {
     fun isSameOrigin(first: HttpUrl, second: HttpUrl): Boolean =
         first.scheme == second.scheme && first.host == second.host && first.port == second.port
 
-    fun isInBaseSubtree(base: HttpUrl, candidate: HttpUrl): Boolean =
-        isSameOrigin(base, candidate) && candidate.encodedPath.startsWith(base.encodedPath)
+    fun isInBaseSubtree(base: HttpUrl, candidate: HttpUrl): Boolean {
+        if (!isSameOrigin(base, candidate) || hasUrlDecorations(candidate) || hasDangerousPath(candidate)) {
+            return false
+        }
+        val baseSegments = normalizedPathSegments(base)
+        val candidateSegments = normalizedPathSegments(candidate)
+        return candidateSegments.size >= baseSegments.size &&
+            candidateSegments.take(baseSegments.size) == baseSegments
+    }
+
+    fun resolveDescendant(base: HttpUrl, directory: HttpUrl, rawHref: String): HttpUrl? {
+        val href = rawHref.trim()
+        if (href.isEmpty() || href.contains('\\') || encodedSeparator.containsMatchIn(href)) return null
+        val path = href.substringBefore('?').substringBefore('#')
+        if (path.split('/').any(::isTraversalSegment)) return null
+        val resolved = directory.resolve(href) ?: return null
+        return resolved.takeIf { isInBaseSubtree(base, it) }
+    }
+
+    private fun normalizedPathSegments(url: HttpUrl): List<String> =
+        url.pathSegments.dropLastWhile { it.isEmpty() }
+
+    private fun hasUrlDecorations(url: HttpUrl): Boolean =
+        url.username.isNotEmpty() || url.password.isNotEmpty() || url.query != null || url.fragment != null
+
+    private fun hasDangerousPath(url: HttpUrl): Boolean =
+        encodedSeparator.containsMatchIn(url.encodedPath) ||
+            url.pathSegments.any { segment ->
+                encodedSeparator.containsMatchIn(segment) || isTraversalSegment(segment)
+            }
+
+    private fun isTraversalSegment(segment: String): Boolean =
+        encodedTraversalSegment.matches(segment)
 }

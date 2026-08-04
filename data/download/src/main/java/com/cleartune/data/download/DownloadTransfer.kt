@@ -1,10 +1,12 @@
 package com.cleartune.data.download
 
+import com.cleartune.core.network.NetworkFailure
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import kotlinx.coroutines.CancellationException
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -50,7 +52,7 @@ class DownloadTransfer(client: OkHttpClient) {
                         ?.let(UNSATISFIED_CONTENT_RANGE::matchEntire)
                         ?.groupValues?.get(1)?.toLongOrNull()
                     val completeAndValidated = offset > 0 &&
-                        request.expectedBytes == offset &&
+                        (request.expectedBytes == null || request.expectedBytes == offset) &&
                         remoteTotal == offset &&
                         request.etag != null &&
                         response.header("ETag") == request.etag
@@ -58,26 +60,42 @@ class DownloadTransfer(client: OkHttpClient) {
                     resetPartial(partial)
                     return DownloadTransferResult.RetryableFailure("range_not_satisfiable")
                 }
-                if (response.code in listOf(401, 403, 404)) {
-                    return DownloadTransferResult.PermanentFailure("http_${response.code}")
-                }
                 if (response.code !in listOf(200, 206)) {
-                    return DownloadTransferResult.RetryableFailure("http_${response.code}")
+                    val failure = NetworkFailure.fromHttpStatus(response.code)
+                    return if (failure.retryable) {
+                        DownloadTransferResult.RetryableFailure("http_${response.code}")
+                    } else {
+                        DownloadTransferResult.PermanentFailure("http_${response.code}")
+                    }
                 }
 
                 val append = offset > 0 && response.code == 206
-                if (response.code == 206 && !validContentRange(
-                        response.header("Content-Range"),
-                        expectedStart = offset,
-                        expectedTotal = request.expectedBytes,
-                    )
-                ) {
-                    return DownloadTransferResult.RetryableFailure("invalid_content_range")
+                val contentRange = if (response.code == 206) {
+                    parseContentRange(response.header("Content-Range"))
+                        ?.takeIf { range ->
+                            range.start == offset &&
+                                range.end >= range.start &&
+                                range.total > range.end &&
+                                (request.expectedBytes == null || range.total == request.expectedBytes)
+                        }
+                        ?: return DownloadTransferResult.RetryableFailure("invalid_content_range")
+                } else {
+                    null
                 }
                 if (append && request.etag != null && response.header("ETag") != request.etag) {
+                    resetPartial(partial)
                     return DownloadTransferResult.RetryableFailure("etag_changed")
                 }
                 val body = response.body
+                val declaredLength = body.contentLength().takeIf { it >= 0 }
+                if (response.code == 200 &&
+                    request.expectedBytes != null &&
+                    declaredLength != null &&
+                    declaredLength != request.expectedBytes
+                ) {
+                    resetPartial(partial)
+                    return DownloadTransferResult.RetryableFailure("size_mismatch")
+                }
                 partial.parentFile?.mkdirs()
                 val startingSize = if (append) offset else 0L
                 val completedBytes = RandomAccessFile(partial, "rw").use { output ->
@@ -85,6 +103,8 @@ class DownloadTransfer(client: OkHttpClient) {
                     body.byteStream().use { input ->
                         val buffer = ByteArray(BUFFER_SIZE)
                         var total = startingSize
+                        var received = 0L
+                        val maximumResponseBytes = contentRange?.let { it.end - it.start + 1 }
                         while (true) {
                             if (!shouldContinue()) {
                                 output.fd.sync()
@@ -92,16 +112,26 @@ class DownloadTransfer(client: OkHttpClient) {
                             }
                             val read = input.read(buffer)
                             if (read == -1) break
+                            received += read
                             total += read
-                            if (request.expectedBytes != null && total > request.expectedBytes) {
+                            if ((maximumResponseBytes != null && received > maximumResponseBytes) ||
+                                (contentRange != null && total > contentRange.total) ||
+                                (request.expectedBytes != null && total > request.expectedBytes)
+                            ) {
                                 output.setLength(startingSize)
                                 return DownloadTransferResult.RetryableFailure("size_mismatch")
                             }
                             output.write(buffer, 0, read)
-                            onProgress(total, request.expectedBytes)
+                            onProgress(total, request.expectedBytes ?: contentRange?.total)
                         }
-                        if (request.expectedBytes != null && total != request.expectedBytes) {
-                            output.setLength(startingSize)
+                        val complete = if (contentRange != null) {
+                            received == maximumResponseBytes && total == contentRange.total
+                        } else {
+                            (declaredLength == null || received == declaredLength) &&
+                                (request.expectedBytes == null || total == request.expectedBytes)
+                        }
+                        if (!complete) {
+                            output.fd.sync()
                             return DownloadTransferResult.RetryableFailure("size_mismatch")
                         }
                         output.fd.sync()
@@ -110,22 +140,22 @@ class DownloadTransfer(client: OkHttpClient) {
                 }
                 publish(request.paths, completedBytes)
             }
-        } catch (_: IOException) {
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: IOException) {
+            failure.findCancellation()?.let { throw it }
             DownloadTransferResult.RetryableFailure("io_error")
         } catch (_: SecurityException) {
             DownloadTransferResult.PermanentFailure("storage_denied")
         }
     }
 
-    private fun validContentRange(value: String?, expectedStart: Long, expectedTotal: Long?): Boolean {
-        val match = value?.let(CONTENT_RANGE::matchEntire) ?: return false
-        val start = match.groupValues[1].toLongOrNull() ?: return false
-        val end = match.groupValues[2].toLongOrNull() ?: return false
-        val total = match.groupValues[3].takeUnless { it == "*" }?.toLongOrNull()
-        return start == expectedStart &&
-            end >= start &&
-            (total == null || total > end) &&
-            (expectedTotal == null || total == expectedTotal)
+    private fun parseContentRange(value: String?): ContentRange? {
+        val match = value?.let(CONTENT_RANGE::matchEntire) ?: return null
+        val start = match.groupValues[1].toLongOrNull() ?: return null
+        val end = match.groupValues[2].toLongOrNull() ?: return null
+        val total = match.groupValues[3].takeUnless { it == "*" }?.toLongOrNull() ?: return null
+        return ContentRange(start, end, total)
     }
 
     private fun resetPartial(file: java.io.File) {
@@ -158,3 +188,10 @@ class DownloadTransfer(client: OkHttpClient) {
         val UNSATISFIED_CONTENT_RANGE = Regex("bytes \\*/(\\d+)", RegexOption.IGNORE_CASE)
     }
 }
+
+private data class ContentRange(val start: Long, val end: Long, val total: Long)
+
+private fun Throwable.findCancellation(): CancellationException? =
+    generateSequence(this) { it.cause }
+        .filterIsInstance<CancellationException>()
+        .firstOrNull()

@@ -1,5 +1,6 @@
 package com.cleartune.core.network
 
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -30,6 +31,8 @@ class WebDavUrlPolicyTest {
             "https://user:secret@music.example/dav",
             "https://music.example/dav#private",
             "https://music.example/dav/%2e%2e/secret",
+            "https://music.example/dav/album%2Fsong",
+            "https://music.example/dav/album%5Csong",
             "ftp://music.example/dav",
         ).forEach { raw ->
             assertThrows(raw, UnsafeWebDavUrl::class.java) {
@@ -49,5 +52,29 @@ class WebDavUrlPolicyTest {
         assertTrue(WebDavUrlPolicy.isInBaseSubtree(base, child))
         assertFalse(WebDavUrlPolicy.isInBaseSubtree(base, sibling))
         assertFalse(WebDavUrlPolicy.isSameOrigin(base, foreign))
+    }
+
+    @Test
+    fun subtree_check_rejects_ambiguous_or_decorated_descendant_urls() {
+        val base = WebDavUrlPolicy.normalizeBaseUrl("https://music.example/dav/root", false)
+        val hostile = listOf(
+            "https://user@music.example/dav/root/song.mp3",
+            "https://music.example/dav/root/song.mp3?token=secret",
+            "https://music.example/dav/root/song.mp3#fragment",
+            "https://music.example/dav/root/album%2Fsong.mp3",
+            "https://music.example/dav/root/album%5Csong.mp3",
+            "https://music.example/dav/root/%252e%252e/secret.mp3",
+            "https://music.example/dav/rooted/song.mp3",
+        )
+
+        hostile.forEach { raw ->
+            assertFalse(raw, WebDavUrlPolicy.isInBaseSubtree(base, raw.toHttpUrl()))
+        }
+        assertTrue(
+            WebDavUrlPolicy.isInBaseSubtree(
+                base,
+                "https://music.example/dav/root/album/song.mp3".toHttpUrl(),
+            ),
+        )
     }
 }

@@ -2,6 +2,9 @@ package com.cleartune.data.webdav
 
 import com.cleartune.core.network.WebDavUrlPolicy
 import java.io.InputStream
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import javax.xml.parsers.SAXParserFactory
 import okhttp3.HttpUrl
 import org.xml.sax.Attributes
@@ -51,8 +54,13 @@ private class MultiStatusHandler(
             "href" -> response?.href = value
             "getcontentlength" -> propstat?.sizeBytes = value.toLongOrNull()
             "getetag" -> propstat?.etag = value.ifEmpty { null }
+            "getlastmodified" -> propstat?.modifiedEpochMs = value.toRfc1123EpochMsOrNull()
             "collection" -> propstat?.isDirectory = inCollection.also { inCollection = false }
-            "status" -> propstat?.status = value
+            "status" -> if (propstat != null) {
+                propstat?.status = value
+            } else {
+                response?.status = value
+            }
             "propstat" -> {
                 val properties = propstat
                 if (properties != null && properties.status.isSuccessStatus()) {
@@ -75,31 +83,41 @@ private data class PropertyValues(
     var status: String? = null,
     var sizeBytes: Long? = null,
     var etag: String? = null,
+    var modifiedEpochMs: Long? = null,
     var isDirectory: Boolean = false,
 )
 
 private data class ResponseValues(
     var href: String? = null,
+    var status: String? = null,
     var sizeBytes: Long? = null,
     var etag: String? = null,
+    var modifiedEpochMs: Long? = null,
     var isDirectory: Boolean = false,
 ) {
     fun merge(properties: PropertyValues) {
         properties.sizeBytes?.let { sizeBytes = it }
         properties.etag?.let { etag = it }
+        properties.modifiedEpochMs?.let { modifiedEpochMs = it }
         isDirectory = isDirectory || properties.isDirectory
     }
 
     fun toEntry(baseUrl: HttpUrl, directoryUrl: HttpUrl): WebDavEntry? {
-        val resolved = href?.let(directoryUrl::resolve) ?: return null
-        if (!WebDavUrlPolicy.isInBaseSubtree(baseUrl, resolved)) return null
+        if (status != null && !status.isSuccessStatus()) return null
+        val resolved = href?.let { WebDavUrlPolicy.resolveDescendant(baseUrl, directoryUrl, it) } ?: return null
         if (resolved.encodedPath == directoryUrl.encodedPath) return null
         val name = resolved.pathSegments.lastOrNull { it.isNotBlank() } ?: return null
-        return WebDavEntry(resolved, name, isDirectory, sizeBytes, etag)
+        return WebDavEntry(resolved, name, isDirectory, sizeBytes, etag, modifiedEpochMs)
     }
 }
 
 private fun String?.isSuccessStatus(): Boolean {
     val statusCode = this?.split(' ')?.firstOrNull { it.length == 3 && it.all(Char::isDigit) }?.toIntOrNull()
     return statusCode in 200..299
+}
+
+private fun String.toRfc1123EpochMsOrNull(): Long? = try {
+    ZonedDateTime.parse(this, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
+} catch (_: DateTimeParseException) {
+    null
 }
