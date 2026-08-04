@@ -10,10 +10,15 @@ import com.cleartune.core.model.RepeatMode
 import com.cleartune.core.model.Track
 import com.cleartune.core.model.TrackLocation
 import com.cleartune.core.model.TrackSummary
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -51,7 +56,14 @@ data class BackendPlaybackSnapshot(
     val repeatMode: RepeatMode,
     val shuffleEnabled: Boolean,
     val errorMessage: String? = null,
+    val failure: BackendPlaybackFailure? = null,
 )
+
+sealed interface BackendPlaybackFailure {
+    val message: String
+    data class Item(override val message: String) : BackendPlaybackFailure
+    data class Global(override val message: String) : BackendPlaybackFailure
+}
 
 interface ObservablePlaybackBackend {
     fun setPlaybackObserver(observer: (BackendPlaybackSnapshot) -> Unit)
@@ -62,10 +74,13 @@ class PlaybackCoordinator(
     private val queueRepository: QueueRepository,
     private val backend: PlaybackBackend,
     private val environment: PlaybackEnvironment,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : PlaybackGateway {
     private val mutex = Mutex()
     private val mutableState = MutableStateFlow(PlaybackState(connected = backend.connected))
     override val state: StateFlow<PlaybackState> = mutableState.asStateFlow()
+    private var activePlayback: ActivePlayback? = null
+    private var lastHandledFailure: BackendPlaybackFailure? = null
 
     init {
         (backend as? ObservablePlaybackBackend)?.setPlaybackObserver(::onBackendState)
@@ -85,8 +100,8 @@ class PlaybackCoordinator(
                     queueStateWriter()?.updatePlaybackState(playWhenReady = false)
                     mutableState.value = mutableState.value.copy(isPlaying = false)
                 }
-                PlaybackCommand.Next -> backend.next()
-                PlaybackCommand.Previous -> backend.previous()
+                PlaybackCommand.Next -> moveToAdjacentOccurrence(next = true)
+                PlaybackCommand.Previous -> moveToAdjacentOccurrence(next = false)
                 is PlaybackCommand.SeekTo -> seek(command.positionMs)
                 is PlaybackCommand.SetRepeat -> {
                     backend.setRepeat(command.mode)
@@ -111,10 +126,9 @@ class PlaybackCoordinator(
     private suspend fun syncQueueLocked(): Boolean {
         val queueBackend = backend as? QueuePlaybackBackend ?: return false
         val queue = queueRepository.observeQueue().first()
-        val resolved = mutableListOf<ResolvedQueueEntry>()
-        var resolvedCurrentIndex = -1
-        queue.items.forEachIndexed { index, item ->
-            val playable = libraryRepository.getPlayableTrack(item.trackId) ?: return@forEachIndexed
+        val resolved = linkedMapOf<com.cleartune.core.model.QueueItemId, ResolvedQueueEntry>()
+        queue.items.forEach { item ->
+            val playable = libraryRepository.getPlayableTrack(item.trackId) ?: return@forEach
             val resolution = LocationResolver.resolve(
                 playableTrack = playable,
                 fileExists = environment.fileExists,
@@ -122,16 +136,25 @@ class PlaybackCoordinator(
                 networkAvailable = environment.networkAvailable(),
             )
             val location = (resolution as? LocationResolution.Ready)?.attempts?.firstOrNull()
-                ?: return@forEachIndexed
-            if (index == queue.currentIndex) resolvedCurrentIndex = resolved.size
-            resolved += ResolvedQueueEntry(playable.track, location)
+                ?: return@forEach
+            resolved[item.id] = ResolvedQueueEntry(playable.track, location)
         }
         if (resolved.isEmpty()) return false
-        val startIndex = resolvedCurrentIndex.takeIf { it >= 0 } ?: 0
-        queueBackend.loadQueue(resolved, startIndex, queue.positionMs)
+        val recovery = (queueRepository as? PersistentQueueRepository)?.recoveryState()
+        val occurrenceOrder = if (queue.shuffleEnabled) {
+            recovery?.shuffleOrder.orEmpty()
+        } else {
+            queue.items.map { it.id }
+        }
+        val orderedIds = occurrenceOrder.filter { it in resolved } + resolved.keys.filterNot { it in occurrenceOrder }
+        val entries = orderedIds.mapNotNull(resolved::get)
+        val currentOccurrence = queue.items.getOrNull(queue.currentIndex)?.id
+        val startIndex = orderedIds.indexOf(currentOccurrence).takeIf { it >= 0 } ?: 0
+        queueBackend.loadQueue(entries, startIndex, queue.positionMs)
         backend.setRepeat(queue.repeatMode)
         backend.setShuffle(queue.shuffleEnabled)
-        if (queue.playWhenReady) backend.play() else backend.pause()
+        backend.pause()
+        queueStateWriter()?.updatePlaybackState(playWhenReady = false)
         return true
     }
 
@@ -167,17 +190,18 @@ class PlaybackCoordinator(
         val attempts = (resolution as LocationResolution.Ready).attempts
         for ((attemptIndex, location) in attempts.withIndex()) {
             try {
+                activePlayback = ActivePlayback(playable.track, attempts, attemptIndex)
                 val queue = queueRepository.observeQueue().first()
                 if (queue.items.getOrNull(queue.currentIndex)?.trackId != command.trackId) {
                     queueRepository.apply(QueueCommand.Replace(listOf(command.trackId)))
                 }
-                queueStateWriter()?.updatePlaybackState(playWhenReady = true)
                 if (backend is QueuePlaybackBackend && attemptIndex == 0) {
                     if (!syncQueueLocked()) backend.load(playable.track, location)
                 } else {
                     backend.load(playable.track, location)
                 }
                 backend.play()
+                queueStateWriter()?.updatePlaybackState(playWhenReady = true)
                 mutableState.value = PlaybackState(
                     connected = backend.connected,
                     currentTrack = playable.track.toSummary(),
@@ -187,6 +211,8 @@ class PlaybackCoordinator(
                     shuffleEnabled = mutableState.value.shuffleEnabled,
                 )
                 return
+            } catch (error: CancellationException) {
+                throw error
             } catch (_: Exception) {
                 // Try the next already-sanitized location. Never surface URI-bearing exceptions.
             }
@@ -210,6 +236,30 @@ class PlaybackCoordinator(
         mutableState.value = mutableState.value.copy(positionMs = position)
     }
 
+    private suspend fun moveToAdjacentOccurrence(next: Boolean) {
+        val queue = queueRepository.observeQueue().first()
+        if (next) backend.next() else backend.previous()
+        if (queue.items.isEmpty()) return
+        val recovery = (queueRepository as? PersistentQueueRepository)?.recoveryState()
+        val order = if (queue.shuffleEnabled) {
+            recovery?.shuffleOrder.orEmpty().ifEmpty { queue.items.map { it.id } }
+        } else {
+            queue.items.map { it.id }
+        }
+        val currentId = queue.items.getOrNull(queue.currentIndex)?.id
+        val orderIndex = order.indexOf(currentId).takeIf { it >= 0 } ?: 0
+        val adjacentOrderIndex = if (next) {
+            if (orderIndex == order.lastIndex && queue.repeatMode == RepeatMode.ALL) 0
+            else (orderIndex + 1).coerceAtMost(order.lastIndex)
+        } else {
+            if (orderIndex == 0 && queue.repeatMode == RepeatMode.ALL) order.lastIndex
+            else (orderIndex - 1).coerceAtLeast(0)
+        }
+        val adjacentId = order[adjacentOrderIndex]
+        val adjacentQueueIndex = queue.items.indexOfFirst { it.id == adjacentId }
+        queueStateWriter()?.updatePlaybackState(currentIndex = adjacentQueueIndex, positionMs = 0)
+    }
+
     private fun queueStateWriter(): PlaybackQueueStateWriter? = queueRepository as? PlaybackQueueStateWriter
 
     private fun onBackendState(snapshot: BackendPlaybackSnapshot) {
@@ -230,8 +280,59 @@ class PlaybackCoordinator(
             durationMs = snapshot.durationMs,
             repeatMode = snapshot.repeatMode,
             shuffleEnabled = snapshot.shuffleEnabled,
-            errorMessage = snapshot.errorMessage,
+            errorMessage = snapshot.failure?.message ?: snapshot.errorMessage,
         )
+        val failure = snapshot.failure
+        if (failure == null) {
+            lastHandledFailure = null
+        } else if (failure != lastHandledFailure) {
+            lastHandledFailure = failure
+            scope.launch { handleAsyncFailure(failure, previous.isPlaying) }
+        }
+    }
+
+    private suspend fun handleAsyncFailure(failure: BackendPlaybackFailure, resumePlayback: Boolean) {
+        mutex.withLock {
+            when (failure) {
+                is BackendPlaybackFailure.Global -> {
+                    backend.pause()
+                    queueStateWriter()?.updatePlaybackState(playWhenReady = false)
+                    mutableState.value = mutableState.value.copy(isPlaying = false, errorMessage = failure.message)
+                }
+                is BackendPlaybackFailure.Item -> retryNextLocation(failure, resumePlayback)
+            }
+        }
+    }
+
+    private suspend fun retryNextLocation(failure: BackendPlaybackFailure.Item, resumePlayback: Boolean) {
+        val active = activePlayback
+        if (active == null) {
+            backend.pause()
+            mutableState.value = mutableState.value.copy(isPlaying = false, errorMessage = failure.message)
+            return
+        }
+        for (attemptIndex in (active.attemptIndex + 1)..active.attempts.lastIndex) {
+            try {
+                backend.load(active.track, active.attempts[attemptIndex])
+                activePlayback = active.copy(attemptIndex = attemptIndex)
+                if (resumePlayback) {
+                    backend.play()
+                    queueStateWriter()?.updatePlaybackState(playWhenReady = true)
+                }
+                mutableState.value = mutableState.value.copy(
+                    isPlaying = resumePlayback,
+                    errorMessage = null,
+                )
+                return
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // Continue through the already-sanitized locations only.
+            }
+        }
+        backend.pause()
+        queueStateWriter()?.updatePlaybackState(playWhenReady = false)
+        mutableState.value = mutableState.value.copy(isPlaying = false, errorMessage = failure.message)
     }
 
     private fun Track.toSummary() = TrackSummary(
@@ -239,5 +340,11 @@ class PlaybackCoordinator(
         title = title,
         artworkRef = artworkRef,
         durationMs = durationMs,
+    )
+
+    private data class ActivePlayback(
+        val track: Track,
+        val attempts: List<TrackLocation>,
+        val attemptIndex: Int,
     )
 }
