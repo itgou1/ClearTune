@@ -5,6 +5,8 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Upsert
+import com.cleartune.core.database.SourceSnapshotPlanner
 import com.cleartune.core.database.entity.AlbumEntity
 import com.cleartune.core.database.entity.ArtistEntity
 import com.cleartune.core.database.entity.MusicSourceEntity
@@ -78,19 +80,19 @@ interface LibraryReadDao {
 
 @Dao
 abstract class LibraryWriteDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     abstract suspend fun upsertSource(source: MusicSourceEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     abstract suspend fun upsertTrack(track: TrackEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     abstract suspend fun upsertLocation(location: TrackLocationEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     abstract suspend fun upsertAlbum(album: AlbumEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     abstract suspend fun upsertArtist(artist: ArtistEntity)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -107,6 +109,15 @@ abstract class LibraryWriteDao {
 
     @Query("SELECT * FROM track_locations WHERE sourceId = :sourceId AND sourceKey = :sourceKey LIMIT 1")
     abstract suspend fun location(sourceId: String, sourceKey: String): TrackLocationEntity?
+
+    @Query("SELECT * FROM tracks WHERE id = :trackId LIMIT 1")
+    abstract suspend fun track(trackId: String): TrackEntity?
+
+    @Query("SELECT title FROM albums WHERE id = :albumId LIMIT 1")
+    abstract suspend fun albumTitle(albumId: String): String?
+
+    @Query("SELECT a.name FROM artists a INNER JOIN track_artists ta ON ta.artistId = a.id WHERE ta.trackId = :trackId ORDER BY a.name COLLATE NOCASE")
+    abstract suspend fun artistNames(trackId: String): List<String>
 
     @Query("SELECT sourceKey FROM track_locations WHERE sourceId = :sourceId")
     abstract suspend fun sourceKeys(sourceId: String): List<String>
@@ -145,36 +156,49 @@ abstract class LibraryWriteDao {
             val existing = location(sourceId.value, record.sourceKey)
             val trackId = existing?.trackId ?: StableLibraryId.track(sourceId, record.sourceKey).value
             val albumId = record.albumTitle?.takeIf(String::isNotBlank)?.let { title ->
-                StableLibraryId.album(sourceId, title).also { id ->
-                    upsertAlbum(AlbumEntity(id.value, title.trim(), record.artworkRef))
-                }.value
+                StableLibraryId.album(sourceId, title).value
             }
-            upsertTrack(
-                TrackEntity(
-                    id = trackId,
-                    title = record.title,
-                    durationMs = record.durationMs,
-                    albumId = albumId,
-                    artworkRef = record.artworkRef,
-                    addedAtEpochMs = record.addedAtEpochMs,
-                ),
+            val existingTrack = existing?.let { track(it.trackId) }
+            val desiredTrack = TrackEntity(
+                id = trackId,
+                title = record.title,
+                durationMs = record.durationMs,
+                albumId = albumId,
+                artworkRef = record.artworkRef,
+                addedAtEpochMs = existingTrack?.addedAtEpochMs ?: record.addedAtEpochMs,
             )
-            upsertLocation(
-                TrackLocationEntity(
-                    id = existing?.id ?: StableLibraryId.location(sourceId, record.sourceKey).value,
-                    trackId = trackId,
-                    sourceId = sourceId.value,
-                    sourceKey = record.sourceKey,
-                    type = LocationType.LOCAL_URI.name,
-                    uri = record.uri,
-                    available = true,
-                    sizeBytes = record.sizeBytes,
-                    etag = null,
-                    relativeFolder = record.relativeFolder,
-                    displayName = record.displayName,
-                    modifiedEpochSeconds = record.modifiedEpochSeconds,
-                ),
+            val desiredLocation = TrackLocationEntity(
+                id = existing?.id ?: StableLibraryId.location(sourceId, record.sourceKey).value,
+                trackId = trackId,
+                sourceId = sourceId.value,
+                sourceKey = record.sourceKey,
+                type = LocationType.LOCAL_URI.name,
+                uri = record.uri,
+                available = true,
+                sizeBytes = record.sizeBytes,
+                etag = null,
+                relativeFolder = record.relativeFolder,
+                displayName = record.displayName,
+                modifiedEpochSeconds = record.modifiedEpochSeconds,
             )
+            val plan = if (existing != null && existingTrack != null) {
+                SourceSnapshotPlanner.plan(
+                    existingTrack = existingTrack,
+                    existingLocation = existing,
+                    existingArtistNames = artistNames(trackId),
+                    desiredAlbumId = albumId,
+                    incoming = record,
+                    existingAlbumTitle = existingTrack.albumId?.let { albumTitle(it) },
+                )
+            } else {
+                null
+            }
+            if (plan != null && !plan.requiresWrite) return@forEach
+            if (albumId != null && (plan == null || plan.requiresWrite)) {
+                upsertAlbum(AlbumEntity(albumId, record.albumTitle.trim(), record.artworkRef))
+            }
+            upsertTrack(plan?.track ?: desiredTrack)
+            upsertLocation(plan?.location ?: desiredLocation)
             deleteTrackArtists(trackId)
             record.artistNames.distinctBy(String::lowercase).forEach { name ->
                 val artistId = StableLibraryId.artist(sourceId, name)
@@ -190,7 +214,7 @@ abstract class LibraryWriteDao {
                     artistNames = record.artistNames.joinToString(" "),
                 ),
             )
-            if (existing == null) inserted++ else updated++
+            if (existing == null || existingTrack == null) inserted++ else updated++
         }
         val retainedKeys = records.map(LibraryIngestRecord::sourceKey)
         val removed = if (retainedKeys.isEmpty()) {

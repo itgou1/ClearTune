@@ -1,6 +1,7 @@
 package com.cleartune.data.local
 
 import android.content.ContentResolver
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import kotlinx.coroutines.CancellationException
@@ -11,6 +12,7 @@ class AndroidMediaStoreGateway(
     private val contentResolver: ContentResolver,
     private val mapper: MediaStoreRowMapper = MediaStoreRowMapper(),
     private val sdkInt: Int = Build.VERSION.SDK_INT,
+    private val collectionUri: Uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
 ) : MediaStoreGateway {
     override suspend fun readAudio(): MediaStoreReadResult = withContext(Dispatchers.IO) {
         val snapshots = mutableListOf<LocalAudioSnapshot>()
@@ -28,7 +30,7 @@ class AndroidMediaStoreGateway(
             if (sdkInt >= 29) add(MediaStore.Audio.Media.RELATIVE_PATH) else add(MediaStore.Audio.Media.DATA)
         }.toTypedArray()
         contentResolver.query(
-            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+            collectionUri,
             projection,
             "${MediaStore.Audio.Media.IS_MUSIC} != 0",
             null,
