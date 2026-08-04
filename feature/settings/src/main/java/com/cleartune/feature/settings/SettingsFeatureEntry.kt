@@ -129,11 +129,13 @@ object SettingsFeatureEntry {
             item { SectionTitle("About") }
             item { SettingsCard("ClearTune") {
                 Text("Local and WebDAV music player", modifier = Modifier.padding(ClearTuneDimensions.spacingMd))
-                NavigationRow(
-                    "Open-source licenses",
-                    product.openLicenses.label("View"),
-                    enabled = product.openLicenses.isActionable,
-                ) { dispatch(SettingsProductCommand.OpenLicenses) }
+                if (licensesAreVisible(product.openLicenses)) {
+                    NavigationRow(
+                        "Open-source licenses",
+                        product.openLicenses.label("View"),
+                        enabled = product.openLicenses.isActionable,
+                    ) { dispatch(SettingsProductCommand.OpenLicenses) }
+                }
             } }
         }
     }
@@ -201,6 +203,9 @@ object SettingsFeatureEntry {
 
 private val SettingsOperationState.isActionable: Boolean
     get() = this !is SettingsOperationState.Unavailable && this !is SettingsOperationState.Running
+
+fun licensesAreVisible(state: SettingsOperationState): Boolean =
+    state !is SettingsOperationState.Unavailable
 
 private fun SettingsOperationState.label(ready: String): String = when (this) {
     SettingsOperationState.Ready -> ready

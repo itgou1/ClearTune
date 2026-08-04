@@ -25,6 +25,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -209,6 +210,28 @@ class RoomLibraryTransactionTest {
 
         assertEquals(trackId, queueRepository.observeQueue().first().items.single().trackId)
         assertEquals(1, playlistRepository.observePlaylists().first().single().trackCount)
+    }
+
+    @Test
+    fun favorites_have_fixed_identity_idempotent_order_and_survive_unavailable_locations() = runBlocking {
+        repository.applyLocalSnapshot(SOURCE, "Local music", listOf(record(), record().copy(sourceKey = "second", uri = "content://audio/2", displayName = "second.mp3", title = "Second")), 100)
+        val tracks = repository.observeSongs().first()
+        val favorites = RoomFavoritesRepository(database, clock = { 200 })
+
+        favorites.setFavorite(tracks[0].id, true)
+        favorites.setFavorite(tracks[0].id, true)
+        favorites.setFavorite(tracks[1].id, true)
+
+        assertEquals(RoomFavoritesRepository.FAVORITES_ID, database.playlistDao().playlist(RoomFavoritesRepository.FAVORITES_ID)?.id)
+        assertEquals(listOf(tracks[0].id, tracks[1].id), favorites.observeFavorites().first())
+        assertTrue(favorites.observeIsFavorite(tracks[0].id).first())
+
+        repository.applyLibraryMutation(LibraryMutation.RetainSourceKeys(SOURCE, emptySet()))
+        assertEquals(listOf(tracks[0].id, tracks[1].id), favorites.observeFavorites().first())
+
+        favorites.setFavorite(tracks[0].id, false)
+        favorites.setFavorite(tracks[0].id, false)
+        assertEquals(listOf(tracks[1].id), favorites.observeFavorites().first())
     }
 
     @Test

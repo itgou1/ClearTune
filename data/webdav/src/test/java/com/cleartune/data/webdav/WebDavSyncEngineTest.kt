@@ -126,6 +126,25 @@ class WebDavSyncEngineTest {
         assertFalse(gateway.mutations.any { it is LibraryMutation.Upsert })
     }
 
+    @Test
+    fun `unavailable same fingerprint is reactivated with stable location identity`() = runTest {
+        val gateway = RecordingLibraryGateway()
+        val engine = WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("same.mp3")!!, "same.mp3", false, 10, "v1"))
+            },
+            libraryWriteGateway = gateway,
+            fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1", available = false) },
+        )
+
+        val report = engine.sync(source)
+
+        assertEquals(1, report.discoveredTracks)
+        val upsert = gateway.mutations.filterIsInstance<LibraryMutation.Upsert>().single()
+        assertEquals(1, upsert.locations.size)
+        assertTrue(upsert.locations.single().available)
+    }
+
     @Test(expected = CancellationException::class)
     fun `listing cancellation is never converted to a partial failure`() = runTest {
         WebDavSyncEngine(

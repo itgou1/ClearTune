@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -112,7 +113,10 @@ fun WebDavSourceForm(
     onStateChange: (WebDavFormState) -> Unit,
     onTestConnection: () -> Unit,
     onSave: () -> Unit,
+    roots: List<SourceBrowseItem> = emptyList(),
+    onSelectRoot: (SourceBrowseItem) -> Unit = {},
 ) {
+    var confirmCleartext by remember { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
@@ -148,7 +152,13 @@ fun WebDavSourceForm(
                     Text("允许未加密 HTTP")
                     Text("仅用于可信局域网", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
-                Switch(state.allowCleartext, { onStateChange(state.copy(allowCleartext = it)) })
+                Switch(
+                    state.allowCleartext,
+                    { enabled ->
+                        if (enabled) confirmCleartext = true
+                        else onStateChange(state.copy(allowCleartext = false, cleartextConfirmed = false))
+                    },
+                )
             }
         }
         if (state.allowCleartext) item {
@@ -156,6 +166,14 @@ fun WebDavSourceForm(
         }
         state.error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
         state.connectionResult?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.primary) } }
+        if (roots.isNotEmpty()) {
+            item { Text("Choose the WebDAV music root", style = MaterialTheme.typography.titleMedium) }
+            items(roots, key = SourceBrowseItem::key) { root ->
+                TextButton(onClick = { onSelectRoot(root) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Use ${root.name}/")
+                }
+            }
+        }
         item { HorizontalDivider() }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -166,6 +184,20 @@ fun WebDavSourceForm(
             }
         }
     }
+    if (confirmCleartext) {
+        AlertDialog(
+            onDismissRequest = { confirmCleartext = false },
+            title = { Text("Allow unencrypted HTTP?") },
+            text = {
+                Text("Only continue on a trusted network. Your username, password, and audio can be observed or changed in transit.")
+            },
+            confirmButton = { TextButton(onClick = {
+                confirmCleartext = false
+                onStateChange(state.copy(allowCleartext = true, cleartextConfirmed = true))
+            }) { Text("I understand") } },
+            dismissButton = { TextButton(onClick = { confirmCleartext = false }) { Text("Cancel") } },
+        )
+    }
 }
 
 @Composable
@@ -174,9 +206,11 @@ fun SourceDetailScreen(
     onEdit: () -> Unit,
     onBrowse: () -> Unit,
     onSync: suspend () -> SourceResult<Unit>,
-    onDelete: suspend () -> SourceResult<Unit>,
+    onDelete: suspend (deleteOfflineCopies: Boolean) -> SourceResult<Unit>,
 ) {
     var error by remember { mutableStateOf<String?>(null) }
+    var confirmRemoval by remember { mutableStateOf(false) }
+    var chooseOfflinePolicy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     Column(
         Modifier.fillMaxSize().padding(20.dp),
@@ -192,9 +226,41 @@ fun SourceDetailScreen(
         }
         TextButton(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Edit") }
         TextButton(
-            onClick = { scope.launch { error = onDelete().failure?.message } },
+            onClick = { confirmRemoval = true },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Delete") }
+    }
+    if (confirmRemoval) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoval = false },
+            title = { Text("Remove this WebDAV source?") },
+            text = { Text("Sync work will stop and saved credentials will be removed.") },
+            confirmButton = { TextButton(onClick = {
+                confirmRemoval = false
+                chooseOfflinePolicy = true
+            }) { Text("Continue") } },
+            dismissButton = { TextButton(onClick = { confirmRemoval = false }) { Text("Cancel") } },
+        )
+    }
+    if (chooseOfflinePolicy) {
+        AlertDialog(
+            onDismissRequest = { chooseOfflinePolicy = false },
+            title = { Text("Offline copies") },
+            text = { Text("Keep downloaded copies for playback, or delete their files from this device?") },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        chooseOfflinePolicy = false
+                        scope.launch { error = onDelete(false).failure?.message }
+                    }) { Text("Keep copies") }
+                    TextButton(onClick = {
+                        chooseOfflinePolicy = false
+                        scope.launch { error = onDelete(true).failure?.message }
+                    }) { Text("Delete copies") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { chooseOfflinePolicy = false }) { Text("Cancel") } },
+        )
     }
 }
 

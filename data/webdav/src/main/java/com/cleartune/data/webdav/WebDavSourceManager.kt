@@ -76,6 +76,30 @@ class WebDavSourceManager(
         return normalized
     }
 
+    fun rebase(
+        testedDraft: WebDavSourceDraft,
+        validation: ValidatedWebDavSource,
+        selectedDraft: WebDavSourceDraft,
+    ): ValidatedWebDavSource {
+        val testedSource = createSource(testedDraft, validation.source.id)
+        require(MessageDigest.isEqual(validation.fingerprint, fingerprint(testedDraft, testedSource))) {
+            "Source details changed after connection test"
+        }
+        val selectedSource = createSource(selectedDraft, validation.source.id)
+        val testedBase = WebDavUrlPolicy.normalizeBaseUrl(
+            requireNotNull(testedSource.baseUrl),
+            testedSource.allowCleartext,
+        )
+        val selectedBase = WebDavUrlPolicy.normalizeBaseUrl(
+            requireNotNull(selectedSource.baseUrl),
+            selectedSource.allowCleartext,
+        )
+        require(WebDavUrlPolicy.isInBaseSubtree(testedBase, selectedBase)) {
+            "Selected root must stay inside the tested WebDAV root"
+        }
+        return ValidatedWebDavSource(selectedSource, fingerprint(selectedDraft, selectedSource))
+    }
+
     suspend fun delete(source: MusicSource) {
         sourceGateway.applySourceMutation(SourceMutation.Remove(source.id))
         source.credentialAlias?.let { credentialStore.delete(it) }

@@ -127,7 +127,7 @@ class RoomWebDavPersistenceAdapter(
 
     override suspend fun remoteFingerprint(sourceId: SourceId, sourceKey: String): RemoteFingerprint? =
         database.libraryWriteDao().locationIncludingUnavailable(sourceId.value, sourceKey)
-            ?.let { RemoteFingerprint(it.sizeBytes, it.etag) }
+            ?.let { RemoteFingerprint(it.sizeBytes, it.etag, it.available) }
 
     override suspend fun markUpdateAvailable(sourceId: SourceId, sourceKey: String) {
         database.withTransaction {
@@ -151,6 +151,8 @@ class WebDavSourceActionAdapter(
     private val manager: WebDavSourceManager,
     private val client: DirectoryListingClient,
     private val scheduler: WorkManagerWebDavSyncScheduler,
+    private val remover: RoomWebDavSourceRemovalCoordinator,
+    private val testedBrowser: TestedWebDavBrowser,
 ) : SourceActionPort {
     private val validations = Collections.synchronizedMap(
         IdentityHashMap<SourceDraft, ValidatedWebDavSource>(),
@@ -162,13 +164,41 @@ class WebDavSourceActionAdapter(
 
     override suspend fun save(draft: SourceDraft): MusicSource = classified {
         val validation = validations.remove(draft) ?: throw IllegalArgumentException("Test the connection before saving")
-        manager.save(draft.toWebDavDraft(), validation)
+        val source = manager.save(draft.toWebDavDraft(), validation)
+        try {
+            scheduler.enqueue(source.id)
+        } catch (failure: Exception) {
+            throw SourceActionException(
+                com.cleartune.feature.sources.SourceFailure(
+                    code = "schedule_failed",
+                    message = "Source saved. Retry sync from the source screen.",
+                    retryable = true,
+                ),
+            ).also { it.addSuppressed(failure) }
+        }
+        source
     }
 
-    override suspend fun delete(sourceId: SourceId) = classified {
-        val source = requireNotNull(sources.getSource(sourceId)) { "Source not found" }
-        scheduler.cancel(sourceId)
-        manager.delete(source)
+    override suspend fun browseTested(draft: SourceDraft, relativePath: String): List<SourceBrowseItem> = classified {
+        val validation = validations[draft] ?: throw IllegalArgumentException("Test the connection before browsing")
+        testedBrowser.browse(validation.source, draft, relativePath)
+    }
+
+    override suspend fun selectRoot(draft: SourceDraft, relativePath: String): SourceDraft = classified {
+        val validation = validations.remove(draft) ?: throw IllegalArgumentException("Test the connection before selecting a root")
+        val base = WebDavUrlPolicy.normalizeBaseUrl(requireNotNull(validation.source.baseUrl), draft.allowCleartext)
+        val selectedUrl = base.newBuilder().apply {
+            relativePath.split('/').filter(String::isNotBlank).forEach(::addPathSegment)
+            if (!build().encodedPath.endsWith('/')) addPathSegment("")
+        }.build().toString()
+        val selected = draft.copy(url = selectedUrl)
+        validations[selected] = manager.rebase(draft.toWebDavDraft(), validation, selected.toWebDavDraft())
+        selected
+    }
+
+    override suspend fun delete(sourceId: SourceId, deleteOfflineCopies: Boolean) = classified {
+        requireNotNull(sources.getSource(sourceId)) { "Source not found" }
+        remover.remove(sourceId, deleteOfflineCopies)
     }
 
     override suspend fun sync(sourceId: SourceId) = classified { scheduler.enqueue(sourceId) }
@@ -204,4 +234,12 @@ class WebDavSourceActionAdapter(
         allowCleartext = allowCleartext,
         sourceId = sourceId,
     )
+}
+
+fun interface TestedWebDavBrowser {
+    suspend fun browse(
+        source: MusicSource,
+        draft: SourceDraft,
+        relativePath: String,
+    ): List<SourceBrowseItem>
 }

@@ -39,7 +39,7 @@ class SourceControllerTest {
         assertEquals(listOf("album"), requireNotNull(controller.browse(source.id, "").value).map { it.name })
         assertNull(controller.delete(source.id).failure)
 
-        assertEquals(listOf("test", "save", "sync", "browse", "delete"), operations.calls)
+        assertEquals(listOf("test", "save", "initial-sync", "sync", "browse", "delete"), operations.calls)
     }
 
     @Test
@@ -56,6 +56,41 @@ class SourceControllerTest {
 
         assertNull(result.value)
         assertEquals(failure, result.failure)
+    }
+
+    @Test
+    fun `cleartext transport requires an explicit confirmation before connection test`() = runTest {
+        val source = MusicSource(SourceId("s1"), "LAN", SourceType.WEBDAV, "http://lan.example/dav/", true)
+        val actions = FakeSourceActions(source)
+        val controller = SourceController(FakeSourceRepository(source), actions)
+
+        val rejected = controller.testConnection(
+            WebDavFormState(
+                name = "LAN",
+                url = "http://lan.example/dav/",
+                username = "alice",
+                password = "secret",
+                allowCleartext = true,
+                cleartextConfirmed = false,
+            ),
+            null,
+        )
+
+        assertEquals("cleartext_confirmation_required", rejected.failure?.code)
+        assertTrue(actions.calls.isEmpty())
+
+        val accepted = controller.testConnection(
+            WebDavFormState(
+                name = "LAN",
+                url = "http://lan.example/dav/",
+                username = "alice",
+                password = "secret",
+                allowCleartext = true,
+                cleartextConfirmed = true,
+            ),
+            null,
+        )
+        assertTrue(accepted.value != null)
     }
 
     @Test
@@ -141,6 +176,39 @@ class SourceControllerTest {
         assertEquals(listOf("sync"), actions.calls)
     }
 
+    @Test
+    fun `tested new source can browse and select a root before save and first sync`() = runTest {
+        val source = source().copy(baseUrl = "https://music.example/dav/library/")
+        val actions = FakeSourceActions(source)
+        val controller = SourceController(FakeSourceRepository(), actions)
+        val tested = requireNotNull(controller.testConnection(form(), null).value)
+
+        val roots = controller.browseTested(tested, "")
+        assertEquals(listOf("album"), requireNotNull(roots.value).map { it.name })
+        assertNull(controller.selectRoot(tested, "library").failure)
+        assertEquals("https://music.example/dav/library/", tested.draft.url)
+
+        assertEquals(source, controller.save(tested).value)
+        assertEquals(listOf("test", "browse-tested", "select-root", "save", "initial-sync"), actions.calls)
+    }
+
+    @Test
+    fun `initial sync scheduling failure retains the already saved source as recoverable`() = runTest {
+        val source = source()
+        val repository = FakeSourceRepository()
+        val actions = FakeSourceActions(source).apply {
+            repositoryAfterSave = repository
+            initialSyncFailure = SourceFailure("schedule_failed", "Saved; retry sync", true)
+        }
+        val controller = SourceController(repository, actions)
+        val tested = requireNotNull(controller.testConnection(form(), null).value)
+
+        val result = controller.save(tested)
+
+        assertEquals("schedule_failed", result.failure?.code)
+        assertEquals(source, repository.getSource(source.id))
+    }
+
     private fun source() = MusicSource(
         SourceId("s1"),
         "Remote",
@@ -155,6 +223,7 @@ private class FakeSourceRepository(vararg sources: MusicSource) : SourceReposito
     private val values = MutableStateFlow(sources.toList())
     override fun observeSources(): Flow<List<MusicSource>> = values
     override suspend fun getSource(sourceId: SourceId): MusicSource? = values.value.firstOrNull { it.id == sourceId }
+    fun add(source: MusicSource) { values.value = values.value + source }
 }
 
 private class FakeSourceActions(private val source: MusicSource) : SourceActionPort {
@@ -167,6 +236,8 @@ private class FakeSourceActions(private val source: MusicSource) : SourceActionP
     val testStarted = CompletableDeferred<Unit>()
     val testRelease = CompletableDeferred<Unit>()
     var receivedPassword: CharArray? = null
+    var initialSyncFailure: SourceFailure? = null
+    var repositoryAfterSave: FakeSourceRepository? = null
     override suspend fun test(draft: SourceDraft) {
         calls += "test"
         receivedPassword = draft.password
@@ -177,8 +248,14 @@ private class FakeSourceActions(private val source: MusicSource) : SourceActionP
         if (cancelTest) throw CancellationException("stop")
         testFailure?.let { throw SourceActionException(it) }
     }
-    override suspend fun save(draft: SourceDraft): MusicSource { calls += "save"; return source }
-    override suspend fun delete(sourceId: SourceId) {
+    override suspend fun save(draft: SourceDraft): MusicSource {
+        calls += "save"
+        repositoryAfterSave?.add(source)
+        calls += "initial-sync"
+        initialSyncFailure?.let { throw SourceActionException(it) }
+        return source
+    }
+    override suspend fun delete(sourceId: SourceId, deleteOfflineCopies: Boolean) {
         calls += "delete"
         deleteFailure?.let { throw SourceActionException(it) }
     }
@@ -189,5 +266,13 @@ private class FakeSourceActions(private val source: MusicSource) : SourceActionP
     override suspend fun browse(sourceId: SourceId, relativePath: String): List<SourceBrowseItem> {
         calls += "browse"
         return listOf(SourceBrowseItem("album", "album", isDirectory = true))
+    }
+    override suspend fun browseTested(draft: SourceDraft, relativePath: String): List<SourceBrowseItem> {
+        calls += "browse-tested"
+        return listOf(SourceBrowseItem("album", "album", isDirectory = true))
+    }
+    override suspend fun selectRoot(draft: SourceDraft, relativePath: String): SourceDraft {
+        calls += "select-root"
+        return draft.copy(url = "https://music.example/dav/${relativePath.trim('/')}/")
     }
 }

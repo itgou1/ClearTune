@@ -1,6 +1,7 @@
 package com.cleartune.core.database.entity
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -56,6 +57,9 @@ data class DownloadEntity(
     val finalPath: String?,
     val errorMessage: String?,
     val updatedAtEpochMs: Long,
+    val sourceId: String? = null,
+    @ColumnInfo(defaultValue = "0") val workGeneration: Long = 0,
+    @ColumnInfo(defaultValue = "0") val cleanupPending: Boolean = false,
 )
 
 @Entity(tableName = "playback_queues")

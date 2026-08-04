@@ -23,10 +23,24 @@ data class DownloadWork(
 interface DownloadPersistencePort {
     suspend fun loadWork(downloadId: DownloadId): DownloadWork?
     suspend fun markRunning(downloadId: DownloadId)
+    suspend fun beginWork(downloadId: DownloadId): Long? {
+        markRunning(downloadId)
+        return 0
+    }
     suspend fun persistProgress(downloadId: DownloadId, downloadedBytes: Long, totalBytes: Long?)
 
     /** Atomically marks the record complete and publishes its DOWNLOADED_FILE location. */
     suspend fun publishDownloadedLocation(downloadId: DownloadId, bytes: Long, finalPath: String)
+
+    suspend fun publishDownloadedLocation(
+        downloadId: DownloadId,
+        generation: Long,
+        bytes: Long,
+        finalPath: String,
+    ): Boolean {
+        publishDownloadedLocation(downloadId, bytes, finalPath)
+        return true
+    }
 
     suspend fun recordFailure(downloadId: DownloadId, code: String)
 }

@@ -7,7 +7,6 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
-import android.util.Base64
 import com.cleartune.core.contracts.CredentialStore
 import com.cleartune.core.contracts.DownloadRepository
 import com.cleartune.core.contracts.LibraryRepository
@@ -18,11 +17,16 @@ import com.cleartune.core.contracts.SourceRepository
 import com.cleartune.core.contracts.WebDavCredential
 import com.cleartune.core.database.ClearTuneDatabase
 import com.cleartune.core.database.RoomLibraryRepository
+import com.cleartune.core.database.RoomFavoritesRepository
 import com.cleartune.core.database.RoomPlaylistRepository
 import com.cleartune.core.database.RoomQueueRepository
 import com.cleartune.core.database.RoomSettingsRepository
 import com.cleartune.core.model.DownloadState
+import com.cleartune.core.model.DownloadId
+import com.cleartune.core.model.QueueCommand
 import com.cleartune.core.model.SongQuery
+import com.cleartune.core.model.SourceId
+import com.cleartune.core.model.SourceType
 import com.cleartune.core.model.TrackId
 import com.cleartune.core.network.WebDavAuthenticator
 import com.cleartune.core.network.WebDavUrlPolicy
@@ -43,6 +47,8 @@ import com.cleartune.data.webdav.AndroidKeystoreCredentialCipher
 import com.cleartune.data.webdav.DurableWebDavSyncRunner
 import com.cleartune.data.webdav.EncryptedCredentialStore
 import com.cleartune.data.webdav.OkHttpWebDavClient
+import com.cleartune.data.webdav.RangeWebDavMetadataEnricher
+import com.cleartune.data.webdav.WebDavRangeReader
 import com.cleartune.data.webdav.SharedPreferencesCredentialBlobStore
 import com.cleartune.data.webdav.WebDavConnectionProbe
 import com.cleartune.data.webdav.WebDavSourceManager
@@ -58,13 +64,12 @@ import com.cleartune.feature.sources.SourceController
 import com.cleartune.playback.LibrarySessionCatalog
 import com.cleartune.playback.Media3PlaybackBackend
 import com.cleartune.playback.PlaybackCoordinator
+import com.cleartune.playback.PlaybackCredentialContext
+import com.cleartune.playback.PlaybackCredentialResolver
 import com.cleartune.playback.PlaybackEnvironment
-import com.cleartune.playback.PlaybackRequestHeadersProvider
-import java.io.ByteArrayOutputStream
+import com.cleartune.playback.PlaybackRuntimeSettings
+import com.cleartune.playback.PlaybackRuntimeSettingsProvider
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.CharBuffer
-import java.nio.charset.CodingErrorAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -82,6 +87,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     private val database = ClearTuneDatabase.build(appContext)
     private val roomLibraryRepository = RoomLibraryRepository(database)
     private val roomPlaylistRepository = RoomPlaylistRepository(database)
+    val favoritesRepository = RoomFavoritesRepository(database)
     private val roomQueueRepository = RoomQueueRepository(database)
     private val baseHttpClient = OkHttpClient.Builder().build()
 
@@ -120,11 +126,6 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
         sourceGateway = roomLibraryRepository,
         credentialStore = credentialStore,
     )
-    val sourceController = SourceController(
-        sourceRepository,
-        WebDavSourceActionAdapter(sourceRepository, webDavSourceManager, webDavClient, webDavSyncScheduler),
-    )
-
     override val webDavSyncRunner: WebDavSyncRunner = DurableWebDavSyncRunner(
         webDavPersistence,
     ) { source, checkpoint, saveCheckpoint ->
@@ -132,6 +133,11 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
             client = webDavClient,
             libraryWriteGateway = roomLibraryRepository,
             fingerprintLookup = webDavPersistence::remoteFingerprint,
+            metadataEnricher = RangeWebDavMetadataEnricher(
+                WebDavRangeReader { rangeSource, entry, start, endInclusive, maxBytes ->
+                    webDavClient.readRange(rangeSource, entry.href, start, endInclusive, maxBytes)
+                },
+            ),
             updatePublisher = webDavPersistence::markUpdateAvailable,
         ).sync(source, checkpoint, saveCheckpoint)
     }
@@ -139,6 +145,44 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     private val downloadRoot = File(appContext.noBackupFilesDir, "offline_downloads")
     private val downloadPersistence = RoomDownloadPersistenceAdapter(database, credentialStore, downloadRoot)
     private val downloadScheduler = WorkManagerDownloadScheduler(appContext, downloadRoot, downloadPersistence)
+    private val sourceRemovalCoordinator = RoomWebDavSourceRemovalCoordinator(
+        database = database,
+        downloadRoot = downloadRoot,
+        sourceWork = SourceWorkCancellation(webDavSyncScheduler::cancel),
+        downloadWork = object : DownloadWorkCancellation {
+            override suspend fun stop(downloadId: DownloadId) = downloadScheduler.stop(downloadId)
+            override suspend fun deleteFile(file: File): Boolean = !file.exists() || file.delete()
+        },
+        credentials = CredentialDeletion(credentialStore::delete),
+        clearCheckpoint = webDavPersistence::clearCheckpoint,
+    )
+    val sourceController = SourceController(
+        sourceRepository,
+        WebDavSourceActionAdapter(
+            sourceRepository,
+            webDavSourceManager,
+            webDavClient,
+            webDavSyncScheduler,
+            sourceRemovalCoordinator,
+            TestedWebDavBrowser { source, draft, relativePath ->
+                val temporaryStore = object : CredentialStore {
+                    override suspend fun put(alias: com.cleartune.core.model.CredentialAlias, credential: WebDavCredential) = Unit
+                    override suspend fun get(alias: com.cleartune.core.model.CredentialAlias) =
+                        WebDavCredential(draft.username, draft.password.copyOf())
+                    override suspend fun delete(alias: com.cleartune.core.model.CredentialAlias) = Unit
+                }
+                val temporaryClient = OkHttpWebDavClient(baseHttpClient, temporaryStore)
+                val base = WebDavUrlPolicy.normalizeBaseUrl(requireNotNull(source.baseUrl), source.allowCleartext)
+                val target = base.newBuilder().apply {
+                    relativePath.split('/').filter(String::isNotBlank).forEach(::addPathSegment)
+                    if (!build().encodedPath.endsWith('/')) addPathSegment("")
+                }.build()
+                temporaryClient.list(source, target).map { entry ->
+                    com.cleartune.feature.sources.SourceBrowseItem(entry.name, entry.name, entry.isDirectory)
+                }
+            },
+        ),
+    )
     val downloadRepository: DownloadRepository = DownloadCoordinator(downloadPersistence, downloadScheduler)
     val downloadCommandsAvailable: Boolean = true
     override val downloadWorkerRunner: DownloadWorkerRunner = ProductionDownloadWorkerRunner(downloadPersistence) { credentials ->
@@ -168,13 +212,27 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     val workerFactory = LocalScanWorkerFactory(localScanWorkerRunner)
     private val localScanScheduler = LocalScanScheduler(androidx.work.WorkManager.getInstance(appContext))
 
-    val settingsProductController: SettingsProductController = AppProductSettingsController(
+    private val streamingCacheRoot = File(appContext.cacheDir, "playback_streaming_cache")
+    val settingsProductController = AppProductSettingsController(
         appContext,
         scanLibrary = { localScanScheduler.enqueueManualRefresh() },
-        cleanUpCache = { clearContainedCache(appContext.cacheDir) },
+        cleanUpCache = { clearContainedCache(streamingCacheRoot) },
+        cacheRoot = streamingCacheRoot,
     )
+    val playbackRuntimeSettingsProvider = PlaybackRuntimeSettingsProvider {
+        settingsProductController.snapshot().let { settings ->
+            PlaybackRuntimeSettings(
+                restoreQueue = settings.restoreQueue,
+                pauseOnHeadphoneDisconnect = settings.pauseOnHeadphoneDisconnect,
+                streamingCacheEnabled = settings.offlineCacheEnabled,
+                backgroundPlayback = settings.backgroundPlayback,
+                dynamicBackground = settings.dynamicBackground,
+                cacheLimitBytes = settings.cacheLimitMb.toLong() * 1024L * 1024L,
+            )
+        }
+    }
 
-    val librarySessionCatalog: LibrarySessionCatalog = RoomLibrarySessionCatalog(roomLibraryRepository)
+    val librarySessionCatalog: LibrarySessionCatalog = RoomLibrarySessionCatalog(database)
     private val trackTitles = MutableStateFlow<Map<TrackId, String>>(emptyMap())
     val trackTitleFlow = trackTitles
     val downloadTitleResolver = DownloadTitleResolver { trackId -> trackTitles.value[trackId] ?: trackId.value }
@@ -191,11 +249,18 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
         ),
     )
 
-    val playbackRequestHeadersProvider = PlaybackRequestHeadersProvider { rawUri ->
+    val playbackCredentialResolver = PlaybackCredentialResolver { rawSourceId ->
         runBlocking(Dispatchers.IO) {
-            val source = SourceOriginMatcher.match(sourceRepository.observeSources().first(), rawUri.toString())
-            val credential = source?.credentialAlias?.let { credentialStore.get(it) }
-            credential?.let(::basicAuthorizationHeader).orEmpty()
+            val source = sourceRepository.getSource(SourceId(rawSourceId))
+                ?.takeIf { it.enabled && it.type == SourceType.WEBDAV }
+                ?: return@runBlocking null
+            val baseUrl = WebDavUrlPolicy.normalizeBaseUrl(
+                requireNotNull(source.baseUrl),
+                source.allowCleartext,
+            )
+            val credential = source.credentialAlias?.let { credentialStore.get(it) }
+                ?: return@runBlocking null
+            PlaybackCredentialContext(rawSourceId, baseUrl, credential)
         }
     }
 
@@ -205,7 +270,13 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
                 trackTitles.value = tracks.associate { it.id to it.title }
             }
         }
-        applicationScope.launch { playbackGateway.syncQueue() }
+        applicationScope.launch {
+            if (playbackRuntimeSettingsProvider.snapshot().restoreQueue) {
+                playbackGateway.syncQueue()
+            } else {
+                queueRepository.apply(QueueCommand.Replace(emptyList()))
+            }
+        }
         applicationScope.launch {
             var lastPositionWriteAt = 0L
             playbackGateway.state.collect { state ->
@@ -226,6 +297,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     fun scheduleStartupWork() {
         localScanScheduler.enqueueAutomatic()
         applicationScope.launch {
+            sourceRemovalCoordinator.reconcile()
             sourceRepository.observeSources().first()
                 .filter { it.enabled && it.type == com.cleartune.core.model.SourceType.WEBDAV }
                 .forEach { webDavSyncScheduler.enqueue(it.id) }
@@ -233,6 +305,15 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     }
 
     fun enqueueLocalScan() = localScanScheduler.enqueueManualRefresh()
+
+    internal fun smokeSnapshot() = AppContainerSmokeSnapshot(
+        libraryRepository = libraryRepository::class.java.simpleName,
+        sourceRepository = sourceRepository::class.java.simpleName,
+        queueRepository = queueRepository::class.java.simpleName,
+        workerFactory = workerFactory::class.java.simpleName,
+        hasCredentialResolver = true,
+        hasRuntimeSettings = true,
+    )
 
     val localScanState get() = localScanCoordinator.state
 
@@ -266,31 +347,11 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     }
 }
 
-private fun basicAuthorizationHeader(credential: WebDavCredential): Map<String, String> {
-    val username = credential.username.toByteArray(Charsets.UTF_8)
-    val passwordCopy = credential.password.copyOf()
-    var encodedPassword: ByteBuffer? = null
-    var password = ByteArray(0)
-    var combined = ByteArray(0)
-    return try {
-        encodedPassword = Charsets.UTF_8.newEncoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-            .encode(CharBuffer.wrap(passwordCopy))
-        password = ByteArray(requireNotNull(encodedPassword).remaining()).also(requireNotNull(encodedPassword)::get)
-        combined = ByteArrayOutputStream(username.size + password.size + 1).use { output ->
-            output.write(username)
-            output.write(':'.code)
-            output.write(password)
-            output.toByteArray()
-        }
-        mapOf("Authorization" to "Basic ${Base64.encodeToString(combined, Base64.NO_WRAP)}")
-    } finally {
-        username.fill(0)
-        passwordCopy.fill('\u0000')
-        password.fill(0)
-        combined.fill(0)
-        encodedPassword?.takeIf(ByteBuffer::hasArray)?.array()?.fill(0)
-        credential.password.fill('\u0000')
-    }
-}
+internal data class AppContainerSmokeSnapshot(
+    val libraryRepository: String,
+    val sourceRepository: String,
+    val queueRepository: String,
+    val workerFactory: String,
+    val hasCredentialResolver: Boolean,
+    val hasRuntimeSettings: Boolean,
+)

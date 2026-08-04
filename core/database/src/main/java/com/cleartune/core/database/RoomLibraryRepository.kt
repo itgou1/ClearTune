@@ -168,6 +168,8 @@ class RoomLibraryRepository(
                 albumId = track.albumId?.let(::AlbumId),
                 artworkRef = track.artworkRef,
                 addedAtEpochMs = track.addedAtEpochMs,
+                albumTitle = track.albumId?.let { writeDao.albumTitle(it) },
+                artistNames = writeDao.artistNames(track.id),
             ),
             locations = readDao.playableLocations(track.id).map { location ->
                 TrackLocation(
@@ -194,7 +196,7 @@ class RoomLibraryRepository(
             sourceDao.upsert(mutation.source.toEntity())
             MutationResult(updated = 1)
         }
-        is SourceMutation.Remove -> MutationResult(removed = sourceDao.delete(mutation.sourceId.value))
+        is SourceMutation.Remove -> MutationResult(removed = sourceDao.softDelete(mutation.sourceId.value))
     }
 
     override suspend fun applyLocalSnapshot(
@@ -276,4 +278,5 @@ private fun MusicSource.toEntity(): MusicSourceEntity = MusicSourceEntity(
     credentialAlias = credentialAlias?.value,
     enabled = enabled,
     lastSyncedAtEpochMs = lastSyncedAtEpochMs,
+    removed = false,
 )

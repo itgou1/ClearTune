@@ -33,10 +33,10 @@ class ProductionDownloadWorkerRunner(
         val work = persistence.loadWork(downloadId) ?: return WorkerOutcome.FAILED
         val credentials = work.credentials
         return try {
-            persistence.markRunning(downloadId)
+            val generation = persistence.beginWork(downloadId) ?: return WorkerOutcome.FAILED
             val execution = transfer(work, transferFactory(credentials))
             when (val result = execution.result) {
-                is DownloadTransferResult.Completed -> complete(downloadId, work, result, execution.persistedBytes)
+                is DownloadTransferResult.Completed -> complete(downloadId, generation, work, result, execution.persistedBytes)
                 is DownloadTransferResult.RetryableFailure -> {
                     persistence.recordFailure(downloadId, result.code)
                     WorkerOutcome.RETRY
@@ -113,6 +113,7 @@ class ProductionDownloadWorkerRunner(
 
     private suspend fun complete(
         downloadId: DownloadId,
+        generation: Long,
         work: DownloadWork,
         completed: DownloadTransferResult.Completed,
         persistedBytes: Long,
@@ -128,7 +129,11 @@ class ProductionDownloadWorkerRunner(
         if (completed.bytes > persistedBytes) {
             persistence.persistProgress(downloadId, completed.bytes, work.expectedBytes ?: completed.bytes)
         }
-        persistence.publishDownloadedLocation(downloadId, completed.bytes, finalFile.absolutePath)
-        return WorkerOutcome.COMPLETED
+        return if (persistence.publishDownloadedLocation(
+            downloadId,
+            generation,
+            completed.bytes,
+            finalFile.absolutePath,
+        )) WorkerOutcome.COMPLETED else WorkerOutcome.FAILED
     }
 }

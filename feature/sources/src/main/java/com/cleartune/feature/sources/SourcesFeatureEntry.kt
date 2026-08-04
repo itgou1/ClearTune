@@ -49,8 +49,8 @@ object SourcesFeatureEntry {
                     onEdit = { onNavigate(SourceRoute.Edit(source.id).encoded()) },
                     onBrowse = { onNavigate(SourceRoute.Browse(source.id, "").encoded()) },
                     onSync = { dependencies.controller.requestSync(source.id) },
-                    onDelete = {
-                        dependencies.controller.delete(source.id) {
+                    onDelete = { deleteOfflineCopies ->
+                        dependencies.controller.delete(source.id, deleteOfflineCopies) {
                             onNavigate(SourceRoute.List.encoded())
                         }
                     },
@@ -70,6 +70,7 @@ private fun SourceFormRoute(
 ) {
     var state by remember(sourceId) { mutableStateOf(WebDavFormState()) }
     var tested by remember(sourceId) { mutableStateOf<TestedSourceDraft?>(null) }
+    var roots by remember(sourceId) { mutableStateOf<List<SourceBrowseItem>>(emptyList()) }
     val scope = rememberCoroutineScope()
     DisposableEffect(controller, sourceId) {
         onDispose { controller.close() }
@@ -82,6 +83,7 @@ private fun SourceFormRoute(
         onStateChange = {
             controller.abandon(tested)
             tested = null
+            roots = emptyList()
             state = it.copy(testing = false, connectionResult = null, error = null)
         },
         onTestConnection = {
@@ -92,6 +94,9 @@ private fun SourceFormRoute(
                 val result = controller.testConnection(state, sourceId)
                 if (result.failure?.code == "stale_test") return@launch
                 tested = result.value
+                roots = result.value?.let { receipt ->
+                    controller.browseTested(receipt, "").value.orEmpty().filter(SourceBrowseItem::isDirectory)
+                }.orEmpty()
                 state = state.copy(
                     testing = false,
                     connectionResult = result.value?.let { "Connection successful" },
@@ -105,6 +110,19 @@ private fun SourceFormRoute(
                 val result = controller.save(receipt)
                 result.value?.let { onNavigate(SourceRoute.Root(it.id).encoded()) }
                 result.failure?.let { state = state.copy(error = it.message) }
+            }
+        },
+        roots = roots,
+        onSelectRoot = { root ->
+            val receipt = tested ?: return@WebDavSourceForm
+            scope.launch {
+                val result = controller.selectRoot(receipt, root.key)
+                if (result.failure == null) {
+                    state = state.copy(url = receipt.draft.url, connectionResult = "Connection successful")
+                    roots = emptyList()
+                } else {
+                    state = state.copy(error = result.failure.message)
+                }
             }
         },
     )

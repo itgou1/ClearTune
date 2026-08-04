@@ -21,6 +21,7 @@ import com.cleartune.core.database.model.ArtistRow
 import com.cleartune.core.database.model.FolderRow
 import com.cleartune.core.database.model.LibraryIngestRecord
 import com.cleartune.core.database.model.LibraryTrackRow
+import com.cleartune.core.database.model.MediaCatalogRow
 import com.cleartune.core.database.model.StableLibraryId
 import com.cleartune.core.model.LibraryMutation
 import com.cleartune.core.model.LocationType
@@ -30,6 +31,69 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface LibraryReadDao {
+    @Query(
+        """
+        SELECT t.id AS mediaId, t.title, a.title AS albumTitle,
+               (SELECT GROUP_CONCAT(ar.name, char(31))
+                  FROM track_artists ta JOIN artists ar ON ar.id = ta.artistId
+                 WHERE ta.trackId = t.id) AS artistNames,
+               t.artworkRef AS artworkUri, chosen.uri AS playbackUri,
+               chosen.sourceId AS sourceId, chosen.id AS locationId
+          FROM tracks t
+          LEFT JOIN albums a ON a.id = t.albumId
+          JOIN track_locations chosen ON chosen.id = (
+               SELECT candidate.id FROM track_locations candidate
+                WHERE candidate.trackId = t.id AND candidate.available = 1
+                ORDER BY CASE candidate.type
+                    WHEN 'DOWNLOADED_FILE' THEN 0 WHEN 'LOCAL_URI' THEN 1 ELSE 2 END,
+                    candidate.id
+                LIMIT 1
+          )
+         WHERE (:category = 'songs')
+            OR (:category = 'albums' AND t.albumId IS NOT NULL)
+            OR (:category = 'artists' AND EXISTS(
+                SELECT 1 FROM track_artists ta WHERE ta.trackId = t.id
+            ))
+            OR (:category = 'playlists' AND EXISTS(
+                SELECT 1 FROM playlist_tracks pt WHERE pt.trackId = t.id
+            ))
+            OR (:category = 'downloads' AND EXISTS(
+                SELECT 1 FROM track_locations dl
+                 WHERE dl.trackId = t.id AND dl.available = 1 AND dl.type = 'DOWNLOADED_FILE'
+            ))
+         ORDER BY CASE :category
+                    WHEN 'albums' THEN COALESCE(a.title, '')
+                    ELSE t.title
+                  END COLLATE NOCASE, t.id
+         LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun mediaCatalogPage(category: String, limit: Int, offset: Int): List<MediaCatalogRow>
+
+    @Query(
+        """
+        SELECT t.id AS mediaId, t.title, a.title AS albumTitle,
+               (SELECT GROUP_CONCAT(ar.name, char(31))
+                  FROM track_artists ta JOIN artists ar ON ar.id = ta.artistId
+                 WHERE ta.trackId = t.id) AS artistNames,
+               t.artworkRef AS artworkUri, chosen.uri AS playbackUri,
+               chosen.sourceId AS sourceId, chosen.id AS locationId
+          FROM tracks t
+          LEFT JOIN albums a ON a.id = t.albumId
+          JOIN track_locations chosen ON chosen.id = (
+               SELECT candidate.id FROM track_locations candidate
+                WHERE candidate.trackId = t.id AND candidate.available = 1
+                ORDER BY CASE candidate.type
+                    WHEN 'DOWNLOADED_FILE' THEN 0 WHEN 'LOCAL_URI' THEN 1 ELSE 2 END,
+                    candidate.id
+                LIMIT 1
+          )
+         WHERE t.id = :mediaId
+         LIMIT 1
+        """,
+    )
+    suspend fun mediaCatalogItem(mediaId: String): MediaCatalogRow?
+
     @Query(
         """
         SELECT t.id AS trackId, t.title, t.albumId, a.title AS albumTitle,
@@ -143,6 +207,9 @@ abstract class LibraryWriteDao {
     @Query("UPDATE track_locations SET available = 0 WHERE id = :locationId AND available != 0")
     abstract suspend fun markLocationUnavailable(locationId: String): Int
 
+    @Query("UPDATE track_locations SET available = 0 WHERE sourceId = :sourceId AND type = 'REMOTE_URL' AND available != 0")
+    abstract suspend fun markRemoteLocationsUnavailable(sourceId: String): Int
+
     @Transaction
     open suspend fun applySourceSnapshot(
         sourceId: SourceId,
@@ -254,22 +321,36 @@ abstract class LibraryWriteDao {
     open suspend fun applyMutation(mutation: LibraryMutation): MutationResult = when (mutation) {
         is LibraryMutation.Upsert -> {
             mutation.tracks.forEach { track ->
+                val existing = track(track.id.value)
+                val nextAlbumId = track.albumTitle?.takeIf(String::isNotBlank)?.let { title ->
+                    StableLibraryId.album(mutation.sourceId, title).value.also { albumId ->
+                        upsertAlbum(AlbumEntity(albumId, title.trim(), track.artworkRef))
+                    }
+                } ?: track.albumId?.value ?: existing?.albumId
                 upsertTrack(
                     TrackEntity(
                         id = track.id.value,
                         title = track.title,
-                        durationMs = track.durationMs,
-                        albumId = track.albumId?.value,
-                        artworkRef = track.artworkRef,
-                        addedAtEpochMs = track.addedAtEpochMs,
+                        durationMs = track.durationMs ?: existing?.durationMs,
+                        albumId = nextAlbumId,
+                        artworkRef = track.artworkRef ?: existing?.artworkRef,
+                        addedAtEpochMs = existing?.addedAtEpochMs ?: track.addedAtEpochMs,
                     ),
                 )
+                if (track.artistNames.isNotEmpty()) {
+                    deleteTrackArtists(track.id.value)
+                    track.artistNames.distinctBy(String::lowercase).forEach { name ->
+                        val artistId = StableLibraryId.artist(mutation.sourceId, name)
+                        upsertArtist(ArtistEntity(artistId.value, name.trim()))
+                        insertTrackArtist(TrackArtistCrossRef(track.id.value, artistId.value))
+                    }
+                }
                 deleteSearch(track.id.value)
                 insertSearch(
                     TrackSearchFtsEntity(
                         trackId = track.id.value,
                         title = track.title,
-                        albumTitle = track.albumId?.value?.let { albumTitle(it) }.orEmpty(),
+                        albumTitle = nextAlbumId?.let { albumTitle(it) }.orEmpty(),
                         artistNames = artistNames(track.id.value).joinToString(" "),
                     ),
                 )

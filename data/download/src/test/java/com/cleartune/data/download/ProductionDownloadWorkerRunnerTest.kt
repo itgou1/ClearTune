@@ -1,5 +1,6 @@
 package com.cleartune.data.download
 
+import android.content.pm.ServiceInfo
 import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.DownloadSummary
@@ -84,6 +85,11 @@ class ProductionDownloadWorkerRunnerTest {
     fun `foreground notification ids are stable and distinct per download`() {
         assertEquals(DownloadWorker.notificationId(id), DownloadWorker.notificationId(id))
         assertNotEquals(DownloadWorker.notificationId(id), DownloadWorker.notificationId(DownloadId("download-2")))
+    }
+
+    @Test
+    fun `foreground download work declares Android 14 data sync service type`() {
+        assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC, DownloadWorker.foregroundServiceType)
     }
 
     @Test

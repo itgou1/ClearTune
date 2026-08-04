@@ -21,10 +21,20 @@ data class LibraryCatalogTrack(
     val artworkUri: String? = null,
     val playbackUri: String,
     val mimeType: String? = null,
+    val sourceId: String? = null,
+    val locationId: String? = null,
 )
 
 interface LibrarySessionCatalog {
     fun children(parentId: String): List<LibraryCatalogTrack>
+    fun childrenPage(parentId: String, page: Int, pageSize: Int): List<LibraryCatalogTrack> {
+        val children = children(parentId)
+        val safePageSize = pageSize.coerceAtLeast(1)
+        val from = (page.coerceAtLeast(0).toLong() * safePageSize)
+            .coerceAtMost(children.size.toLong()).toInt()
+        val to = (from.toLong() + safePageSize).coerceAtMost(children.size.toLong()).toInt()
+        return children.subList(from, to)
+    }
     fun resolve(mediaId: String): LibraryCatalogTrack?
 
     data object Empty : LibrarySessionCatalog {
@@ -99,14 +109,17 @@ class ClearTuneLibrarySessionCallback(
     )
 
     fun describeChildren(parentId: String, page: Int, pageSize: Int): List<SessionMediaDescription> {
+        val safePageSize = pageSize.coerceAtLeast(1)
+        if (parentId in APPROVED_CATEGORY_IDS) {
+            return catalog.childrenPage(parentId, page.coerceAtLeast(0), safePageSize)
+                .map { describeTrack(it, includePlayback = false) }
+        }
         val children = when (parentId) {
             ROOT_ID -> ROOT_CATEGORIES.map { (id, title) ->
                 SessionMediaDescription(id, title, browsable = true)
             }
-            in APPROVED_CATEGORY_IDS -> catalog.children(parentId).map { describeTrack(it, includePlayback = false) }
             else -> emptyList()
         }
-        val safePageSize = pageSize.coerceAtLeast(1)
         val from = (page.coerceAtLeast(0).toLong() * safePageSize.toLong())
             .coerceAtMost(children.size.toLong())
             .toInt()
@@ -135,7 +148,10 @@ class ClearTuneLibrarySessionCallback(
             album = metadata.album,
             artworkUri = metadata.artworkUri,
             playbackUri = track.playbackUri.takeIf { includePlayback }?.let { playbackUri ->
-                PrivateMediaSourceRegistry.register(track.mediaId, playbackUri)
+                PrivateMediaSourceRegistry.register(
+                    track.mediaId,
+                    PrivateMediaSource(playbackUri, track.sourceId, track.locationId),
+                )
             },
             mimeType = track.mimeType,
             playable = true,

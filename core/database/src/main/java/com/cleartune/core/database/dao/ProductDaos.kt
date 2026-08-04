@@ -23,6 +23,9 @@ interface PlaylistDao {
     @Query("SELECT * FROM playlist_tracks WHERE playlistId = :playlistId ORDER BY position")
     fun observeItems(playlistId: String): Flow<List<PlaylistTrackCrossRef>>
 
+    @Query("SELECT EXISTS(SELECT 1 FROM playlist_tracks WHERE playlistId = :playlistId AND trackId = :trackId)")
+    fun observeContainsTrack(playlistId: String, trackId: String): Flow<Boolean>
+
     @Query("SELECT * FROM playlists WHERE id = :playlistId LIMIT 1")
     suspend fun playlist(playlistId: String): PlaylistEntity?
 
@@ -47,6 +50,12 @@ interface DownloadDao {
 
     @Query("SELECT * FROM downloads WHERE trackId = :trackId LIMIT 1")
     suspend fun downloadForTrack(trackId: String): DownloadEntity?
+
+    @Query("SELECT * FROM downloads WHERE sourceId = :sourceId")
+    suspend fun downloadsForSource(sourceId: String): List<DownloadEntity>
+
+    @Query("SELECT * FROM downloads WHERE cleanupPending = 1")
+    suspend fun pendingCleanup(): List<DownloadEntity>
 
     @Upsert suspend fun upsert(download: DownloadEntity)
     @Query("DELETE FROM downloads WHERE id = :downloadId") suspend fun delete(downloadId: String): Int

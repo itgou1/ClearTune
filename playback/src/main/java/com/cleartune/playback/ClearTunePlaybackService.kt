@@ -16,13 +16,26 @@ import androidx.media3.session.MediaSession
 class ClearTunePlaybackService : MediaLibraryService() {
     private lateinit var player: ExoPlayer
     private lateinit var playerCache: PlayerCache
+    private lateinit var servicePolicy: PlaybackServicePolicy
     private var librarySession: MediaLibrarySession? = null
 
     override fun onCreate() {
         super.onCreate()
         val headersProvider = (application as? PlaybackRequestHeadersOwner)?.playbackRequestHeadersProvider
             ?: PlaybackRequestHeadersProvider { emptyMap() }
-        playerCache = PlayerCache(this, headersProvider)
+        val credentialResolver = (application as? PlaybackCredentialResolverOwner)?.playbackCredentialResolver
+            ?: PlaybackCredentialResolver { null }
+        val runtimeSettings = (application as? PlaybackRuntimeSettingsOwner)
+            ?.playbackRuntimeSettingsProvider
+            ?.snapshot()
+            ?: PlaybackRuntimeSettings()
+        servicePolicy = PlaybackServicePolicy(runtimeSettings)
+        playerCache = PlayerCache(
+            context = this,
+            settings = runtimeSettings,
+            credentialResolver = credentialResolver,
+            headersProvider = headersProvider,
+        )
         player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(this).setDataSourceFactory(playerCache.dataSourceFactory()),
@@ -34,7 +47,7 @@ class ClearTunePlaybackService : MediaLibraryService() {
                     .build(),
                 true,
             )
-            .setHandleAudioBecomingNoisy(true)
+            .setHandleAudioBecomingNoisy(servicePolicy.handleAudioBecomingNoisy)
             .build()
 
         val catalog = (application as? LibrarySessionCatalogOwner)?.librarySessionCatalog
@@ -49,7 +62,10 @@ class ClearTunePlaybackService : MediaLibraryService() {
         librarySession
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        if (!player.playWhenReady || player.mediaItemCount == 0) stopSelf()
+        if (servicePolicy.shouldStopOnTaskRemoved(player.playWhenReady, player.mediaItemCount)) {
+            player.pause()
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {

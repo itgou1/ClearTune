@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.cleartune.core.database.dao.DownloadDao
 import com.cleartune.core.database.dao.LibraryReadDao
@@ -48,7 +49,7 @@ import com.cleartune.core.database.entity.TrackSearchFtsEntity
         PlaybackStateEntity::class,
         AppSettingsEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class ClearTuneDatabase : RoomDatabase() {
@@ -65,7 +66,23 @@ abstract class ClearTuneDatabase : RoomDatabase() {
             context.applicationContext,
             ClearTuneDatabase::class.java,
             name,
-        ).addCallback(LOCAL_SOURCE_CALLBACK).build()
+        ).addMigrations(MIGRATION_1_2).addCallback(LOCAL_SOURCE_CALLBACK).build()
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE music_sources ADD COLUMN removed INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE downloads ADD COLUMN sourceId TEXT")
+                db.execSQL("ALTER TABLE downloads ADD COLUMN workGeneration INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE downloads ADD COLUMN cleanupPending INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "UPDATE downloads SET sourceId = (" +
+                        "SELECT locations.sourceId FROM track_locations locations " +
+                        "WHERE locations.trackId = downloads.trackId AND locations.type = 'REMOTE_URL' " +
+                        "ORDER BY locations.available DESC, locations.id LIMIT 1" +
+                        ") WHERE sourceId IS NULL",
+                )
+            }
+        }
 
         val LOCAL_SOURCE_CALLBACK = object : Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {

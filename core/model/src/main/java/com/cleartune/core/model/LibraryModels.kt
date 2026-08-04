@@ -28,6 +28,8 @@ data class Track(
     val albumId: AlbumId? = null,
     val artworkRef: String? = null,
     val addedAtEpochMs: Long = 0,
+    val albumTitle: String? = null,
+    val artistNames: List<String> = emptyList(),
 ) {
     init {
         require(title.isNotBlank())

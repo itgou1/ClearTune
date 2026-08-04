@@ -24,6 +24,8 @@ class SecureMediaDescriptorTest {
         assertEquals("Song", descriptor.title)
         assertEquals("audio/flac", descriptor.mimeType)
         assertEquals("content://art/1", descriptor.artworkUri)
+        assertEquals("source", descriptor.sourceId)
+        assertEquals("location", descriptor.locationId)
     }
 
     @Test

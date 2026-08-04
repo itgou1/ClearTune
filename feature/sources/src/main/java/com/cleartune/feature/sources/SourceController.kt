@@ -69,7 +69,7 @@ data class SourceDraft(
 data class SourceBrowseItem(val key: String, val name: String, val isDirectory: Boolean)
 data class SourceFailure(val code: String, val message: String, val retryable: Boolean)
 data class SourceResult<T>(val value: T? = null, val failure: SourceFailure? = null)
-class TestedSourceDraft internal constructor(internal val draft: SourceDraft) : AutoCloseable {
+class TestedSourceDraft internal constructor(internal var draft: SourceDraft) : AutoCloseable {
     override fun close() = draft.password.fill('\u0000')
 }
 
@@ -77,8 +77,10 @@ class SourceActionException(val failure: SourceFailure) : Exception(failure.mess
 
 interface SourceActionPort {
     suspend fun test(draft: SourceDraft)
+    suspend fun browseTested(draft: SourceDraft, relativePath: String): List<SourceBrowseItem>
+    suspend fun selectRoot(draft: SourceDraft, relativePath: String): SourceDraft
     suspend fun save(draft: SourceDraft): MusicSource
-    suspend fun delete(sourceId: SourceId)
+    suspend fun delete(sourceId: SourceId, deleteOfflineCopies: Boolean)
     suspend fun sync(sourceId: SourceId)
     suspend fun browse(sourceId: SourceId, relativePath: String): List<SourceBrowseItem>
 }
@@ -92,6 +94,15 @@ class SourceController(
     private val receipts = Collections.newSetFromMap(IdentityHashMap<TestedSourceDraft, Boolean>())
 
     suspend fun testConnection(state: WebDavFormState, sourceId: SourceId?): SourceResult<TestedSourceDraft> {
+        if (state.allowCleartext && !state.cleartextConfirmed) {
+            return SourceResult(
+                failure = SourceFailure(
+                    "cleartext_confirmation_required",
+                    "Confirm that this trusted network may expose credentials and audio over HTTP",
+                    false,
+                ),
+            )
+        }
         val expectedRevision = revision.get()
         val draft = SourceDraft(
             sourceId,
@@ -122,8 +133,31 @@ class SourceController(
         tested.close()
     }
 
-    suspend fun delete(sourceId: SourceId, onSuccess: () -> Unit = {}): SourceResult<Unit> {
-        val result = action { actions.delete(sourceId) }
+    suspend fun browseTested(
+        tested: TestedSourceDraft,
+        relativePath: String,
+    ): SourceResult<List<SourceBrowseItem>> = action {
+        requireReceipt(tested)
+        val normalized = relativePath.trim('/')
+        require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
+        actions.browseTested(tested.draft, normalized)
+    }
+
+    suspend fun selectRoot(tested: TestedSourceDraft, relativePath: String): SourceResult<Unit> =
+        action {
+            requireReceipt(tested)
+            val normalized = relativePath.trim('/')
+            require(normalized.isNotBlank()) { "Choose a source folder" }
+            require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
+            tested.draft = actions.selectRoot(tested.draft, normalized)
+        }
+
+    suspend fun delete(
+        sourceId: SourceId,
+        deleteOfflineCopies: Boolean = false,
+        onSuccess: () -> Unit = {},
+    ): SourceResult<Unit> {
+        val result = action { actions.delete(sourceId, deleteOfflineCopies) }
         if (result.failure == null) onSuccess()
         return result
     }
@@ -165,7 +199,12 @@ class SourceController(
     }
 
     suspend fun form(sourceId: SourceId): WebDavFormState? = sources.getSource(sourceId)?.let { source ->
-        WebDavFormState(name = source.name, url = source.baseUrl.orEmpty(), allowCleartext = source.allowCleartext)
+        WebDavFormState(
+            name = source.name,
+            url = source.baseUrl.orEmpty(),
+            allowCleartext = source.allowCleartext,
+            cleartextConfirmed = source.allowCleartext,
+        )
     }
 
     private suspend fun <T> action(secret: CharArray? = null, block: suspend () -> T): SourceResult<T> = try {
@@ -182,6 +221,10 @@ class SourceController(
     } catch (_: Exception) {
         secret?.fill('\u0000')
         SourceResult(failure = SourceFailure("operation_failed", "Unable to complete source operation", true))
+    }
+
+    private fun requireReceipt(tested: TestedSourceDraft) {
+        check(synchronized(receiptLock) { tested in receipts }) { "Connection test is no longer valid" }
     }
 
     private companion object {

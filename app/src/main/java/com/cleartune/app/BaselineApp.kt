@@ -64,6 +64,7 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 
 object AppRoutes {
@@ -197,13 +198,19 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
             onQueueChanged = container.playbackGateway::syncQueue,
             queueTitles = queueTitles,
             observeTrackActions = { trackId ->
-                container.downloadRepository.observeDownloads().map { downloads ->
+                combine(
+                    container.downloadRepository.observeDownloads(),
+                    container.favoritesRepository.observeIsFavorite(trackId),
+                ) { downloads, isFavorite ->
                     PlayerTrackActionState(
+                        isFavorite = isFavorite,
                         isDownloaded = downloads.any { it.trackId == trackId && it.state == DownloadState.COMPLETED },
+                        canFavorite = true,
                         canDownload = true,
                     )
                 }
             },
+            onToggleFavorite = container.favoritesRepository::toggle,
             onToggleDownload = { trackId ->
                 val existing = container.downloadRepository.observeDownloads().first().firstOrNull { it.trackId == trackId }
                 container.downloadRepository.dispatch(
@@ -220,6 +227,7 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
                 container.playbackGateway.dispatch(PlaybackCommand.Play)
             },
             onRetry = { trackId -> container.playbackGateway.dispatch(PlaybackCommand.PlayTrack(trackId)) },
+            dynamicBackground = container.settingsProductController.productSettings.map { it.dynamicBackground },
         )
     }
     val playlistDependencies = remember(container) {

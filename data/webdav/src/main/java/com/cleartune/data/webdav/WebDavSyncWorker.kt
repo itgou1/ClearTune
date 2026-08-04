@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.ServiceInfo
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -72,12 +73,13 @@ class WebDavSyncWorker(
             .setContentTitle("Syncing music source")
             .setOngoing(true)
             .build()
-        return ForegroundInfo(notificationId(sourceId), notification)
+        return ForegroundInfo(notificationId(sourceId), notification, foregroundServiceType)
     }
 
     companion object {
         const val INPUT_SOURCE_ID = "source_id"
         const val CHANNEL_ID = "webdav_sync"
+        val foregroundServiceType: Int = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
 
         fun workName(sourceId: SourceId): String = "webdav-sync-${sourceId.value}"
 

@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.cleartune.core.contracts.CredentialStore
 import com.cleartune.core.database.ClearTuneDatabase
 import com.cleartune.core.database.entity.DownloadEntity
+import com.cleartune.core.database.entity.MusicSourceEntity
 import com.cleartune.core.database.entity.TrackLocationEntity
 import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.CredentialAlias
@@ -26,6 +27,21 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+
+object OfflineDownloadSource {
+    val ID = com.cleartune.core.model.SourceId("offline-downloads")
+
+    fun entity() = MusicSourceEntity(
+        id = ID.value,
+        name = "Offline downloads",
+        type = SourceType.LOCAL.name,
+        baseUrl = null,
+        allowCleartext = false,
+        credentialAlias = null,
+        enabled = true,
+        lastSyncedAtEpochMs = null,
+    )
+}
 
 class RoomDownloadPersistenceAdapter(
     private val database: ClearTuneDatabase,
@@ -93,6 +109,25 @@ class RoomDownloadPersistenceAdapter(
         current.copy(state = DownloadState.RUNNING.name, errorMessage = null, updatedAtEpochMs = clock())
     }
 
+    override suspend fun beginWork(downloadId: DownloadId): Long? = database.withTransaction {
+        val resolved = resolve(downloadId) ?: return@withTransaction null
+        val current = resolved.download
+        if (current.state !in setOf(DownloadState.QUEUED.name, DownloadState.FAILED.name, DownloadState.RUNNING.name)) {
+            return@withTransaction null
+        }
+        val generation = current.workGeneration + 1
+        database.downloadDao().upsert(
+            current.copy(
+                state = DownloadState.RUNNING.name,
+                sourceId = resolved.source.id.value,
+                workGeneration = generation,
+                errorMessage = null,
+                updatedAtEpochMs = clock(),
+            ),
+        )
+        generation
+    }
+
     override suspend fun persistProgress(downloadId: DownloadId, downloadedBytes: Long, totalBytes: Long?) =
         update(downloadId) { current ->
             val monotonicBytes = downloadedBytes.coerceAtLeast(current.bytesDownloaded)
@@ -106,13 +141,29 @@ class RoomDownloadPersistenceAdapter(
         }
 
     override suspend fun publishDownloadedLocation(downloadId: DownloadId, bytes: Long, finalPath: String) {
+        publishDownloadedLocation(downloadId, generation = 0, bytes = bytes, finalPath = finalPath)
+    }
+
+    override suspend fun publishDownloadedLocation(
+        downloadId: DownloadId,
+        generation: Long,
+        bytes: Long,
+        finalPath: String,
+    ): Boolean {
         val finalFile = File(finalPath).canonicalFile
         require(finalFile.toPath().startsWith(downloadRoot.canonicalFile.toPath())) {
             "Downloaded file escapes its root"
         }
         require(finalFile.isFile && finalFile.length() == bytes) { "Downloaded file is not complete" }
-        database.withTransaction {
+        var deleteRejectedFile = false
+        val published = database.withTransaction {
+            val current = database.downloadDao().download(downloadId.value) ?: return@withTransaction false
+            if (current.state != DownloadState.RUNNING.name || current.workGeneration != generation) {
+                deleteRejectedFile = current.state in setOf(DownloadState.PAUSED.name, DownloadState.CANCELED.name)
+                return@withTransaction false
+            }
             val resolved = requireNotNull(resolve(downloadId)) { "Download work disappeared" }
+            database.sourceDao().upsert(OfflineDownloadSource.entity())
             val completed = resolved.download.copy(
                 state = DownloadState.COMPLETED.name,
                 bytesDownloaded = bytes,
@@ -121,13 +172,15 @@ class RoomDownloadPersistenceAdapter(
                 finalPath = finalFile.absolutePath,
                 errorMessage = null,
                 updatedAtEpochMs = clock(),
+                sourceId = resolved.source.id.value,
+                cleanupPending = false,
             )
             database.downloadDao().upsert(completed)
             database.libraryWriteDao().upsertLocation(
                 TrackLocationEntity(
                     id = "download-location-${downloadId.value}",
                     trackId = resolved.trackId,
-                    sourceId = resolved.source.id.value,
+                    sourceId = OfflineDownloadSource.ID.value,
                     sourceKey = "download:${downloadId.value}",
                     type = LocationType.DOWNLOADED_FILE.name,
                     uri = finalFile.toURI().toString(),
@@ -139,7 +192,12 @@ class RoomDownloadPersistenceAdapter(
                     modifiedEpochSeconds = finalFile.lastModified().coerceAtLeast(0) / 1_000,
                 ),
             )
+            true
         }
+        if (!published && deleteRejectedFile && finalFile.exists() && !finalFile.delete()) {
+            throw java.io.IOException("Unable to reconcile rejected download publication")
+        }
+        return published
     }
 
     override suspend fun recordFailure(downloadId: DownloadId, code: String) = update(downloadId) { current ->
@@ -200,6 +258,9 @@ class RoomDownloadPersistenceAdapter(
         finalPath = finalPath,
         errorMessage = errorMessage,
         updatedAtEpochMs = clock(),
+        sourceId = existing?.sourceId,
+        workGeneration = existing?.workGeneration ?: 0,
+        cleanupPending = existing?.cleanupPending ?: false,
     )
 
     private fun DownloadEntity.toSummary() = DownloadSummary(

@@ -29,6 +29,50 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 
+class RoomFavoritesRepository(
+    private val database: ClearTuneDatabase,
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
+    private val dao = database.playlistDao()
+
+    fun observeFavorites(): Flow<List<TrackId>> = dao.observeItems(FAVORITES_ID)
+        .map { items -> items.map { TrackId(it.trackId) } }
+
+    fun observeIsFavorite(trackId: TrackId): Flow<Boolean> =
+        dao.observeContainsTrack(FAVORITES_ID, trackId.value)
+
+    suspend fun setFavorite(trackId: TrackId, favorite: Boolean) = database.withTransaction {
+        dao.upsertPlaylist(PlaylistEntity(FAVORITES_ID, FAVORITES_NAME, FAVORITES_CREATED_AT))
+        val current = dao.items(FAVORITES_ID)
+        val contains = current.any { it.trackId == trackId.value }
+        if (contains == favorite) return@withTransaction
+        val next = if (favorite) {
+            current + PlaylistTrackCrossRef(
+                id = "favorite:${trackId.value}",
+                playlistId = FAVORITES_ID,
+                trackId = trackId.value,
+                position = current.size,
+                addedAtEpochMs = clock(),
+            )
+        } else {
+            current.filterNot { it.trackId == trackId.value }
+        }.mapIndexed { index, item -> item.copy(position = index) }
+        dao.clearItems(FAVORITES_ID)
+        if (next.isNotEmpty()) dao.upsertItems(next)
+    }
+
+    suspend fun toggle(trackId: TrackId) {
+        val favorite = dao.items(FAVORITES_ID).any { it.trackId == trackId.value }
+        setFavorite(trackId, !favorite)
+    }
+
+    companion object {
+        const val FAVORITES_ID = "favorites"
+        const val FAVORITES_NAME = "Favorites"
+        private const val FAVORITES_CREATED_AT = 0L
+    }
+}
+
 class RoomQueueRepository(
     private val database: ClearTuneDatabase,
     private val idFactory: () -> String = { UUID.randomUUID().toString() },

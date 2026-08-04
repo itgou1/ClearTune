@@ -45,6 +45,7 @@ data class WebDavFormState(
     val password: String = "",
     val passwordVisible: Boolean = false,
     val allowCleartext: Boolean = false,
+    val cleartextConfirmed: Boolean = false,
     val testing: Boolean = false,
     val connectionResult: String? = null,
     val error: String? = null,

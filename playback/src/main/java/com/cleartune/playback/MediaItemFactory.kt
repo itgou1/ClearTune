@@ -30,7 +30,12 @@ internal object MediaItemFactory {
             .build()
         return MediaItem.Builder()
             .setMediaId(mediaId)
-            .setUri(PrivateMediaSourceRegistry.register(mediaId, descriptor.playbackUri))
+            .setUri(
+                PrivateMediaSourceRegistry.register(
+                    mediaId,
+                    PrivateMediaSource(descriptor.playbackUri, descriptor.sourceId, descriptor.locationId),
+                ),
+            )
             .setMimeType(descriptor.mimeType)
             .setMediaMetadata(metadata)
             .build()

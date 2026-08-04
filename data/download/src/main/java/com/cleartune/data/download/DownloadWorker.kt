@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.ServiceInfo
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -80,12 +81,13 @@ class DownloadWorker(
             .setContentTitle("Downloading music")
             .setOngoing(true)
             .build()
-        return ForegroundInfo(notificationId(id), notification)
+        return ForegroundInfo(notificationId(id), notification, foregroundServiceType)
     }
 
     companion object {
         const val INPUT_DOWNLOAD_ID = "download_id"
         const val CHANNEL_ID = "downloads"
+        val foregroundServiceType: Int = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         fun workName(id: DownloadId): String = "download-${id.value}"
 
         fun notificationId(id: DownloadId): Int = id.value.hashCode() xor 0x444C0000

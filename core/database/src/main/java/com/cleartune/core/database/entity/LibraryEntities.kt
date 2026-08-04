@@ -1,6 +1,7 @@
 package com.cleartune.core.database.entity
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Fts4
 import androidx.room.Index
@@ -16,6 +17,7 @@ data class MusicSourceEntity(
     val credentialAlias: String?,
     val enabled: Boolean,
     val lastSyncedAtEpochMs: Long?,
+    @ColumnInfo(defaultValue = "0") val removed: Boolean = false,
 )
 
 @Entity(tableName = "albums")

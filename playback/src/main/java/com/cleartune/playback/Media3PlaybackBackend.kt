@@ -239,7 +239,15 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
         withController { controller ->
             controller.playWhenReady = false
             occurrenceTrackIds = mapOf(descriptor.mediaId to descriptor.mediaId)
-            PrivateMediaSourceRegistry.replace(listOf(descriptor.mediaId to descriptor.playbackUri))
+            PrivateMediaSourceRegistry.replaceSources(
+                listOf(
+                    descriptor.mediaId to PrivateMediaSource(
+                        descriptor.playbackUri,
+                        descriptor.sourceId,
+                        descriptor.locationId,
+                    ),
+                ),
+            )
             controller.setMediaItem(MediaItemFactory.create(descriptor))
             controller.prepare()
         }
@@ -253,8 +261,12 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
         withController { controller ->
             controller.playWhenReady = false
             occurrenceTrackIds = entries.associate { it.occurrenceId to it.track.id.value }
-            PrivateMediaSourceRegistry.replace(descriptors.map { (entry, descriptor) ->
-                entry.occurrenceId to descriptor.playbackUri
+            PrivateMediaSourceRegistry.replaceSources(descriptors.map { (entry, descriptor) ->
+                entry.occurrenceId to PrivateMediaSource(
+                    descriptor.playbackUri,
+                    descriptor.sourceId,
+                    descriptor.locationId,
+                )
             })
             controller.setMediaItems(
                 descriptors.map { (entry, descriptor) ->
@@ -272,7 +284,10 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
         withController { controller ->
             val currentIndex = controller.currentMediaItemIndex.coerceAtLeast(0)
             occurrenceTrackIds = occurrenceTrackIds + (entry.occurrenceId to entry.track.id.value)
-            PrivateMediaSourceRegistry.registerActive(entry.occurrenceId, descriptor.playbackUri)
+            PrivateMediaSourceRegistry.registerActive(
+                entry.occurrenceId,
+                PrivateMediaSource(descriptor.playbackUri, descriptor.sourceId, descriptor.locationId),
+            )
             controller.replaceMediaItem(
                 currentIndex,
                 MediaItemFactory.create(descriptor, mediaId = entry.occurrenceId),

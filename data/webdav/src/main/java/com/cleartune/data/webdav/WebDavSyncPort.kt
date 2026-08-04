@@ -7,6 +7,7 @@ import kotlinx.coroutines.CancellationException
 data class RemoteFingerprint(
     val sizeBytes: Long?,
     val etag: String?,
+    val available: Boolean = true,
 )
 
 data class WebDavSyncCheckpoint(

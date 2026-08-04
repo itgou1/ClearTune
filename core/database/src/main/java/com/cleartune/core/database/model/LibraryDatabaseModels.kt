@@ -71,6 +71,17 @@ data class FolderRow(
     val trackCount: Int,
 )
 
+data class MediaCatalogRow(
+    val mediaId: String,
+    val title: String,
+    val albumTitle: String?,
+    val artistNames: String?,
+    val artworkUri: String?,
+    val playbackUri: String,
+    val sourceId: String,
+    val locationId: String,
+)
+
 data class LibraryIngestRecord(
     val sourceKey: String,
     val uri: String,

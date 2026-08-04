@@ -473,6 +473,8 @@ class PlaybackCoordinator(
         title = title,
         artworkRef = artworkRef,
         durationMs = durationMs,
+        albumTitle = albumTitle,
+        artistNames = artistNames,
     )
 
     private data class ActivePlayback(

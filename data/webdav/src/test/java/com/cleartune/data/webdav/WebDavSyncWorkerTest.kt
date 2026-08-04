@@ -1,5 +1,6 @@
 package com.cleartune.data.webdav
 
+import android.content.pm.ServiceInfo
 import com.cleartune.core.model.MusicSource
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.SourceType
@@ -13,6 +14,11 @@ import org.junit.Assert.assertSame
 import org.junit.Test
 
 class WebDavSyncWorkerTest {
+    @Test
+    fun `foreground WebDAV work declares Android 14 data sync service type`() {
+        assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC, WebDavSyncWorker.foregroundServiceType)
+    }
+
     private val source = MusicSource(SourceId("source-1"), "Remote", SourceType.WEBDAV, "https://music.example/dav/")
 
     @Test

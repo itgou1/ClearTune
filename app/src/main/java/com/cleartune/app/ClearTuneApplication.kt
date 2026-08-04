@@ -12,12 +12,15 @@ import com.cleartune.data.webdav.WebDavSyncRunner
 import com.cleartune.data.webdav.WebDavSyncWorkerHost
 import com.cleartune.playback.LibrarySessionCatalog
 import com.cleartune.playback.LibrarySessionCatalogOwner
-import com.cleartune.playback.PlaybackRequestHeadersOwner
-import com.cleartune.playback.PlaybackRequestHeadersProvider
+import com.cleartune.playback.PlaybackCredentialResolver
+import com.cleartune.playback.PlaybackCredentialResolverOwner
+import com.cleartune.playback.PlaybackRuntimeSettingsOwner
+import com.cleartune.playback.PlaybackRuntimeSettingsProvider
 
 class ClearTuneApplication :
     Application(),
-    PlaybackRequestHeadersOwner,
+    PlaybackCredentialResolverOwner,
+    PlaybackRuntimeSettingsOwner,
     LibrarySessionCatalogOwner,
     DownloadWorkerHost,
     WebDavSyncWorkerHost,
@@ -40,8 +43,11 @@ class ClearTuneApplication :
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().setWorkerFactory(delegatingWorkerFactory).build()
 
-    override val playbackRequestHeadersProvider: PlaybackRequestHeadersProvider
-        get() = container.playbackRequestHeadersProvider
+    override val playbackCredentialResolver: PlaybackCredentialResolver
+        get() = container.playbackCredentialResolver
+
+    override val playbackRuntimeSettingsProvider: PlaybackRuntimeSettingsProvider
+        get() = container.playbackRuntimeSettingsProvider
 
     override val librarySessionCatalog: LibrarySessionCatalog
         get() = container.librarySessionCatalog

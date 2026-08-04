@@ -11,6 +11,8 @@ class SecureMediaDescriptor internal constructor(
     val artworkUri: String?,
     val mimeType: String?,
     internal val playbackUri: String,
+    internal val sourceId: String,
+    internal val locationId: String,
 ) {
     override fun toString(): String =
         "SecureMediaDescriptor(mediaId=$mediaId, title=$title, artworkUri=$artworkUri, mimeType=$mimeType, playbackUri=<redacted>)"
@@ -28,6 +30,8 @@ object SecureMediaDescriptorFactory {
             artworkUri = track.artworkRef?.takeIf(::containsNoEmbeddedCredentials),
             mimeType = mimeTypeFor(location.uri),
             playbackUri = location.uri,
+            sourceId = location.sourceId.value,
+            locationId = location.id.value,
         )
     }
 

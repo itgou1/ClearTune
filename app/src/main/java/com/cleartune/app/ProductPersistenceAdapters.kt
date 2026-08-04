@@ -43,6 +43,7 @@ import com.cleartune.playback.PlaybackQueueRecoveryProvider
 import com.cleartune.playback.PlaybackQueueStateWriter
 import com.cleartune.playback.QueueRecoveryState
 import java.io.File
+import java.security.SecureRandom
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -114,17 +115,28 @@ class RoomPlaybackQueueAdapter(
             val dao = database.playbackDao()
             val items = dao.queueItems()
             val existing = dao.playbackState() ?: defaultState()
+            val nextCurrentIndex = currentIndex?.let { index ->
+                if (items.isEmpty()) -1 else index.coerceIn(items.indices)
+            } ?: existing.currentIndex
+            val enablingShuffle = shuffleEnabled == true && !existing.shuffleEnabled
+            val nextShuffleOrder = if (enablingShuffle) {
+                shuffledOccurrenceOrder(
+                    items.map { it.id },
+                    items.getOrNull(nextCurrentIndex)?.id,
+                )
+            } else {
+                existing.shuffleOrder
+            }
             dao.upsertQueue(PlaybackQueueEntity(PlaybackDao.DEFAULT_QUEUE_ID, clock()))
             dao.upsertPlaybackState(
                 existing.copy(
                     queueId = PlaybackDao.DEFAULT_QUEUE_ID,
-                    currentIndex = currentIndex?.let { index ->
-                        if (items.isEmpty()) -1 else index.coerceIn(items.indices)
-                    } ?: existing.currentIndex,
+                    currentIndex = nextCurrentIndex,
                     positionMs = positionMs?.coerceAtLeast(0) ?: existing.positionMs,
                     playWhenReady = playWhenReady ?: existing.playWhenReady,
                     repeatMode = repeatMode?.name ?: existing.repeatMode,
                     shuffleEnabled = shuffleEnabled ?: existing.shuffleEnabled,
+                    shuffleOrder = nextShuffleOrder,
                 ),
             )
         }
@@ -161,43 +173,67 @@ class RoomPlaybackQueueAdapter(
     private companion object { const val SHUFFLE_SEPARATOR = "\u001f" }
 }
 
-class RoomLibrarySessionCatalog(
-    private val library: RoomLibraryRepository,
-) : LibrarySessionCatalog {
-    override fun children(parentId: String): List<LibraryCatalogTrack> = runBlocking(Dispatchers.IO) {
-        val tracks = library.observeSongs(
-            com.cleartune.core.model.SongQuery(downloadedOnly = parentId == "downloads"),
-        ).first()
-        when (parentId) {
-            "songs", "albums", "artists", "playlists", "downloads" -> tracks.mapNotNull { it.catalogTrack() }
-            else -> emptyList()
-        }
+private fun shuffledOccurrenceOrder(queueOrder: List<String>, currentId: String?): String {
+    if (queueOrder.isEmpty()) return ""
+    val remaining = queueOrder.filterNot { it == currentId }.toMutableList()
+    java.util.Collections.shuffle(remaining, SecureRandom())
+    if (remaining.size > 1 && listOfNotNull(currentId) + remaining == queueOrder) {
+        remaining.reverse()
     }
+    return (listOfNotNull(currentId) + remaining).joinToString("\u001f")
+}
+
+class RoomLibrarySessionCatalog(
+    private val database: ClearTuneDatabase,
+) : LibrarySessionCatalog {
+    override fun children(parentId: String): List<LibraryCatalogTrack> =
+        childrenPage(parentId, page = 0, pageSize = Int.MAX_VALUE)
+
+    override fun childrenPage(parentId: String, page: Int, pageSize: Int): List<LibraryCatalogTrack> =
+        runBlocking(Dispatchers.IO) {
+            if (parentId !in CATEGORIES) return@runBlocking emptyList()
+            val safeSize = pageSize.coerceIn(1, MAX_PAGE_SIZE)
+            val offset = (page.coerceAtLeast(0).toLong() * safeSize).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            database.libraryReadDao().mediaCatalogPage(parentId, safeSize, offset).map { it.toCatalogTrack() }
+        }
 
     override fun resolve(mediaId: String): LibraryCatalogTrack? = runBlocking(Dispatchers.IO) {
-        library.getPlayableTrack(TrackId(mediaId))?.let { playable ->
-            val summary = library.observeSongs(com.cleartune.core.model.SongQuery()).first()
-                .firstOrNull { it.id.value == mediaId }
-                ?: TrackSummary(playable.track.id, playable.track.title, artworkRef = playable.track.artworkRef)
-            val location = playable.locations.firstOrNull { it.available } ?: return@runBlocking null
-            LibraryCatalogTrack(
-                mediaId = mediaId,
-                title = summary.title,
-                artist = summary.artistNames.joinToString().takeIf(String::isNotBlank),
-                album = summary.albumTitle,
-                artworkUri = summary.artworkRef,
-                playbackUri = location.uri,
-            )
-        }
+        database.libraryReadDao().mediaCatalogItem(mediaId)?.toCatalogTrack()
     }
 
-    private suspend fun TrackSummary.catalogTrack(): LibraryCatalogTrack? = resolve(id.value)
+    private fun com.cleartune.core.database.model.MediaCatalogRow.toCatalogTrack() = LibraryCatalogTrack(
+        mediaId = mediaId,
+        title = title,
+        artist = artistNames?.split('\u001f')?.joinToString()?.takeIf(String::isNotBlank),
+        album = albumTitle,
+        artworkUri = artworkUri,
+        playbackUri = playbackUri,
+        mimeType = playbackUri.catalogMimeType(),
+        sourceId = sourceId,
+        locationId = locationId,
+    )
+
+    private fun String.catalogMimeType(): String? = when (substringBefore('?').substringAfterLast('.').lowercase()) {
+        "mp3" -> "audio/mpeg"
+        "flac" -> "audio/flac"
+        "m4a" -> "audio/mp4"
+        "aac" -> "audio/aac"
+        "ogg", "opus" -> "audio/ogg"
+        "wav" -> "audio/wav"
+        else -> null
+    }
+
+    private companion object {
+        val CATEGORIES = setOf("songs", "albums", "artists", "playlists", "downloads")
+        const val MAX_PAGE_SIZE = 500
+    }
 }
 
 class AppProductSettingsController(
     context: Context,
     private val scanLibrary: suspend () -> Unit,
     private val cleanUpCache: suspend () -> Unit,
+    private val cacheRoot: File = context.cacheDir,
 ) : SettingsProductController {
     private val preferences = context.getSharedPreferences("cleartune_product_settings", Context.MODE_PRIVATE)
     private val mutex = Mutex()
@@ -209,12 +245,15 @@ class AppProductSettingsController(
             backgroundPlayback = preferences.boolean("background_playback", false),
             dynamicBackground = preferences.boolean("dynamic_background", true),
             cacheLimitMb = preferences.getInt("cache_limit_mb", 512).coerceIn(64, 8_192),
+            cachedBytes = cacheBytes(cacheRoot),
             scanLibrary = SettingsOperationState.Ready,
             cleanUpCache = SettingsOperationState.Ready,
             openLicenses = SettingsOperationState.Unavailable("License information is not bundled in this scope"),
         ),
     )
     override val productSettings: Flow<SettingsProductState> = state
+
+    fun snapshot(): SettingsProductState = state.value.copy(cachedBytes = cacheBytes(cacheRoot))
 
     override suspend fun dispatch(command: SettingsProductCommand) = mutex.withLock {
         state.value = when (command) {
@@ -242,7 +281,10 @@ class AppProductSettingsController(
         return try {
             action()
             if (kind == "scan") state.value.copy(scanLibrary = SettingsOperationState.Success("Completed"))
-            else state.value.copy(cleanUpCache = SettingsOperationState.Success("Completed"))
+            else state.value.copy(
+                cleanUpCache = SettingsOperationState.Success("Completed"),
+                cachedBytes = cacheBytes(cacheRoot),
+            )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
@@ -280,3 +322,8 @@ internal fun clearContainedCache(cacheRoot: File) {
         if (candidate.exists() && !candidate.delete()) error("Unable to clear cache")
     }
 }
+
+internal fun cacheBytes(cacheRoot: File): Long = cacheRoot
+    .walkTopDown()
+    .filter(File::isFile)
+    .sumOf(File::length)

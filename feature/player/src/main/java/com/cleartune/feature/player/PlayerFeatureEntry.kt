@@ -87,6 +87,7 @@ data class PlayerFeatureDependencies(
     val observeLyrics: (TrackId) -> Flow<LyricsUiState> = { flowOf(LyricsUiState.Unavailable) },
     val onPlayOccurrence: suspend (QueueItemId) -> Unit = {},
     val onRetry: (suspend (TrackId) -> Unit)? = null,
+    val dynamicBackground: Flow<Boolean> = flowOf(true),
 )
 
 object PlayerFeatureEntry {
@@ -106,6 +107,7 @@ object PlayerFeatureEntry {
         }
         val actions by actionFlow.collectAsState(initial = PlayerTrackActionState())
         val lyrics by lyricsFlow.collectAsState(initial = LyricsUiState.Loading)
+        val dynamicBackground by dependencies.dynamicBackground.collectAsState(initial = true)
         FullPlayerScreen(
             playback = playback,
             queue = queue,
@@ -123,6 +125,7 @@ object PlayerFeatureEntry {
             retryAvailable = trackId != null && dependencies.onRetry != null,
             onRetry = { trackId?.let { dependencies.onRetry?.invoke(it) } },
             onClose = { onNavigate("back") },
+            dynamicBackground = dynamicBackground,
         )
     }
 }
@@ -207,12 +210,21 @@ private fun FullPlayerScreen(
     retryAvailable: Boolean,
     onRetry: suspend () -> Unit,
     onClose: () -> Unit,
+    dynamicBackground: Boolean,
 ) {
     val scope = rememberCoroutineScope()
     var panel by remember { mutableStateOf(PlayerPanel.NOW_PLAYING) }
     val ui = playback.toPlayerUiState(retryAvailable)
     Column(
-        modifier = Modifier.fillMaxSize().padding(ClearTuneDimensions.spacingMd),
+        modifier = Modifier.fillMaxSize()
+            .background(
+                if (dynamicBackground && playback.currentTrack != null) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.18f)
+                } else {
+                    MaterialTheme.colorScheme.background
+                },
+            )
+            .padding(ClearTuneDimensions.spacingMd),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

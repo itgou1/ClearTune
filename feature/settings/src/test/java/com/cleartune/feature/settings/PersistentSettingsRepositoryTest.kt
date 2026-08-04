@@ -113,6 +113,12 @@ class PersistentSettingsRepositoryTest {
         val error = repository.productSettings.first().cleanUpCache as SettingsOperationState.Error
         assertEquals("cleanup failed", error.message)
     }
+
+    @Test
+    fun `licenses row is absent while the action is unavailable`() {
+        assertFalse(licensesAreVisible(SettingsOperationState.Unavailable("not bundled")))
+        assertTrue(licensesAreVisible(SettingsOperationState.Ready))
+    }
 }
 
 private class MapSettingsStorage(

@@ -97,14 +97,23 @@ class WebDavSyncEngine(
             val changed = audio.mapNotNull { entry ->
                 val sourceKey = entry.relativeKey(base)
                 val previous = fingerprintLookup.find(source.id, sourceKey)
-                if (previous == RemoteFingerprint(entry.sizeBytes, entry.etag)) return@mapNotNull null
+                if (previous?.available == true &&
+                    previous.sizeBytes == entry.sizeBytes && previous.etag == entry.etag
+                ) return@mapNotNull null
                 entry to (previous != null)
             }
             if (changed.isNotEmpty()) {
                 val enriched = enrich(source, changed.map { it.first })
                 val tracks = changed.mapIndexed { index, (entry, _) ->
                     val sourceKey = entry.relativeKey(base)
-                    Track(TrackId(stableId("track", source.id.value, sourceKey)), enriched[index].title)
+                    Track(
+                        id = TrackId(stableId("track", source.id.value, sourceKey)),
+                        title = enriched[index].title,
+                        durationMs = enriched[index].durationMs,
+                        artworkRef = enriched[index].artworkRef,
+                        albumTitle = enriched[index].albumTitle,
+                        artistNames = enriched[index].artistNames,
+                    )
                 }
                 val locations = changed.mapIndexed { index, (entry, _) ->
                     val sourceKey = entry.relativeKey(base)
@@ -157,7 +166,13 @@ class WebDavSyncEngine(
     )
 }
 
-data class EnrichedTrackMetadata(val title: String)
+data class EnrichedTrackMetadata(
+    val title: String,
+    val albumTitle: String? = null,
+    val artistNames: List<String> = emptyList(),
+    val durationMs: Long? = null,
+    val artworkRef: String? = null,
+)
 
 fun interface RemoteFingerprintLookup {
     suspend fun find(sourceId: com.cleartune.core.model.SourceId, sourceKey: String): RemoteFingerprint?

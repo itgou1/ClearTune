@@ -16,6 +16,7 @@ android {
 dependencies {
     implementation(projects.core.model)
     implementation(projects.core.contracts)
+    implementation(projects.core.network)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.session)
     implementation(libs.media3.datasource.okhttp)
@@ -23,4 +24,7 @@ dependencies {
     implementation(libs.coroutines.android)
     testImplementation(libs.junit4)
     testImplementation(libs.coroutines.test)
+    testImplementation(platform(libs.okhttp.bom))
+    testImplementation(libs.okhttp)
+    testImplementation(libs.mockwebserver)
 }

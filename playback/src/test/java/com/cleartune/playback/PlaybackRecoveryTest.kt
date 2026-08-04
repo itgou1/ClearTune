@@ -333,6 +333,27 @@ class PlaybackRecoveryTest {
     }
 
     @Test
+    fun `approved category pagination is delegated without resolving every item`() {
+        val calls = mutableListOf<Triple<String, Int, Int>>()
+        val callback = ClearTuneLibrarySessionCallback(
+            catalog = object : LibrarySessionCatalog {
+                override fun children(parentId: String): List<LibraryCatalogTrack> =
+                    error("Unpaged category query must not run")
+                override fun childrenPage(parentId: String, page: Int, pageSize: Int): List<LibraryCatalogTrack> {
+                    calls += Triple(parentId, page, pageSize)
+                    return listOf(catalogTrack().copy(mediaId = "page-$page"))
+                }
+                override fun resolve(mediaId: String): LibraryCatalogTrack? = error("Per-item resolve must not run")
+            },
+        )
+
+        val result = callback.describeChildren("albums", page = 3, pageSize = 25)
+
+        assertEquals(listOf(Triple("albums", 3, 25)), calls)
+        assertEquals(listOf("page-3"), result.map { it.mediaId })
+    }
+
+    @Test
     fun `library metadata sanitizes title artist album and artwork`() {
         val metadata = MediaItemFactory.sanitizeMetadata(
             title = " \u0000Song\n ",
