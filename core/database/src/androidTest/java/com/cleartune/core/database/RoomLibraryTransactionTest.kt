@@ -32,6 +32,7 @@ class RoomLibraryTransactionTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         database = Room.inMemoryDatabaseBuilder(context, ClearTuneDatabase::class.java)
             .allowMainThreadQueries()
+            .addCallback(ClearTuneDatabase.LOCAL_SOURCE_CALLBACK)
             .build()
         repository = RoomLibraryRepository(database)
     }
@@ -53,6 +54,36 @@ class RoomLibraryTransactionTest {
         assertEquals(1, first.inserted)
         assertEquals(0, second.updated)
         assertEquals(100L, database.libraryReadDao().track(repository.observeSongs().first().single().id.value)?.addedAtEpochMs)
+        assertEquals(1, database.libraryWriteDao().latestSyncSession()?.processed)
+    }
+
+    @Test
+    fun version_one_contains_product_tables_and_creates_local_source_once() = runBlocking {
+        val cursor = database.openHelper.writableDatabase.query(
+            "SELECT name FROM sqlite_master WHERE type = 'table'",
+        )
+        val tables = buildSet {
+            cursor.use {
+                while (it.moveToNext()) add(it.getString(0))
+            }
+        }
+
+        assertEquals(
+            true,
+            tables.containsAll(
+                setOf(
+                    "playlists",
+                    "playlist_tracks",
+                    "playback_history",
+                    "downloads",
+                    "playback_queues",
+                    "playback_queue_items",
+                    "playback_state",
+                    "sync_sessions",
+                ),
+            ),
+        )
+        assertEquals("本地音乐", database.sourceDao().source(SOURCE.value)?.name)
     }
 
     @Test

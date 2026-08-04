@@ -57,3 +57,16 @@ object SourceSnapshotPlanner {
         .distinct()
         .sorted()
 }
+
+fun missingSourceKeys(existing: List<String>, retained: Collection<String>): Set<String> {
+    if (existing.isEmpty()) return emptySet()
+    val retainedSet = retained.toHashSet()
+    return existing.filterTo(linkedSetOf()) { it !in retainedSet }
+}
+
+fun ftsMatchQuery(userText: String): String? = userText
+    .trim()
+    .split(Regex("\\s+"))
+    .filter(String::isNotBlank)
+    .takeIf(List<String>::isNotEmpty)
+    ?.joinToString(" AND ") { term -> "\"${term.replace("\"", "\"\"")}\"*" }

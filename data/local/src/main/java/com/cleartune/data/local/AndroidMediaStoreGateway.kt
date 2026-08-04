@@ -17,6 +17,8 @@ class AndroidMediaStoreGateway(
     override suspend fun readAudio(): MediaStoreReadResult = withContext(Dispatchers.IO) {
         val snapshots = mutableListOf<LocalAudioSnapshot>()
         val warnings = mutableListOf<String>()
+        val observedSourceKeys = linkedSetOf<String>()
+        var isComplete = true
         val projection = buildList {
             add(MediaStore.Audio.Media._ID)
             add(MediaStore.Audio.Media.DISPLAY_NAME)
@@ -29,13 +31,18 @@ class AndroidMediaStoreGateway(
             add(MediaStore.Audio.Media.MIME_TYPE)
             if (sdkInt >= 29) add(MediaStore.Audio.Media.RELATIVE_PATH) else add(MediaStore.Audio.Media.DATA)
         }.toTypedArray()
-        contentResolver.query(
+        val cursor = contentResolver.query(
             collectionUri,
             projection,
             "${MediaStore.Audio.Media.IS_MUSIC} != 0",
             null,
             "${MediaStore.Audio.Media.DATE_MODIFIED} DESC",
-        )?.use { cursor ->
+        ) ?: return@withContext MediaStoreReadResult(
+            snapshots = emptyList(),
+            warnings = listOf("MediaStore query returned no cursor"),
+            isComplete = false,
+        )
+        cursor.use {
             while (cursor.moveToNext()) {
                 try {
                     val row = MediaStoreRow(
@@ -51,16 +58,24 @@ class AndroidMediaStoreGateway(
                         modifiedEpochSeconds = cursor.longOrNull(MediaStore.Audio.Media.DATE_MODIFIED) ?: 0,
                         mimeType = cursor.stringOrNull(MediaStore.Audio.Media.MIME_TYPE),
                     )
-                    mapper.map(row)?.let(snapshots::add)
-                        ?: warnings.add("Skipped unsupported or malformed row: ${row.id}")
+                    mapper.map(row)?.let { snapshot ->
+                        snapshots.add(snapshot)
+                        observedSourceKeys.add(snapshot.sourceKey)
+                    } ?: run {
+                        if (mapper.shouldRetainPreviousOnMappingFailure(row)) {
+                            observedSourceKeys.add("mediastore:${row.id}")
+                        }
+                        warnings.add("Skipped unsupported or malformed row: ${row.id}")
+                    }
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (failure: RuntimeException) {
+                    isComplete = false
                     warnings.add("Skipped malformed MediaStore row: ${failure.javaClass.simpleName}")
                 }
             }
         }
-        MediaStoreReadResult(snapshots, warnings)
+        MediaStoreReadResult(snapshots, warnings, observedSourceKeys, isComplete)
     }
 }
 

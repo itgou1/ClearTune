@@ -1,6 +1,8 @@
 package com.cleartune.feature.library
 
 import com.cleartune.core.model.LibraryHome
+import com.cleartune.core.model.Album
+import com.cleartune.core.model.Artist
 import com.cleartune.core.model.TrackSummary
 
 object LibraryRoutes {
@@ -8,6 +10,8 @@ object LibraryRoutes {
     const val songs = "library/songs"
     const val albums = "library/albums"
     const val artists = "library/artists"
+    const val albumDetail = "library/albums/detail"
+    const val artistDetail = "library/artists/detail"
     const val folders = "library/folders"
     const val search = "library/search"
     const val playlists = "playlists"
@@ -15,7 +19,7 @@ object LibraryRoutes {
     const val settings = "settings"
 }
 
-enum class LocalAccessUiState { NOT_REQUESTED, GRANTED, DENIED, UNAVAILABLE }
+enum class LocalAccessUiState { NOT_REQUESTED, GRANTED, DENIED_CAN_ASK, DENIED_PERMANENTLY, UNAVAILABLE }
 
 sealed interface LibrarySyncUiState {
     data object Idle : LibrarySyncUiState
@@ -23,7 +27,7 @@ sealed interface LibrarySyncUiState {
     data class Failed(val message: String) : LibrarySyncUiState
 }
 
-enum class LibraryEmptyReason { READY_TO_SCAN, PERMISSION_REQUIRED, NO_RESULTS }
+enum class LibraryEmptyReason { READY_TO_SCAN, PERMISSION_REQUIRED, LOCAL_UNAVAILABLE, NO_RESULTS }
 
 data class LibraryCategoryUi(
     val id: String,
@@ -37,6 +41,7 @@ data class LibraryHomeUiState(
     val recentAdded: List<TrackSummary>,
     val recentPlayed: List<TrackSummary>,
     val emptyReason: LibraryEmptyReason?,
+    val isSyncing: Boolean,
     val syncProgress: Float?,
     val inlineMessage: String?,
     val showScanAction: Boolean,
@@ -53,7 +58,9 @@ object LibraryUiStateFactory {
         val isEmpty = home.songCount == 0
         val emptyReason = when {
             !isEmpty -> null
-            localAccess == LocalAccessUiState.DENIED -> LibraryEmptyReason.PERMISSION_REQUIRED
+            localAccess == LocalAccessUiState.DENIED_CAN_ASK ||
+                localAccess == LocalAccessUiState.DENIED_PERMANENTLY -> LibraryEmptyReason.PERMISSION_REQUIRED
+            localAccess == LocalAccessUiState.UNAVAILABLE -> LibraryEmptyReason.LOCAL_UNAVAILABLE
             else -> LibraryEmptyReason.READY_TO_SCAN
         }
         return LibraryHomeUiState(
@@ -68,12 +75,17 @@ object LibraryUiStateFactory {
             recentAdded = home.recentAdded.take(4),
             recentPlayed = home.recentPlayed,
             emptyReason = emptyReason,
+            isSyncing = sync is LibrarySyncUiState.Running,
             syncProgress = (sync as? LibrarySyncUiState.Running)?.let { running ->
                 if (running.total > 0) running.processed.toFloat() / running.total else null
             },
             inlineMessage = (sync as? LibrarySyncUiState.Failed)?.message,
-            showScanAction = isEmpty && localAccess != LocalAccessUiState.DENIED,
-            showOpenSettingsAction = isEmpty && localAccess == LocalAccessUiState.DENIED,
+            showScanAction = isEmpty && localAccess in setOf(
+                LocalAccessUiState.NOT_REQUESTED,
+                LocalAccessUiState.GRANTED,
+                LocalAccessUiState.DENIED_CAN_ASK,
+            ),
+            showOpenSettingsAction = isEmpty && localAccess == LocalAccessUiState.DENIED_PERMANENTLY,
             showAddWebDavAction = isEmpty,
         )
     }
@@ -88,6 +100,13 @@ data class LibraryFolderUi(
 data class LibraryFeatureUiInputs(
     val localAccess: LocalAccessUiState = LocalAccessUiState.NOT_REQUESTED,
     val sync: LibrarySyncUiState = LibrarySyncUiState.Idle,
+    val albums: List<Album> = emptyList(),
+    val artists: List<Artist> = emptyList(),
+    val selectedAlbum: Album? = null,
+    val selectedArtist: Artist? = null,
+    val albumTracks: List<TrackSummary> = emptyList(),
+    val artistTracks: List<TrackSummary> = emptyList(),
+    val artistAlbums: List<Album> = emptyList(),
     val folders: List<LibraryFolderUi> = emptyList(),
     val folderTracks: List<TrackSummary> = emptyList(),
     val selectedFolder: String? = null,
@@ -96,5 +115,7 @@ data class LibraryFeatureUiInputs(
     val onOpenSystemSettings: () -> Unit = {},
     val onAddWebDav: () -> Unit = {},
     val onOpenFolder: (String) -> Unit = {},
+    val onOpenAlbum: (Album) -> Unit = {},
+    val onOpenArtist: (Artist) -> Unit = {},
     val onTrackMore: ((TrackSummary) -> Unit)? = null,
 )

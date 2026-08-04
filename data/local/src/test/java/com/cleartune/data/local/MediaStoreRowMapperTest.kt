@@ -56,6 +56,12 @@ class MediaStoreRowMapperTest {
     }
 
     @Test
+    fun legacy_removable_volume_mount_is_not_exposed_as_part_of_the_folder() {
+        assertEquals("Music/Jazz", normalizeFolder("/storage/1234-5678/Music/Jazz/"))
+        assertEquals("Music/Jazz", normalizeFolder("/mnt/media_rw/1234-5678/Music/Jazz/"))
+    }
+
+    @Test
     fun unsupported_extension_and_mime_are_rejected() {
         assertNull(
             mapper.map(

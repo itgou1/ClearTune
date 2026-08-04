@@ -38,6 +38,7 @@ import com.cleartune.core.model.TrackSummary
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOf
 
 interface LibrarySnapshotStore {
     suspend fun applyLocalSnapshot(
@@ -45,6 +46,8 @@ interface LibrarySnapshotStore {
         sourceName: String,
         records: List<LibraryIngestRecord>,
         syncedAtEpochMs: Long,
+        warningCount: Int = 0,
+        retainedSourceKeys: Set<String> = records.mapTo(linkedSetOf(), LibraryIngestRecord::sourceKey),
     ): MutationResult
 }
 
@@ -115,17 +118,22 @@ class RoomLibraryRepository(
         rows.filter { it.albumId == albumId.value }.map(LibraryTrackRow::toTrackSummary)
     }
 
-    override fun search(query: String): Flow<SearchResults> = combine(
-        readDao.observeTrackRows(),
-        readDao.observeAlbums(),
-        readDao.observeArtists(),
-    ) { tracks, albums, artists ->
+    override fun search(query: String): Flow<SearchResults> {
         val needle = query.trim()
-        SearchResults(
-            songs = tracks.filter { row -> needle.isBlank() || listOf(row.title, row.albumTitle, row.artistNames).filterNotNull().any { it.contains(needle, true) } }.map(LibraryTrackRow::toTrackSummary),
-            albums = albums.filter { needle.isBlank() || it.title.contains(needle, true) }.map(AlbumRow::toDomain),
-            artists = artists.filter { needle.isBlank() || it.name.contains(needle, true) }.map(ArtistRow::toDomain),
-        )
+        val matchQuery = ftsMatchQuery(needle) ?: return flowOf(SearchResults())
+        return combine(
+            readDao.observeTrackRows(),
+            readDao.observeAlbums(),
+            readDao.observeArtists(),
+            readDao.observeSearchTrackIds(matchQuery),
+        ) { tracks, albums, artists, matchingTrackIds ->
+            val matchingIds = matchingTrackIds.toHashSet()
+            SearchResults(
+                songs = tracks.filter { it.trackId in matchingIds }.map(LibraryTrackRow::toTrackSummary),
+                albums = albums.filter { it.title.contains(needle, true) }.map(AlbumRow::toDomain),
+                artists = artists.filter { it.name.contains(needle, true) }.map(ArtistRow::toDomain),
+            )
+        }
     }
 
     override suspend fun applyLibraryMutation(mutation: LibraryMutation): MutationResult = writeDao.applyMutation(mutation)
@@ -174,7 +182,16 @@ class RoomLibraryRepository(
         sourceName: String,
         records: List<LibraryIngestRecord>,
         syncedAtEpochMs: Long,
-    ): MutationResult = writeDao.applySourceSnapshot(sourceId, sourceName, records, syncedAtEpochMs)
+        warningCount: Int,
+        retainedSourceKeys: Set<String>,
+    ): MutationResult = writeDao.applySourceSnapshot(
+        sourceId,
+        sourceName,
+        records,
+        syncedAtEpochMs,
+        warningCount,
+        retainedSourceKeys,
+    )
 
     override fun observeAlbums(): Flow<List<AlbumRow>> = readDao.observeAlbums()
     override fun observeArtists(): Flow<List<ArtistRow>> = readDao.observeArtists()

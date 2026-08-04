@@ -48,6 +48,8 @@ data class MediaStoreRow(
 data class MediaStoreReadResult(
     val snapshots: List<LocalAudioSnapshot>,
     val warnings: List<String> = emptyList(),
+    val observedSourceKeys: Set<String> = snapshots.mapTo(linkedSetOf(), LocalAudioSnapshot::sourceKey),
+    val isComplete: Boolean = true,
 )
 
 fun interface MediaStoreGateway {

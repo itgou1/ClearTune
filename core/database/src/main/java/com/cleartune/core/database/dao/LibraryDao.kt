@@ -7,9 +7,11 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
 import com.cleartune.core.database.SourceSnapshotPlanner
+import com.cleartune.core.database.missingSourceKeys
 import com.cleartune.core.database.entity.AlbumEntity
 import com.cleartune.core.database.entity.ArtistEntity
 import com.cleartune.core.database.entity.MusicSourceEntity
+import com.cleartune.core.database.entity.SyncSessionEntity
 import com.cleartune.core.database.entity.TrackArtistCrossRef
 import com.cleartune.core.database.entity.TrackEntity
 import com.cleartune.core.database.entity.TrackLocationEntity
@@ -68,6 +70,9 @@ interface LibraryReadDao {
     @Query("SELECT a.id AS artistId, a.name FROM artists a WHERE EXISTS (SELECT 1 FROM track_artists ta INNER JOIN track_locations l ON l.trackId = ta.trackId WHERE ta.artistId = a.id AND l.available = 1) ORDER BY a.name COLLATE NOCASE")
     fun observeArtists(): Flow<List<ArtistRow>>
 
+    @Query("SELECT trackId FROM track_search_fts WHERE track_search_fts MATCH :matchQuery")
+    fun observeSearchTrackIds(matchQuery: String): Flow<List<String>>
+
     @Query("SELECT relativeFolder, COUNT(DISTINCT trackId) AS trackCount FROM track_locations WHERE available = 1 AND relativeFolder != '' GROUP BY relativeFolder ORDER BY relativeFolder COLLATE NOCASE")
     fun observeFolders(): Flow<List<FolderRow>>
 
@@ -101,6 +106,12 @@ abstract class LibraryWriteDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertSearch(search: TrackSearchFtsEntity)
 
+    @Upsert
+    abstract suspend fun upsertSyncSession(session: SyncSessionEntity)
+
+    @Query("SELECT * FROM sync_sessions ORDER BY completedAtEpochMs DESC LIMIT 1")
+    abstract suspend fun latestSyncSession(): SyncSessionEntity?
+
     @Query("DELETE FROM track_artists WHERE trackId = :trackId")
     abstract suspend fun deleteTrackArtists(trackId: String)
 
@@ -122,8 +133,8 @@ abstract class LibraryWriteDao {
     @Query("SELECT sourceKey FROM track_locations WHERE sourceId = :sourceId")
     abstract suspend fun sourceKeys(sourceId: String): List<String>
 
-    @Query("DELETE FROM track_locations WHERE sourceId = :sourceId AND sourceKey NOT IN (:retainedKeys)")
-    abstract suspend fun deleteMissingLocations(sourceId: String, retainedKeys: List<String>): Int
+    @Query("DELETE FROM track_locations WHERE sourceId = :sourceId AND sourceKey IN (:sourceKeys)")
+    abstract suspend fun deleteSourceKeys(sourceId: String, sourceKeys: List<String>): Int
 
     @Query("DELETE FROM track_locations WHERE sourceId = :sourceId")
     abstract suspend fun deleteAllSourceLocations(sourceId: String): Int
@@ -137,6 +148,8 @@ abstract class LibraryWriteDao {
         sourceName: String,
         records: List<LibraryIngestRecord>,
         syncedAtEpochMs: Long,
+        warningCount: Int = 0,
+        retainedSourceKeys: Set<String> = records.mapTo(linkedSetOf(), LibraryIngestRecord::sourceKey),
     ): MutationResult {
         upsertSource(
             MusicSourceEntity(
@@ -216,13 +229,24 @@ abstract class LibraryWriteDao {
             )
             if (existing == null || existingTrack == null) inserted++ else updated++
         }
-        val retainedKeys = records.map(LibraryIngestRecord::sourceKey)
-        val removed = if (retainedKeys.isEmpty()) {
-            deleteAllSourceLocations(sourceId.value)
-        } else {
-            deleteMissingLocations(sourceId.value, retainedKeys)
-        }
+        val removed = deleteMissingSourceKeys(
+            sourceId = sourceId.value,
+            retainedKeys = retainedSourceKeys,
+        )
         deleteOrphanTracks()
+        upsertSyncSession(
+            SyncSessionEntity(
+                id = "${sourceId.value}:$syncedAtEpochMs",
+                sourceId = sourceId.value,
+                startedAtEpochMs = syncedAtEpochMs,
+                completedAtEpochMs = syncedAtEpochMs,
+                phase = "COMPLETED",
+                processed = records.size,
+                total = records.size,
+                warningCount = warningCount,
+                errorMessage = null,
+            ),
+        )
         return MutationResult(inserted = inserted, updated = updated, removed = removed)
     }
 
@@ -262,13 +286,18 @@ abstract class LibraryWriteDao {
             MutationResult(inserted = mutation.tracks.size)
         }
         is LibraryMutation.RetainSourceKeys -> {
-            val removed = if (mutation.retainedSourceKeys.isEmpty()) {
-                deleteAllSourceLocations(mutation.sourceId.value)
-            } else {
-                deleteMissingLocations(mutation.sourceId.value, mutation.retainedSourceKeys.toList())
-            }
+            val removed = deleteMissingSourceKeys(mutation.sourceId.value, mutation.retainedSourceKeys)
             deleteOrphanTracks()
             MutationResult(removed = removed)
         }
+    }
+
+    private suspend fun deleteMissingSourceKeys(sourceId: String, retainedKeys: Collection<String>): Int =
+        missingSourceKeys(sourceKeys(sourceId), retainedKeys)
+            .chunked(SQLITE_SAFE_BATCH_SIZE)
+            .sumOf { keys -> deleteSourceKeys(sourceId, keys) }
+
+    private companion object {
+        const val SQLITE_SAFE_BATCH_SIZE = 400
     }
 }

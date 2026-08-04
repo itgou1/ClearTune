@@ -46,8 +46,24 @@ object LibraryFeatureEntry {
         when (route) {
             LibraryRoutes.root -> Content(dependencies, onNavigate, uiInputs)
             LibraryRoutes.songs -> SongsScreen(dependencies, onBack, uiInputs.onTrackMore)
-            LibraryRoutes.albums -> AlbumsScreen(dependencies, onBack)
-            LibraryRoutes.artists -> ArtistsScreen(dependencies, onBack)
+            LibraryRoutes.albums -> AlbumsScreen(uiInputs.albums, onBack, uiInputs.onOpenAlbum)
+            LibraryRoutes.artists -> ArtistsScreen(uiInputs.artists, onBack, uiInputs.onOpenArtist)
+            LibraryRoutes.albumDetail -> AlbumDetailScreen(
+                dependencies,
+                uiInputs.selectedAlbum,
+                uiInputs.albumTracks,
+                onBack,
+                uiInputs.onTrackMore,
+            )
+            LibraryRoutes.artistDetail -> ArtistDetailScreen(
+                dependencies,
+                uiInputs.selectedArtist,
+                uiInputs.artistTracks,
+                uiInputs.artistAlbums,
+                onBack,
+                uiInputs.onOpenAlbum,
+                uiInputs.onTrackMore,
+            )
             LibraryRoutes.folders -> FoldersScreen(
                 dependencies = dependencies,
                 folders = uiInputs.folders,
@@ -57,7 +73,13 @@ object LibraryFeatureEntry {
                 onOpenFolder = uiInputs.onOpenFolder,
                 onTrackMore = uiInputs.onTrackMore,
             )
-            LibraryRoutes.search -> SearchScreen(dependencies, onBack, uiInputs.onTrackMore)
+            LibraryRoutes.search -> SearchScreen(
+                dependencies,
+                onBack,
+                uiInputs.onTrackMore,
+                uiInputs.onOpenAlbum,
+                uiInputs.onOpenArtist,
+            )
             else -> Content(dependencies, onNavigate, uiInputs)
         }
     }

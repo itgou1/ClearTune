@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,11 +84,13 @@ fun LibraryHomeScreen(
                 TextButton(onClick = { onNavigate(LibraryRoutes.search) }) { Text("搜索") }
                 TextButton(onClick = { onNavigate(LibraryRoutes.settings) }) { Text("设置") }
             }
-            state.syncProgress?.let { progress ->
-                LinearProgressIndicator(
-                    progress = { progress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            if (state.isSyncing) {
+                state.syncProgress?.let { progress ->
+                    LinearProgressIndicator(
+                        progress = { progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
             }
             state.inlineMessage?.let { message ->
@@ -141,7 +144,10 @@ fun LibraryHomeScreen(
             }
             item {
                 SectionTitle("音乐来源")
-                Text("本地音乐 · WebDAV", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("本地音乐 · WebDAV", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onRefresh) { Text("刷新") }
+                }
             }
         }
     }
@@ -153,7 +159,7 @@ fun SongsScreen(
     onBack: () -> Unit,
     onTrackMore: ((TrackSummary) -> Unit)? = null,
 ) {
-    var sort by remember { mutableStateOf(SongSort.TITLE) }
+    var sort by rememberSaveable { mutableStateOf(SongSort.TITLE) }
     val songs by remember(sort) { dependencies.libraryRepository.observeSongs(SongQuery(sort = sort)) }
         .collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
@@ -181,21 +187,19 @@ fun SongsScreen(
 }
 
 @Composable
-fun AlbumsScreen(dependencies: LibraryFeatureDependencies, onBack: () -> Unit) {
-    val results by dependencies.libraryRepository.search("").collectAsState(initial = SearchResults())
+fun AlbumsScreen(albums: List<Album>, onBack: () -> Unit, onOpenAlbum: (Album) -> Unit) {
     Column(Modifier.fillMaxSize()) {
         SecondaryHeader("专辑", onBack)
-        if (results.albums.isEmpty()) EmptyListMessage("还没有专辑") else AlbumGrid(results.albums)
+        if (albums.isEmpty()) EmptyListMessage("还没有专辑") else AlbumGrid(albums, onOpenAlbum)
     }
 }
 
 @Composable
-fun ArtistsScreen(dependencies: LibraryFeatureDependencies, onBack: () -> Unit) {
-    val results by dependencies.libraryRepository.search("").collectAsState(initial = SearchResults())
+fun ArtistsScreen(artists: List<Artist>, onBack: () -> Unit, onOpenArtist: (Artist) -> Unit) {
     Column(Modifier.fillMaxSize()) {
         SecondaryHeader("歌手", onBack)
-        if (results.artists.isEmpty()) EmptyListMessage("还没有歌手") else LazyColumn {
-            items(results.artists, key = { it.id.value }) { artist -> ArtistRow(artist) }
+        if (artists.isEmpty()) EmptyListMessage("还没有歌手") else LazyColumn {
+            items(artists, key = { it.id.value }) { artist -> ArtistRow(artist) { onOpenArtist(artist) } }
         }
     }
 }
@@ -261,8 +265,10 @@ fun SearchScreen(
     dependencies: LibraryFeatureDependencies,
     onBack: () -> Unit,
     onTrackMore: ((TrackSummary) -> Unit)? = null,
+    onOpenAlbum: (Album) -> Unit = {},
+    onOpenArtist: (Artist) -> Unit = {},
 ) {
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
     val results by remember(query) { dependencies.libraryRepository.search(query.trim()) }
         .collectAsState(initial = SearchResults())
     val scope = rememberCoroutineScope()
@@ -290,10 +296,89 @@ fun SearchScreen(
                     )
                 }
                 if (results.albums.isNotEmpty()) item { SearchSectionLabel("专辑") }
-                items(results.albums, key = { "album-${it.id.value}" }) { album -> CompactAlbumRow(album) }
+                items(results.albums, key = { "album-${it.id.value}" }) { album ->
+                    CompactAlbumRow(album) { onOpenAlbum(album) }
+                }
                 if (results.artists.isNotEmpty()) item { SearchSectionLabel("歌手") }
-                items(results.artists, key = { "artist-${it.id.value}" }) { artist -> ArtistRow(artist) }
+                items(results.artists, key = { "artist-${it.id.value}" }) { artist ->
+                    ArtistRow(artist) { onOpenArtist(artist) }
+                }
             }
+        }
+    }
+}
+
+@Composable
+fun AlbumDetailScreen(
+    dependencies: LibraryFeatureDependencies,
+    album: Album?,
+    tracks: List<TrackSummary>,
+    onBack: () -> Unit,
+    onTrackMore: ((TrackSummary) -> Unit)? = null,
+) {
+    val scope = rememberCoroutineScope()
+    Column(Modifier.fillMaxSize()) {
+        SecondaryHeader(album?.title ?: "专辑", onBack)
+        if (album == null) {
+            EmptyListMessage("专辑不可用")
+            return@Column
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth().padding(20.dp)) {
+            CoverPlaceholder(Modifier.size(220.dp))
+            Text(album.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp))
+            Text("${tracks.size} 首", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (tracks.isNotEmpty()) {
+                Button(onClick = { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(tracks.first().id)) } }) {
+                    Text("播放")
+                }
+            }
+        }
+        LazyColumn {
+            items(tracks, key = { it.id.value }) { track ->
+                TrackRow(
+                    track,
+                    { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(track.id)) } },
+                    onTrackMore?.let { action -> { action(track) } },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ArtistDetailScreen(
+    dependencies: LibraryFeatureDependencies,
+    artist: Artist?,
+    tracks: List<TrackSummary>,
+    albums: List<Album>,
+    onBack: () -> Unit,
+    onOpenAlbum: (Album) -> Unit,
+    onTrackMore: ((TrackSummary) -> Unit)? = null,
+) {
+    val scope = rememberCoroutineScope()
+    if (artist == null) {
+        Column(Modifier.fillMaxSize()) { SecondaryHeader("歌手", onBack); EmptyListMessage("歌手不可用") }
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { SecondaryHeader(artist.name, onBack) }
+        item {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth().padding(20.dp)) {
+                ArtistAvatar(artist.id, artist.name, Modifier.size(132.dp))
+                Text(artist.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
+            }
+        }
+        if (tracks.isNotEmpty()) item { SearchSectionLabel("热门歌曲") }
+        items(tracks, key = { "artist-track-${it.id.value}" }) { track ->
+            TrackRow(
+                track,
+                { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(track.id)) } },
+                onTrackMore?.let { action -> { action(track) } },
+            )
+        }
+        if (albums.isNotEmpty()) item { SearchSectionLabel("专辑") }
+        items(albums, key = { "artist-album-${it.id.value}" }) { album ->
+            CompactAlbumRow(album) { onOpenAlbum(album) }
         }
     }
 }
@@ -346,8 +431,11 @@ private fun EmptyLibrary(
         Spacer(Modifier.height(18.dp))
         Text("开始建立你的资料库", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Text(
-            if (reason == LibraryEmptyReason.PERMISSION_REQUIRED) "本地音频权限已关闭，你仍然可以使用 WebDAV。"
-            else "扫描设备音乐，或连接你的 WebDAV 音乐库。",
+            when (reason) {
+                LibraryEmptyReason.PERMISSION_REQUIRED -> "本地音频权限未开启，你仍然可以使用 WebDAV。"
+                LibraryEmptyReason.LOCAL_UNAVAILABLE -> "当前设备不支持本地扫描，你仍然可以使用 WebDAV。"
+                else -> "扫描设备音乐，或连接你的 WebDAV 音乐库。"
+            },
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp, bottom = 18.dp),
         )
@@ -423,7 +511,7 @@ private fun TrackRow(track: TrackSummary, onClick: () -> Unit, onMore: (() -> Un
 }
 
 @Composable
-private fun AlbumGrid(albums: List<Album>) {
+private fun AlbumGrid(albums: List<Album>, onOpenAlbum: (Album) -> Unit) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(148.dp),
         contentPadding = PaddingValues(20.dp),
@@ -431,7 +519,7 @@ private fun AlbumGrid(albums: List<Album>) {
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         items(albums, key = { it.id.value }) { album ->
-            Column {
+            Column(Modifier.clickable { onOpenAlbum(album) }) {
                 CoverPlaceholder(Modifier.fillMaxWidth().aspectRatio(1f))
                 Text(album.title, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
                 Text("专辑", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -441,8 +529,8 @@ private fun AlbumGrid(albums: List<Album>) {
 }
 
 @Composable
-private fun CompactAlbumRow(album: Album) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+private fun CompactAlbumRow(album: Album, onClick: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp)) {
         CoverPlaceholder(Modifier.size(48.dp))
         Spacer(Modifier.width(12.dp))
         Text(album.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -450,8 +538,8 @@ private fun CompactAlbumRow(album: Album) {
 }
 
 @Composable
-private fun ArtistRow(artist: Artist) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 9.dp)) {
+private fun ArtistRow(artist: Artist, onClick: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 9.dp)) {
         ArtistAvatar(artist.id, artist.name, Modifier.size(52.dp))
         Spacer(Modifier.width(14.dp))
         Text(artist.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))

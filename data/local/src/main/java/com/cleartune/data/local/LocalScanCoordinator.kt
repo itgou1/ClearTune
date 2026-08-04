@@ -38,6 +38,15 @@ class LocalScanCoordinator(
         try {
             mutableState.value = LocalScanState(phase = LocalScanPhase.READING)
             val readResult = gateway.readAudio()
+            if (!readResult.isComplete) {
+                val message = readResult.warnings.firstOrNull() ?: "MediaStore read was incomplete"
+                mutableState.value = LocalScanState(phase = LocalScanPhase.FAILED, errorMessage = message)
+                return@withLock LocalScanResult(
+                    outcome = LocalScanOutcome.FAILED,
+                    warnings = readResult.warnings,
+                    errorMessage = message,
+                )
+            }
             val prepared = scanEngine.diff(emptyList(), readResult.snapshots)
             val warnings = readResult.warnings + prepared.warnings
             mutableState.value = LocalScanState(
@@ -52,6 +61,8 @@ class LocalScanCoordinator(
                 sourceName = sourceName,
                 records = prepared.accepted.map { snapshot -> snapshot.toIngestRecord(now) },
                 syncedAtEpochMs = now,
+                warningCount = warnings.size,
+                retainedSourceKeys = readResult.observedSourceKeys + prepared.accepted.map(LocalAudioSnapshot::sourceKey),
             )
             mutableState.value = LocalScanState(
                 phase = LocalScanPhase.COMPLETED,

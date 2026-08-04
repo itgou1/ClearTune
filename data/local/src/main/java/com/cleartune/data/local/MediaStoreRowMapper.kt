@@ -27,6 +27,9 @@ class MediaStoreRowMapper {
         )
     }
 
+    fun shouldRetainPreviousOnMappingFailure(row: MediaStoreRow): Boolean =
+        row.id >= 0 && row.mimeType?.substringBefore(';')?.trim()?.startsWith("audio/", ignoreCase = true) == true
+
     private fun isSupported(displayName: String, mimeType: String?): Boolean {
         val extension = displayName.substringAfterLast('.', "").lowercase()
         val normalizedMime = mimeType?.substringBefore(';')?.trim()?.lowercase()
@@ -62,6 +65,13 @@ internal fun normalizeFolder(value: String?): String {
     val storagePrefixes = listOf("storage/emulated/0/", "sdcard/")
     storagePrefixes.firstOrNull { normalized.startsWith(it, ignoreCase = true) }?.let { prefix ->
         normalized = normalized.drop(prefix.length)
+    }
+    val segments = normalized.split('/')
+    normalized = when {
+        segments.size >= 3 && segments[0].equals("storage", ignoreCase = true) -> segments.drop(2).joinToString("/")
+        segments.size >= 4 && segments[0].equals("mnt", ignoreCase = true) &&
+            segments[1].equals("media_rw", ignoreCase = true) -> segments.drop(3).joinToString("/")
+        else -> normalized
     }
     return normalized.trim('/')
 }

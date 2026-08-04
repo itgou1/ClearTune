@@ -26,6 +26,7 @@ class LocalScanCoordinatorTest {
         assertEquals(1, store.records.size)
         assertEquals("本地音乐", store.sourceName)
         assertEquals(1234L, store.syncedAtEpochMs)
+        assertEquals(1, store.warningCount)
         assertEquals(1, result.mutation.inserted)
         assertEquals(listOf("one malformed row"), result.warnings)
     }
@@ -49,6 +50,41 @@ class LocalScanCoordinatorTest {
         assertEquals(0, store.applyCount)
     }
 
+    @Test
+    fun incomplete_read_fails_without_applying_an_authoritative_empty_snapshot() = runTest {
+        val store = RecordingSnapshotStore()
+        val coordinator = LocalScanCoordinator(
+            gateway = MediaStoreGateway {
+                MediaStoreReadResult(emptyList(), listOf("MediaStore query returned no cursor"), isComplete = false)
+            },
+            snapshotStore = store,
+        )
+
+        val result = coordinator.scan(permissionGranted = true)
+
+        assertEquals(LocalScanOutcome.FAILED, result.outcome)
+        assertEquals(0, store.applyCount)
+    }
+
+    @Test
+    fun observed_but_unmapped_rows_are_retained_during_a_complete_scan() = runTest {
+        val store = RecordingSnapshotStore()
+        val coordinator = LocalScanCoordinator(
+            gateway = MediaStoreGateway {
+                MediaStoreReadResult(
+                    snapshots = listOf(snapshot("mediastore:1")),
+                    warnings = listOf("one malformed row"),
+                    observedSourceKeys = setOf("mediastore:1", "mediastore:2"),
+                )
+            },
+            snapshotStore = store,
+        )
+
+        coordinator.scan(permissionGranted = true)
+
+        assertEquals(setOf("mediastore:1", "mediastore:2"), store.retainedSourceKeys)
+    }
+
     private fun snapshot(sourceKey: String) = LocalAudioSnapshot(
         sourceKey = sourceKey,
         contentUri = "content://$sourceKey",
@@ -68,17 +104,23 @@ private class RecordingSnapshotStore : LibrarySnapshotStore {
     var records = emptyList<LibraryIngestRecord>()
     var sourceName = ""
     var syncedAtEpochMs = -1L
+    var warningCount = -1
+    var retainedSourceKeys = emptySet<String>()
 
     override suspend fun applyLocalSnapshot(
         sourceId: SourceId,
         sourceName: String,
         records: List<LibraryIngestRecord>,
         syncedAtEpochMs: Long,
+        warningCount: Int,
+        retainedSourceKeys: Set<String>,
     ): MutationResult {
         applyCount++
         this.sourceName = sourceName
         this.records = records
         this.syncedAtEpochMs = syncedAtEpochMs
+        this.warningCount = warningCount
+        this.retainedSourceKeys = retainedSourceKeys
         return MutationResult(inserted = records.size)
     }
 }

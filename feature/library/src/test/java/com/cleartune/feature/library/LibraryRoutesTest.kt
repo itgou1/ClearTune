@@ -11,5 +11,7 @@ class LibraryRoutesTest {
         assertEquals("library/artists", LibraryRoutes.artists)
         assertEquals("library/folders", LibraryRoutes.folders)
         assertEquals("library/search", LibraryRoutes.search)
+        assertEquals("library/albums/detail", LibraryRoutes.albumDetail)
+        assertEquals("library/artists/detail", LibraryRoutes.artistDetail)
     }
 }
