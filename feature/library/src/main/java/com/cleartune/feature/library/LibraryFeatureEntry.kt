@@ -7,6 +7,9 @@ import androidx.compose.runtime.remember
 import com.cleartune.core.contracts.LibraryRepository
 import com.cleartune.core.contracts.PlaybackGateway
 import com.cleartune.core.contracts.PlaylistRepository
+import com.cleartune.core.contracts.QueueRepository
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.cleartune.core.model.LibraryHome
 
 data class LibraryFeatureDependencies(
@@ -14,6 +17,8 @@ data class LibraryFeatureDependencies(
     val libraryBrowsePort: LibraryBrowsePort,
     val playbackGateway: PlaybackGateway,
     val playlistRepository: PlaylistRepository,
+    val queueRepository: QueueRepository? = null,
+    val onQueueChanged: suspend () -> Unit = {},
 )
 
 object LibraryFeatureEntry {
@@ -45,12 +50,17 @@ object LibraryFeatureEntry {
         onBack: () -> Unit,
         uiInputs: LibraryFeatureUiInputs = LibraryFeatureUiInputs(),
     ) {
+        var selectedTrack by remember { mutableStateOf<com.cleartune.core.model.TrackSummary?>(null) }
+        val onTrackMore: (com.cleartune.core.model.TrackSummary) -> Unit = { track ->
+            selectedTrack = track
+            uiInputs.onTrackMore?.invoke(track)
+        }
         val browseState = remember(dependencies.libraryRepository, dependencies.libraryBrowsePort) {
             LibraryBrowseState(dependencies.libraryRepository, dependencies.libraryBrowsePort)
         }
         when (route) {
             LibraryRoutes.root -> Content(dependencies, onNavigate, uiInputs)
-            LibraryRoutes.songs -> SongsScreen(dependencies, onBack, uiInputs.onTrackMore)
+            LibraryRoutes.songs -> SongsScreen(dependencies, onBack, onTrackMore)
             LibraryRoutes.albums -> {
                 val albums by browseState.albums.collectAsState(initial = emptyList())
                 AlbumsScreen(albums, onBack, uiInputs.onOpenAlbum)
@@ -66,7 +76,7 @@ object LibraryFeatureEntry {
                 val detail by detailFlow.collectAsState(
                     initial = LibraryAlbumDetailState(uiInputs.selectedAlbum, emptyList()),
                 )
-                AlbumDetailScreen(dependencies, detail.album, detail.tracks, onBack, uiInputs.onTrackMore)
+                AlbumDetailScreen(dependencies, detail.album, detail.tracks, onBack, onTrackMore)
             }
             LibraryRoutes.artistDetail -> {
                 val detailFlow = remember(browseState, uiInputs.selectedArtist) {
@@ -82,7 +92,7 @@ object LibraryFeatureEntry {
                     detail.albums,
                     onBack,
                     uiInputs.onOpenAlbum,
-                    uiInputs.onTrackMore,
+                    onTrackMore,
                 )
             }
             LibraryRoutes.folders -> {
@@ -99,17 +109,26 @@ object LibraryFeatureEntry {
                     folderTracks = folderState.tracks,
                     onBack = onBack,
                     onOpenFolder = uiInputs.onOpenFolder,
-                    onTrackMore = uiInputs.onTrackMore,
+                    onTrackMore = onTrackMore,
                 )
             }
             LibraryRoutes.search -> SearchScreen(
                 dependencies,
                 onBack,
-                uiInputs.onTrackMore,
+                onTrackMore,
                 uiInputs.onOpenAlbum,
                 uiInputs.onOpenArtist,
+                uiInputs.onOpenPlaylist,
             )
             else -> Content(dependencies, onNavigate, uiInputs)
+        }
+        selectedTrack?.let { track ->
+            LibraryTrackActionSheet(
+                track = track,
+                dependencies = dependencies,
+                uiInputs = uiInputs,
+                onDismiss = { selectedTrack = null },
+            )
         }
     }
 }

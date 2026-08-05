@@ -22,6 +22,7 @@ class MediaStoreRowMapperTest {
                 sizeBytes = 12_345,
                 modifiedEpochSeconds = 99,
                 mimeType = "audio/flac",
+                albumId = 88,
             ),
         )
 
@@ -31,6 +32,7 @@ class MediaStoreRowMapperTest {
         assertEquals("Music/Rock/Live", snapshot.relativeFolder)
         assertEquals("夜航", snapshot.title)
         assertEquals(listOf("Aster", "Boreal"), snapshot.artistNames)
+        assertEquals("content://media/external/audio/albumart/88", snapshot.artworkRef)
         assertNull(snapshot.durationMs)
     }
 
@@ -118,5 +120,6 @@ class MediaStoreRowMapperTest {
         sizeBytes = sizeBytes,
         modifiedEpochSeconds = 1,
         mimeType = mimeType,
+        albumId = null,
     )
 }

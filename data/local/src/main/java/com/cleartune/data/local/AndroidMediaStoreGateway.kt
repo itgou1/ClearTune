@@ -24,6 +24,7 @@ class AndroidMediaStoreGateway(
             add(MediaStore.Audio.Media.DISPLAY_NAME)
             add(MediaStore.Audio.Media.TITLE)
             add(MediaStore.Audio.Media.ALBUM)
+            add(MediaStore.Audio.Media.ALBUM_ID)
             add(MediaStore.Audio.Media.ARTIST)
             add(MediaStore.Audio.Media.DURATION)
             add(MediaStore.Audio.Media.SIZE)
@@ -52,6 +53,7 @@ class AndroidMediaStoreGateway(
                         dataPath = if (sdkInt < 29) cursor.stringOrNull(MediaStore.Audio.Media.DATA) else null,
                         title = cursor.stringOrNull(MediaStore.Audio.Media.TITLE),
                         album = cursor.stringOrNull(MediaStore.Audio.Media.ALBUM),
+                        albumId = cursor.longOrNull(MediaStore.Audio.Media.ALBUM_ID),
                         artist = cursor.stringOrNull(MediaStore.Audio.Media.ARTIST),
                         durationMs = cursor.longOrNull(MediaStore.Audio.Media.DURATION),
                         sizeBytes = cursor.longOrNull(MediaStore.Audio.Media.SIZE) ?: 0,

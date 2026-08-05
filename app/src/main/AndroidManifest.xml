@@ -26,6 +26,11 @@
                 android:name="androidx.work.WorkManagerInitializer"
                 tools:node="remove" />
         </provider>
+        <provider
+            android:name=".ArtworkContentProvider"
+            android:authorities="${applicationId}.artwork"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:exported="false"

@@ -11,6 +11,7 @@ import com.cleartune.core.contracts.CredentialStore
 import com.cleartune.core.contracts.DownloadRepository
 import com.cleartune.core.contracts.LibraryRepository
 import com.cleartune.core.contracts.PlaylistRepository
+import com.cleartune.core.contracts.PlaybackLibraryRepository
 import com.cleartune.core.contracts.QueueRepository
 import com.cleartune.core.contracts.SettingsRepository
 import com.cleartune.core.contracts.SourceRepository
@@ -22,6 +23,7 @@ import com.cleartune.core.database.RoomPlaylistRepository
 import com.cleartune.core.database.RoomQueueRepository
 import com.cleartune.core.database.RoomSettingsRepository
 import com.cleartune.core.model.DownloadState
+import com.cleartune.core.model.DownloadCommand
 import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.QueueCommand
 import com.cleartune.core.model.SongQuery
@@ -93,6 +95,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     private val baseHttpClient = OkHttpClient.Builder().build()
 
     val libraryRepository: LibraryRepository = roomLibraryRepository
+    val playbackLibraryRepository: PlaybackLibraryRepository = roomLibraryRepository
     val sourceRepository: SourceRepository = roomLibraryRepository
     val playlistRepository: PlaylistRepository = roomPlaylistRepository
     val playlistDetailsProvider: PlaylistDetailsProvider = RoomPlaylistDetailsAdapter(database, roomPlaylistRepository)
@@ -106,13 +109,22 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     )
 
     private val webDavClient = OkHttpWebDavClient(baseHttpClient, credentialStore)
+    val lyricsResolver = TrackLyricsResolver(
+        roomLibraryRepository,
+        ProductionLyricsSidecarReader(appContext.contentResolver, sourceRepository, webDavClient),
+    )
     private val webDavPersistence = RoomWebDavPersistenceAdapter(
         database,
         sourceRepository,
         SharedPreferencesWebDavCheckpointStore(appContext),
     )
     private val webDavSyncScheduler = WorkManagerWebDavSyncScheduler(appContext)
-    private val artworkCache = EmbeddedArtworkCache(File(appContext.filesDir, "webdav_artwork_cache"))
+    private val artworkCacheRoot = File(appContext.filesDir, "webdav_artwork_cache")
+    private val artworkCache = ContentArtworkCache(
+        artworkCacheRoot,
+        "${appContext.packageName}.artwork",
+        EmbeddedArtworkCache(artworkCacheRoot),
+    )
     private val webDavSourceManager = WebDavSourceManager(
         connectionProbe = WebDavConnectionProbe { source, credential ->
             val temporaryStore = object : CredentialStore {
@@ -219,7 +231,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     private val streamingCacheRoot = File(appContext.cacheDir, "playback_streaming_cache")
     val settingsProductController = AppProductSettingsController(
         appContext,
-        scanLibrary = { localScanScheduler.enqueueManualRefresh() },
+        scanLibrary = { runLocalScanFromSettings() },
         cleanUpCache = { clearContainedCache(streamingCacheRoot) },
         cacheRoot = streamingCacheRoot,
     )
@@ -309,6 +321,26 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
     }
 
     fun enqueueLocalScan() = localScanScheduler.enqueueManualRefresh()
+
+    private suspend fun runLocalScanFromSettings() {
+        val permission = AudioPermissionPolicy.requiredPermission(Build.VERSION.SDK_INT)
+        val result = localScanCoordinator.scan(appContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED)
+        LocalScanTerminalGate.requireSuccess(result)
+    }
+
+    suspend fun toggleTrackDownload(trackId: TrackId): TrackDownloadActionResult {
+        val existing = downloadRepository.observeDownloads().first().firstOrNull { it.trackId == trackId }
+        val capability = TrackDownloadCapability.from(roomLibraryRepository.getPlayableTrack(trackId), existing?.state == DownloadState.COMPLETED)
+        if (capability is TrackDownloadCapability.Unavailable) {
+            return TrackDownloadActionResult.Unavailable(capability.reason)
+        }
+        return runCatching {
+            downloadRepository.dispatch(
+                if (existing == null) DownloadCommand.Enqueue(trackId) else DownloadCommand.Delete(existing.id),
+            )
+            TrackDownloadActionResult.Done
+        }.getOrElse { TrackDownloadActionResult.Failed("Download action could not be completed") }
+    }
 
     internal fun smokeSnapshot() = AppContainerSmokeSnapshot(
         libraryRepository = libraryRepository::class.java.simpleName,

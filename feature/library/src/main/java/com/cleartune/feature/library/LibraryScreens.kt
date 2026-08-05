@@ -32,6 +32,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +42,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -50,10 +53,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cleartune.core.designsystem.component.ArtistAvatar
+import com.cleartune.core.designsystem.component.SafeArtwork
 import com.cleartune.core.model.Album
 import com.cleartune.core.model.Artist
 import com.cleartune.core.model.PlaybackCommand
 import com.cleartune.core.model.SearchResults
+import com.cleartune.core.model.PlaylistSummary
 import com.cleartune.core.model.SongQuery
 import com.cleartune.core.model.SongSort
 import com.cleartune.core.model.TrackSummary
@@ -160,13 +165,52 @@ fun SongsScreen(
     onTrackMore: ((TrackSummary) -> Unit)? = null,
 ) {
     var sort by rememberSaveable { mutableStateOf(SongSort.TITLE) }
-    val songs by remember(sort) { dependencies.libraryRepository.observeSongs(SongQuery(sort = sort)) }
+    var ascending by rememberSaveable { mutableStateOf(true) }
+    var downloadedOnly by rememberSaveable { mutableStateOf(false) }
+    var selecting by rememberSaveable { mutableStateOf(false) }
+    var selectedIds by rememberSaveable { mutableStateOf(setOf<String>()) }
+    val songs by remember(sort, ascending, downloadedOnly) {
+        dependencies.libraryRepository.observeSongs(
+            SongQuery(sort = sort, ascending = ascending, downloadedOnly = downloadedOnly),
+        )
+    }
         .collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
         SecondaryHeader("歌曲", onBack) {
-            TextButton(onClick = { sort = if (sort == SongSort.TITLE) SongSort.DATE_ADDED else SongSort.TITLE }) {
-                Text(if (sort == SongSort.TITLE) "标题" else "最近添加")
+            TextButton(onClick = {
+                val entries = SongSort.entries
+                sort = entries[(entries.indexOf(sort) + 1) % entries.size]
+            }) {
+                Text("Sort: ${sort.name.lowercase()}")
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            TextButton(enabled = songs.isNotEmpty(), onClick = {
+                scope.launch { dependencies.playCollection(songs, 0) }
+            }) { Text("Play all") }
+            TextButton(enabled = songs.isNotEmpty(), onClick = {
+                scope.launch { dependencies.playCollection(songs.shuffled(), 0) }
+            }) { Text("Shuffle") }
+            TextButton(onClick = { downloadedOnly = !downloadedOnly }) {
+                Text(if (downloadedOnly) "Downloaded" else "All sources")
+            }
+            TextButton(onClick = { ascending = !ascending }) { Text(if (ascending) "A–Z" else "Z–A") }
+            TextButton(onClick = {
+                if (selecting) selectedIds = emptySet()
+                selecting = !selecting
+            }) { Text(if (selecting) "Done" else "Select") }
+        }
+        if (selecting && selectedIds.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                TextButton(onClick = {
+                    val selected = songs.filter { it.id.value in selectedIds }
+                    scope.launch { dependencies.playCollection(selected, 0) }
+                }) { Text("Play selected") }
+                TextButton(onClick = {
+                    val selected = songs.filter { it.id.value in selectedIds }
+                    scope.launch { dependencies.addCollection(selected) }
+                }) { Text("Queue selected") }
             }
         }
         Text(
@@ -178,8 +222,13 @@ fun SongsScreen(
             items(songs, key = { it.id.value }) { track ->
                 TrackRow(
                     track = track,
-                    onClick = { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(track.id)) } },
+                    onClick = {
+                        if (selecting) selectedIds = selectedIds.toggle(track.id.value)
+                        else scope.launch { dependencies.playCollection(songs, songs.indexOf(track)) }
+                    },
                     onMore = onTrackMore?.let { action -> { action(track) } },
+                    selected = track.id.value in selectedIds,
+                    onSelect = if (selecting) ({ selectedIds = selectedIds.toggle(track.id.value) }) else null,
                 )
             }
         }
@@ -224,11 +273,19 @@ fun FoldersScreen(
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
             )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                TextButton(enabled = folderTracks.isNotEmpty(), onClick = {
+                    scope.launch { dependencies.playCollection(folderTracks, 0) }
+                }) { Text("Play all") }
+                TextButton(enabled = folderTracks.isNotEmpty(), onClick = {
+                    scope.launch { dependencies.playCollection(folderTracks.shuffled(), 0) }
+                }) { Text("Shuffle") }
+            }
             if (folderTracks.isEmpty()) EmptyListMessage("这个文件夹中没有音乐") else LazyColumn {
                 items(folderTracks, key = { it.id.value }) { track ->
                     TrackRow(
                         track = track,
-                        onClick = { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(track.id)) } },
+                        onClick = { scope.launch { dependencies.playCollection(folderTracks, folderTracks.indexOf(track)) } },
                         onMore = onTrackMore?.let { action -> { action(track) } },
                     )
                 }
@@ -267,11 +324,21 @@ fun SearchScreen(
     onTrackMore: ((TrackSummary) -> Unit)? = null,
     onOpenAlbum: (Album) -> Unit = {},
     onOpenArtist: (Artist) -> Unit = {},
+    onOpenPlaylist: (PlaylistSummary) -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    var filter by rememberSaveable { mutableStateOf(SearchFilter.ALL) }
+    var recent by rememberSaveable { mutableStateOf(listOf<String>()) }
+    val focusRequester = remember { FocusRequester() }
     val results by remember(query) { dependencies.libraryRepository.search(query.trim()) }
         .collectAsState(initial = SearchResults())
+    val playlists by dependencies.playlistRepository.observePlaylists().collectAsState(initial = emptyList())
+    val matchingPlaylists = playlists.filter { it.name.contains(query.trim(), ignoreCase = true) }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    fun rememberQuery() {
+        query.trim().takeIf(String::isNotEmpty)?.let { value -> recent = (listOf(value) + recent).distinct().take(5) }
+    }
     Column(Modifier.fillMaxSize()) {
         SecondaryHeader("搜索", onBack)
         OutlinedTextField(
@@ -279,29 +346,44 @@ fun SearchScreen(
             onValueChange = { query = it },
             singleLine = true,
             placeholder = { Text("歌曲、专辑或歌手") },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).focusRequester(focusRequester),
         )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            TextButton(onClick = {
+                val values = SearchFilter.entries
+                filter = values[(values.indexOf(filter) + 1) % values.size]
+            }) { Text("Filter: ${filter.name.lowercase()}") }
+        }
         if (query.isBlank()) {
-            EmptyListMessage("输入关键词搜索资料库")
-        } else if (results.songs.isEmpty() && results.albums.isEmpty() && results.artists.isEmpty()) {
+            if (recent.isEmpty()) EmptyListMessage("输入关键词搜索资料库") else Column {
+                Text("Recent searches", Modifier.padding(horizontal = 20.dp))
+                recent.forEach { value -> TextButton(onClick = { query = value }) { Text(value) } }
+            }
+        } else if (results.songs.isEmpty() && results.albums.isEmpty() && results.artists.isEmpty() && matchingPlaylists.isEmpty()) {
             EmptyListMessage("没有找到相关内容")
         } else {
             LazyColumn {
-                if (results.songs.isNotEmpty()) item { SearchSectionLabel("歌曲") }
-                items(results.songs, key = { "song-${it.id.value}" }) { track ->
+                if (filter in setOf(SearchFilter.ALL, SearchFilter.SONGS) && results.songs.isNotEmpty()) item { SearchSectionLabel("歌曲") }
+                if (filter in setOf(SearchFilter.ALL, SearchFilter.SONGS)) items(results.songs, key = { "song-${it.id.value}" }) { track ->
                     TrackRow(
                         track = track,
-                        onClick = { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(track.id)) } },
+                        onClick = { rememberQuery(); scope.launch { dependencies.playCollection(results.songs, results.songs.indexOf(track)) } },
                         onMore = onTrackMore?.let { action -> { action(track) } },
                     )
                 }
-                if (results.albums.isNotEmpty()) item { SearchSectionLabel("专辑") }
-                items(results.albums, key = { "album-${it.id.value}" }) { album ->
-                    CompactAlbumRow(album) { onOpenAlbum(album) }
+                if (filter in setOf(SearchFilter.ALL, SearchFilter.ALBUMS) && results.albums.isNotEmpty()) item { SearchSectionLabel("专辑") }
+                if (filter in setOf(SearchFilter.ALL, SearchFilter.ALBUMS)) items(results.albums, key = { "album-${it.id.value}" }) { album ->
+                    CompactAlbumRow(album) { rememberQuery(); onOpenAlbum(album) }
                 }
-                if (results.artists.isNotEmpty()) item { SearchSectionLabel("歌手") }
-                items(results.artists, key = { "artist-${it.id.value}" }) { artist ->
-                    ArtistRow(artist) { onOpenArtist(artist) }
+                if (filter in setOf(SearchFilter.ALL, SearchFilter.ARTISTS) && results.artists.isNotEmpty()) item { SearchSectionLabel("歌手") }
+                if (filter in setOf(SearchFilter.ALL, SearchFilter.ARTISTS)) items(results.artists, key = { "artist-${it.id.value}" }) { artist ->
+                    ArtistRow(artist) { rememberQuery(); onOpenArtist(artist) }
+                }
+                if (filter in setOf(SearchFilter.ALL, SearchFilter.PLAYLISTS) && matchingPlaylists.isNotEmpty()) item { SearchSectionLabel("Playlists") }
+                if (filter in setOf(SearchFilter.ALL, SearchFilter.PLAYLISTS)) items(matchingPlaylists, key = { "playlist-${it.id.value}" }) { playlist ->
+                    Row(Modifier.fillMaxWidth().clickable { rememberQuery(); onOpenPlaylist(playlist) }.padding(20.dp)) {
+                        Text(playlist.name, Modifier.weight(1f)); Text("${playlist.trackCount}")
+                    }
                 }
             }
         }
@@ -324,12 +406,13 @@ fun AlbumDetailScreen(
             return@Column
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth().padding(20.dp)) {
-            CoverPlaceholder(Modifier.size(220.dp))
+            CoverArtwork(album.artworkRef, album.title, Modifier.size(220.dp))
             Text(album.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp))
             Text("${tracks.size} 首", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (tracks.isNotEmpty()) {
-                Button(onClick = { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(tracks.first().id)) } }) {
-                    Text("播放")
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(onClick = { scope.launch { dependencies.playCollection(tracks, 0) } }) { Text("Play all") }
+                    TextButton(onClick = { scope.launch { dependencies.playCollection(tracks.shuffled(), 0) } }) { Text("Shuffle") }
                 }
             }
         }
@@ -337,7 +420,7 @@ fun AlbumDetailScreen(
             items(tracks, key = { it.id.value }) { track ->
                 TrackRow(
                     track,
-                    { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(track.id)) } },
+                    { scope.launch { dependencies.playCollection(tracks, tracks.indexOf(track)) } },
                     onTrackMore?.let { action -> { action(track) } },
                 )
             }
@@ -366,13 +449,17 @@ fun ArtistDetailScreen(
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth().padding(20.dp)) {
                 ArtistAvatar(artist.id, artist.name, Modifier.size(132.dp))
                 Text(artist.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
+                Row {
+                    TextButton(enabled = tracks.isNotEmpty(), onClick = { scope.launch { dependencies.playCollection(tracks, 0) } }) { Text("Play all") }
+                    TextButton(enabled = tracks.isNotEmpty(), onClick = { scope.launch { dependencies.playCollection(tracks.shuffled(), 0) } }) { Text("Shuffle") }
+                }
             }
         }
         if (tracks.isNotEmpty()) item { SearchSectionLabel("热门歌曲") }
         items(tracks, key = { "artist-track-${it.id.value}" }) { track ->
             TrackRow(
                 track,
-                { scope.launch { dependencies.playbackGateway.dispatch(PlaybackCommand.PlayTrack(track.id)) } },
+                { scope.launch { dependencies.playCollection(tracks, tracks.indexOf(track)) } },
                 onTrackMore?.let { action -> { action(track) } },
             )
         }
@@ -466,7 +553,7 @@ private fun SectionTitle(title: String, onClick: (() -> Unit)? = null) {
 @Composable
 private fun RecentTile(track: TrackSummary, modifier: Modifier = Modifier) {
     Column(modifier) {
-        CoverPlaceholder(Modifier.fillMaxWidth().aspectRatio(1f))
+        CoverArtwork(track.artworkRef, track.title, Modifier.fillMaxWidth().aspectRatio(1f))
         Text(track.albumTitle ?: track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
         Text(
             track.artistNames.joinToString().ifBlank { "未知歌手" },
@@ -479,7 +566,13 @@ private fun RecentTile(track: TrackSummary, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun TrackRow(track: TrackSummary, onClick: () -> Unit, onMore: (() -> Unit)? = null) {
+private fun TrackRow(
+    track: TrackSummary,
+    onClick: () -> Unit,
+    onMore: (() -> Unit)? = null,
+    selected: Boolean = false,
+    onSelect: (() -> Unit)? = null,
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -488,7 +581,7 @@ private fun TrackRow(track: TrackSummary, onClick: () -> Unit, onMore: (() -> Un
             .semantics { contentDescription = trackDescription(track); role = Role.Button }
             .padding(horizontal = 20.dp, vertical = 8.dp),
     ) {
-        CoverPlaceholder(Modifier.size(48.dp))
+        CoverArtwork(track.artworkRef, track.title, Modifier.size(48.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -500,7 +593,9 @@ private fun TrackRow(track: TrackSummary, onClick: () -> Unit, onMore: (() -> Un
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+        if (selected) Text("✓", color = MaterialTheme.colorScheme.primary)
         if (track.downloaded) Text("↓", color = MaterialTheme.colorScheme.primary)
+        onSelect?.let { action -> TextButton(onClick = action) { Text(if (selected) "Deselect" else "Select") } }
         onMore?.let { action ->
             TextButton(onClick = action, modifier = Modifier.semantics { contentDescription = "${track.title}的更多操作" }) {
                 Text("•••")
@@ -520,7 +615,7 @@ private fun AlbumGrid(albums: List<Album>, onOpenAlbum: (Album) -> Unit) {
     ) {
         items(albums, key = { it.id.value }) { album ->
             Column(Modifier.clickable { onOpenAlbum(album) }) {
-                CoverPlaceholder(Modifier.fillMaxWidth().aspectRatio(1f))
+                CoverArtwork(album.artworkRef, album.title, Modifier.fillMaxWidth().aspectRatio(1f))
                 Text(album.title, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
                 Text("专辑", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -531,7 +626,7 @@ private fun AlbumGrid(albums: List<Album>, onOpenAlbum: (Album) -> Unit) {
 @Composable
 private fun CompactAlbumRow(album: Album, onClick: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 8.dp)) {
-        CoverPlaceholder(Modifier.size(48.dp))
+        CoverArtwork(album.artworkRef, album.title, Modifier.size(48.dp))
         Spacer(Modifier.width(12.dp))
         Text(album.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -557,6 +652,11 @@ private fun CoverPlaceholder(modifier: Modifier = Modifier) {
         Box(Modifier.size(42.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)))
         Text("♪", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineSmall)
     }
+}
+
+@Composable
+private fun CoverArtwork(reference: String?, title: String, modifier: Modifier = Modifier) {
+    SafeArtwork(reference, title.trim().firstOrNull()?.uppercase() ?: "♪", modifier)
 }
 
 @Composable
@@ -590,3 +690,21 @@ private fun formatDuration(milliseconds: Long): String {
         else -> "时长未知"
     }
 }
+
+private suspend fun LibraryFeatureDependencies.playCollection(tracks: List<TrackSummary>, startIndex: Int) {
+    val queue = queueRepository
+    if (queue == null) {
+        tracks.getOrNull(startIndex)?.let { playbackGateway.dispatch(PlaybackCommand.PlayTrack(it.id)) }
+        return
+    }
+    LibraryPlaybackActions(queue, playbackGateway, onQueueChanged).play(tracks.map(TrackSummary::id), startIndex)
+}
+
+private suspend fun LibraryFeatureDependencies.addCollection(tracks: List<TrackSummary>) {
+    val queue = queueRepository ?: return
+    LibraryPlaybackActions(queue, playbackGateway, onQueueChanged).addAll(tracks.map(TrackSummary::id))
+}
+
+private fun Set<String>.toggle(value: String): Set<String> = if (value in this) this - value else this + value
+
+private enum class SearchFilter { ALL, SONGS, ALBUMS, ARTISTS, PLAYLISTS }

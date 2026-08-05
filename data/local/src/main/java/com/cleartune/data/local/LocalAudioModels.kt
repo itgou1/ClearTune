@@ -29,6 +29,7 @@ data class LocalAudioSnapshot(
     val durationMs: Long?,
     val sizeBytes: Long,
     val modifiedEpochSeconds: Long,
+    val artworkRef: String? = null,
 )
 
 data class MediaStoreRow(
@@ -43,6 +44,7 @@ data class MediaStoreRow(
     val sizeBytes: Long,
     val modifiedEpochSeconds: Long,
     val mimeType: String?,
+    val albumId: Long? = null,
 )
 
 data class MediaStoreReadResult(

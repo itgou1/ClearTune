@@ -24,6 +24,7 @@ class MediaStoreRowMapper {
             durationMs = row.durationMs?.takeIf { it > 0 },
             sizeBytes = row.sizeBytes,
             modifiedEpochSeconds = row.modifiedEpochSeconds.coerceAtLeast(0),
+            artworkRef = row.albumId?.takeIf { it >= 0 }?.let { "content://media/external/audio/albumart/$it" },
         )
     }
 
