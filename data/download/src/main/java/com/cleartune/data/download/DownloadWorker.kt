@@ -30,6 +30,10 @@ interface DownloadWorkerHost {
     val downloadWorkerRunner: DownloadWorkerRunner
 }
 
+fun interface DownloadNetworkPolicyProvider {
+    fun wifiOnly(): Boolean
+}
+
 internal enum class DownloadWorkerExecutionResult { SUCCESS, RETRY, FAILURE }
 
 internal object DownloadWorkerExecutor {
@@ -95,9 +99,13 @@ class DownloadWorker(
         fun runnerFrom(application: Any): DownloadWorkerRunner? =
             (application as? DownloadWorkerHost)?.downloadWorkerRunner
 
-        fun request(id: DownloadId) = OneTimeWorkRequestBuilder<DownloadWorker>()
+        fun request(id: DownloadId, wifiOnly: Boolean = true) = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(Data.Builder().putString(INPUT_DOWNLOAD_ID, id.value).build())
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(
+                    if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED,
+                ).build(),
+            )
             .addTag(workName(id))
             .build()
     }
@@ -128,18 +136,27 @@ class WorkManagerDownloadScheduler internal constructor(
     private val downloadRoot: File,
     private val fileLocator: DownloadFileLocator,
     private val workGateway: DownloadWorkManagerGateway,
+    private val networkPolicy: DownloadNetworkPolicyProvider = DownloadNetworkPolicyProvider { true },
 ) : DownloadScheduler {
-    constructor(context: Context, downloadRoot: File, fileLocator: DownloadFileLocator) : this(
+    constructor(
+        context: Context,
+        downloadRoot: File,
+        fileLocator: DownloadFileLocator,
+        networkPolicy: DownloadNetworkPolicyProvider = DownloadNetworkPolicyProvider { true },
+    ) : this(
         downloadRoot,
         fileLocator,
         AndroidDownloadWorkManagerGateway(WorkManager.getInstance(context)),
+        networkPolicy,
     )
+
+    override val waitsForWifi: Boolean get() = networkPolicy.wifiOnly()
 
     override suspend fun enqueue(id: DownloadId) {
         workGateway.enqueueUnique(
             DownloadWorker.workName(id),
             ExistingWorkPolicy.REPLACE,
-            DownloadWorker.request(id),
+            DownloadWorker.request(id, waitsForWifi),
         )
     }
 

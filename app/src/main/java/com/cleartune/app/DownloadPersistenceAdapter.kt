@@ -120,7 +120,12 @@ class RoomDownloadPersistenceAdapter(
     override suspend fun beginWork(downloadId: DownloadId): Long? = database.withTransaction {
         val resolved = resolve(downloadId) ?: return@withTransaction null
         val current = resolved.download
-        if (current.state !in setOf(DownloadState.QUEUED.name, DownloadState.FAILED.name, DownloadState.RUNNING.name)) {
+        if (current.state !in setOf(
+            DownloadState.QUEUED.name,
+            DownloadState.WAITING_FOR_WIFI.name,
+            DownloadState.FAILED.name,
+            DownloadState.RUNNING.name,
+        )) {
             return@withTransaction null
         }
         val generation = current.workGeneration + 1

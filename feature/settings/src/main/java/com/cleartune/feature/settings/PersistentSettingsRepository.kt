@@ -24,7 +24,8 @@ sealed interface SettingsOperationState {
 data class SettingsProductState(
     val restoreQueue: Boolean = true,
     val pauseOnHeadphoneDisconnect: Boolean = true,
-    val offlineCacheEnabled: Boolean = false,
+    val offlineCacheEnabled: Boolean = true,
+    val wifiOnlyDownloads: Boolean = true,
     val backgroundPlayback: Boolean = false,
     val dynamicBackground: Boolean = true,
     val cacheLimitMb: Int = 512,
@@ -39,6 +40,7 @@ sealed interface SettingsProductCommand {
     data class SetRestoreQueue(val enabled: Boolean) : SettingsProductCommand
     data class SetPauseOnHeadphoneDisconnect(val enabled: Boolean) : SettingsProductCommand
     data class SetOfflineCacheEnabled(val enabled: Boolean) : SettingsProductCommand
+    data class SetWifiOnlyDownloads(val enabled: Boolean) : SettingsProductCommand
     data class SetBackgroundPlayback(val enabled: Boolean) : SettingsProductCommand
     data class SetDynamicBackground(val enabled: Boolean) : SettingsProductCommand
     data class SetCacheLimitMb(val megabytes: Int) : SettingsProductCommand
@@ -76,7 +78,8 @@ class PersistentSettingsRepository(
         SettingsProductState(
             restoreQueue = storage.boolean(RESTORE_QUEUE_KEY, true),
             pauseOnHeadphoneDisconnect = storage.boolean(HEADPHONE_PAUSE_KEY, true),
-            offlineCacheEnabled = storage.boolean(OFFLINE_CACHE_KEY, false),
+            offlineCacheEnabled = storage.boolean(OFFLINE_CACHE_KEY, true),
+            wifiOnlyDownloads = storage.boolean(WIFI_ONLY_DOWNLOADS_KEY, true),
             backgroundPlayback = storage.boolean(BACKGROUND_PLAYBACK_KEY, false),
             dynamicBackground = storage.boolean(DYNAMIC_BACKGROUND_KEY, true),
             cacheLimitMb = storage.getString(CACHE_LIMIT_KEY)?.toIntOrNull()?.coerceIn(64, 8_192) ?: 512,
@@ -106,6 +109,9 @@ class PersistentSettingsRepository(
             is SettingsProductCommand.SetOfflineCacheEnabled ->
                 productState.value.copy(offlineCacheEnabled = command.enabled)
                     .persist(OFFLINE_CACHE_KEY, command.enabled)
+            is SettingsProductCommand.SetWifiOnlyDownloads ->
+                productState.value.copy(wifiOnlyDownloads = command.enabled)
+                    .persist(WIFI_ONLY_DOWNLOADS_KEY, command.enabled)
             is SettingsProductCommand.SetBackgroundPlayback ->
                 productState.value.copy(backgroundPlayback = command.enabled)
                     .persist(BACKGROUND_PLAYBACK_KEY, command.enabled)
@@ -155,6 +161,7 @@ class PersistentSettingsRepository(
         const val RESTORE_QUEUE_KEY = "restore_queue"
         const val HEADPHONE_PAUSE_KEY = "headphone_pause"
         const val OFFLINE_CACHE_KEY = "offline_cache"
+        const val WIFI_ONLY_DOWNLOADS_KEY = "wifi_only_downloads"
         const val BACKGROUND_PLAYBACK_KEY = "background_playback"
         const val DYNAMIC_BACKGROUND_KEY = "dynamic_background"
         const val CACHE_LIMIT_KEY = "cache_limit_mb"

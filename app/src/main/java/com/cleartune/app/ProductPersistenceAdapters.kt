@@ -258,12 +258,14 @@ class AppProductSettingsController private constructor(
     private val scanLibrary: suspend () -> Unit,
     private val cleanUpCache: suspend () -> Unit,
     private val cacheRoot: File,
+    private val rebuildDownloadConstraints: suspend (Boolean) -> Unit,
 ) : SettingsProductController {
     constructor(
         context: Context,
         scanLibrary: suspend () -> Unit,
         cleanUpCache: suspend () -> Unit,
         cacheRoot: File = context.cacheDir,
+        rebuildDownloadConstraints: suspend (Boolean) -> Unit = {},
     ) : this(
         SharedProductPreferenceStore(
             context.getSharedPreferences("cleartune_product_settings", Context.MODE_PRIVATE),
@@ -271,13 +273,15 @@ class AppProductSettingsController private constructor(
         scanLibrary,
         cleanUpCache,
         cacheRoot,
+        rebuildDownloadConstraints,
     )
 
     internal constructor(
         cacheRoot: File,
         scanLibrary: suspend () -> Unit,
         cleanUpCache: suspend () -> Unit,
-    ) : this(InMemoryProductPreferenceStore(), scanLibrary, cleanUpCache, cacheRoot)
+        rebuildDownloadConstraints: suspend (Boolean) -> Unit = {},
+    ) : this(InMemoryProductPreferenceStore(), scanLibrary, cleanUpCache, cacheRoot, rebuildDownloadConstraints)
 
     private val mutex = Mutex()
     private val cacheUsage = CacheUsageMonitor(cacheRoot)
@@ -285,7 +289,8 @@ class AppProductSettingsController private constructor(
         SettingsProductState(
             restoreQueue = preferences.boolean("restore_queue", true),
             pauseOnHeadphoneDisconnect = preferences.boolean("headphone_pause", true),
-            offlineCacheEnabled = preferences.boolean("offline_cache", false),
+            offlineCacheEnabled = preferences.boolean("offline_cache", true),
+            wifiOnlyDownloads = preferences.boolean("wifi_only_downloads", true),
             backgroundPlayback = preferences.boolean("background_playback", false),
             dynamicBackground = preferences.boolean("dynamic_background", true),
             cacheLimitMb = preferences.integer("cache_limit_mb", 512).coerceIn(64, 8_192),
@@ -312,6 +317,13 @@ class AppProductSettingsController private constructor(
                 .copy(pauseOnHeadphoneDisconnect = command.enabled).persist("headphone_pause", command.enabled)
             is SettingsProductCommand.SetOfflineCacheEnabled -> state.value.copy(offlineCacheEnabled = command.enabled)
                 .persist("offline_cache", command.enabled)
+            is SettingsProductCommand.SetWifiOnlyDownloads -> {
+                val next = state.value.copy(wifiOnlyDownloads = command.enabled)
+                    .persist("wifi_only_downloads", command.enabled)
+                state.value = next
+                rebuildDownloadConstraints(command.enabled)
+                next
+            }
             is SettingsProductCommand.SetBackgroundPlayback -> state.value.copy(backgroundPlayback = command.enabled)
                 .persist("background_playback", command.enabled)
             is SettingsProductCommand.SetDynamicBackground -> state.value.copy(dynamicBackground = command.enabled)

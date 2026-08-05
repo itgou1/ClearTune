@@ -23,6 +23,7 @@ interface DownloadRecordStore {
 }
 
 interface DownloadScheduler {
+    val waitsForWifi: Boolean get() = false
     suspend fun enqueue(id: DownloadId)
     suspend fun stop(id: DownloadId)
     suspend fun deleteFiles(id: DownloadId)
@@ -93,6 +94,9 @@ class DownloadCoordinator(
     private suspend fun schedule(summary: DownloadSummary) {
         try {
             scheduler.enqueue(summary.id)
+            if (scheduler.waitsForWifi) {
+                records.replace(summary.copy(state = DownloadState.WAITING_FOR_WIFI))
+            }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {
@@ -154,6 +158,9 @@ class DownloadCoordinator(
         records.replace(persisted)
         try {
             afterPersist()
+            if (target == DownloadState.QUEUED && scheduler.waitsForWifi) {
+                records.replace(persisted.copy(state = DownloadState.WAITING_FOR_WIFI))
+            }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {

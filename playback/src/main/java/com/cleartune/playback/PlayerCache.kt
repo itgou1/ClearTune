@@ -16,6 +16,9 @@ import com.cleartune.core.contracts.WebDavCredential
 import com.cleartune.core.network.WebDavAuthenticator
 import java.io.Closeable
 import java.io.File
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import okhttp3.Authenticator
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
@@ -44,26 +47,44 @@ interface PlaybackCredentialResolverOwner {
 data class PlaybackRuntimeSettings(
     val restoreQueue: Boolean = true,
     val pauseOnHeadphoneDisconnect: Boolean = true,
-    val streamingCacheEnabled: Boolean = false,
+    val streamingCacheEnabled: Boolean = true,
     val backgroundPlayback: Boolean = false,
     val dynamicBackground: Boolean = true,
     val cacheLimitBytes: Long = DEFAULT_CACHE_LIMIT_BYTES,
 )
 
-fun interface PlaybackRuntimeSettingsProvider {
+interface PlaybackRuntimeSettingsProvider {
     fun snapshot(): PlaybackRuntimeSettings
+    val updates: Flow<PlaybackRuntimeSettings> get() = flowOf(snapshot())
+}
+
+class MutablePlaybackRuntimeSettingsProvider(
+    initial: PlaybackRuntimeSettings = PlaybackRuntimeSettings(),
+) : PlaybackRuntimeSettingsProvider {
+    private val state = MutableStateFlow(initial)
+    override fun snapshot(): PlaybackRuntimeSettings = state.value
+    override val updates: Flow<PlaybackRuntimeSettings> = state
+    fun update(settings: PlaybackRuntimeSettings) {
+        state.value = settings
+    }
 }
 
 interface PlaybackRuntimeSettingsOwner {
     val playbackRuntimeSettingsProvider: PlaybackRuntimeSettingsProvider
 }
 
-internal class PlaybackServicePolicy(private val settings: PlaybackRuntimeSettings) {
-    val handleAudioBecomingNoisy: Boolean get() = settings.pauseOnHeadphoneDisconnect
+internal class PlaybackServicePolicy(private val settings: PlaybackRuntimeSettingsProvider) {
+    val handleAudioBecomingNoisy: Boolean get() = settings.snapshot().pauseOnHeadphoneDisconnect
 
     fun shouldStopOnTaskRemoved(playWhenReady: Boolean, mediaItemCount: Int): Boolean =
-        !settings.backgroundPlayback || !playWhenReady || mediaItemCount == 0
+        !settings.snapshot().backgroundPlayback || !playWhenReady || mediaItemCount == 0
 }
+
+internal fun cacheConfigurationChanged(
+    previous: PlaybackRuntimeSettings,
+    next: PlaybackRuntimeSettings,
+): Boolean = previous.streamingCacheEnabled != next.streamingCacheEnabled ||
+    previous.cacheLimitBytes != next.cacheLimitBytes
 
 internal fun cacheMaxBytesOrNull(settings: PlaybackRuntimeSettings): Long? =
     settings.cacheLimitBytes.coerceAtLeast(MIN_CACHE_BYTES).takeIf { settings.streamingCacheEnabled }

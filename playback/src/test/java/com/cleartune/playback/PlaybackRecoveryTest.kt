@@ -2,6 +2,8 @@ package com.cleartune.playback
 
 import androidx.media3.common.PlaybackException
 import com.cleartune.core.contracts.PlaybackLibraryRepository
+import com.cleartune.core.contracts.PlaybackHistoryRecord
+import com.cleartune.core.contracts.PlaybackHistoryRecorder
 import com.cleartune.core.model.LocationId
 import com.cleartune.core.model.LocationType
 import com.cleartune.core.model.PlayableTrack
@@ -20,7 +22,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -207,6 +208,64 @@ class PlaybackRecoveryTest {
         assertTrue(restored.playWhenReady)
         assertEquals(RepeatMode.ALL, restored.repeatMode)
         assertTrue(restored.shuffleEnabled)
+    }
+
+    @Test
+    fun `threshold playback writes one history session and later upgrades it to completed`() = runTest {
+        val storage = RecoveryMemoryStorage()
+        val queue = PersistentQueueRepository(storage) { QueueItemId("occurrence-a") }
+        queue.apply(QueueCommand.Replace(listOf(TrackId("a"))))
+        val backend = SnapshotQueueBackend()
+        val history = RecordingPlaybackHistory()
+        val coordinator = queueCoordinator(
+            queue = queue,
+            backend = backend,
+            scope = this,
+            tracks = mapOf("a" to playable("a")),
+            history = history,
+            clock = { 1_234L },
+        )
+        coordinator.syncQueue()
+
+        backend.emitSnapshot("occurrence-a", "a", positionMs = 29_999, playWhenReady = true, durationMs = 60_000)
+        advanceUntilIdle()
+        assertTrue(history.records.isEmpty())
+
+        backend.emitSnapshot("occurrence-a", "a", positionMs = 30_000, playWhenReady = true, durationMs = 60_000)
+        backend.emitSnapshot("occurrence-a", "a", positionMs = 45_000, playWhenReady = true, durationMs = 60_000)
+        backend.emitSnapshot("occurrence-a", "a", positionMs = 60_000, playWhenReady = false, durationMs = 60_000)
+        advanceUntilIdle()
+
+        assertEquals(2, history.records.size)
+        assertEquals(history.records.first().sessionKey, history.records.last().sessionKey)
+        assertFalse(history.records.first().completed)
+        assertTrue(history.records.last().completed)
+        assertEquals(1_234L, history.records.single { !it.completed }.playedAtEpochMs)
+    }
+
+    @Test
+    fun `clearing persisted queue keeps only current backend item without pausing it`() = runTest {
+        val storage = RecoveryMemoryStorage()
+        var nextId = 0
+        val queue = PersistentQueueRepository(storage) { QueueItemId("occurrence-${++nextId}") }
+        queue.apply(QueueCommand.Replace(listOf(TrackId("a"), TrackId("b"), TrackId("c"))))
+        val backend = SnapshotQueueBackend()
+        val coordinator = queueCoordinator(
+            queue,
+            backend,
+            this,
+            mapOf("a" to playable("a"), "b" to playable("b"), "c" to playable("c")),
+        )
+        coordinator.syncQueue()
+        backend.emitSnapshot("occurrence-2", "b", 500, playWhenReady = true)
+        advanceUntilIdle()
+
+        queue.apply(QueueCommand.Replace(emptyList()))
+        coordinator.syncQueue()
+
+        assertEquals(listOf("occurrence-2"), backend.preservedOccurrences)
+        assertEquals(1, backend.pauseCalls)
+        assertTrue(coordinator.state.value.isPlaying)
     }
 
     @Test
@@ -422,16 +481,18 @@ class PlaybackRecoveryTest {
     }
 
     @Test
-    fun `queue registry rejects an active set larger than its explicit capacity`() {
+    fun `queue registry lazily resolves a valid queue larger than its active window`() {
         PrivateMediaSourceRegistry.clear()
         val entries = (0..PrivateMediaSourceRegistry.capacity).map { index ->
             "active-$index" to "https://private.example/$index.mp3"
         }
 
-        assertThrows(IllegalArgumentException::class.java) {
-            PrivateMediaSourceRegistry.replace(entries)
-        }
-        assertEquals(0, PrivateMediaSourceRegistry.size)
+        val opaque = PrivateMediaSourceRegistry.replace(entries)
+
+        assertEquals(entries.size, opaque.size)
+        assertEquals(entries.first().second, PrivateMediaSourceRegistry.resolve(opaque.first()))
+        assertEquals(entries.last().second, PrivateMediaSourceRegistry.resolve(opaque.last()))
+        assertTrue(PrivateMediaSourceRegistry.size <= PrivateMediaSourceRegistry.capacity)
     }
 
     private fun catalogTrack() = LibraryCatalogTrack(
@@ -495,6 +556,8 @@ class PlaybackRecoveryTest {
         backend: SnapshotQueueBackend,
         scope: kotlinx.coroutines.CoroutineScope,
         tracks: Map<String, PlayableTrack>,
+        history: PlaybackHistoryRecorder = PlaybackHistoryRecorder.None,
+        clock: () -> Long = System::currentTimeMillis,
     ) = PlaybackCoordinator(
         libraryRepository = object : PlaybackLibraryRepository {
             override suspend fun getPlayableTrack(trackId: TrackId): PlayableTrack? = tracks[trackId.value]
@@ -503,6 +566,8 @@ class PlaybackRecoveryTest {
         backend = backend,
         environment = PlaybackEnvironment({ true }, { true }, { true }),
         scope = scope,
+        historyRecorder = history,
+        clock = clock,
     )
 
     private fun playable(id: String): PlayableTrack {
@@ -530,6 +595,8 @@ private class SnapshotQueueBackend : PlaybackBackend, QueuePlaybackBackend, Obse
     var loadedStartIndex = -1
     var loadedPositionMs = -1L
     var playCalls = 0
+    var pauseCalls = 0
+    var preservedOccurrences = emptyList<String>()
     private var observer: ((BackendPlaybackSnapshot) -> Unit)? = null
 
     override suspend fun loadQueue(entries: List<ResolvedQueueEntry>, startIndex: Int, positionMs: Long) {
@@ -540,9 +607,12 @@ private class SnapshotQueueBackend : PlaybackBackend, QueuePlaybackBackend, Obse
     override suspend fun replaceCurrent(entry: ResolvedQueueEntry, positionMs: Long) {
         replacements += entry.occurrenceId to entry.location.id.value
     }
+    override suspend fun clearFutureQueue(preserveOccurrenceId: String?) {
+        preservedOccurrences = listOfNotNull(preserveOccurrenceId)
+    }
     override suspend fun load(track: Track, location: TrackLocation) = Unit
     override suspend fun play() { playCalls++ }
-    override suspend fun pause() = Unit
+    override suspend fun pause() { pauseCalls++ }
     override suspend fun next() = Unit
     override suspend fun previous() = Unit
     override suspend fun seekTo(positionMs: Long) = Unit
@@ -557,6 +627,7 @@ private class SnapshotQueueBackend : PlaybackBackend, QueuePlaybackBackend, Obse
         playWhenReady: Boolean,
         repeatMode: RepeatMode = RepeatMode.OFF,
         shuffleEnabled: Boolean = false,
+        durationMs: Long? = null,
     ) {
         observer?.invoke(
             snapshot(
@@ -567,6 +638,7 @@ private class SnapshotQueueBackend : PlaybackBackend, QueuePlaybackBackend, Obse
                 null,
                 repeatMode,
                 shuffleEnabled,
+                durationMs,
             ),
         )
     }
@@ -591,6 +663,7 @@ private class SnapshotQueueBackend : PlaybackBackend, QueuePlaybackBackend, Obse
         failure: BackendPlaybackFailure?,
         repeatMode: RepeatMode = RepeatMode.OFF,
         shuffleEnabled: Boolean = false,
+        durationMs: Long? = null,
     ) = BackendPlaybackSnapshot(
         connected = true,
         mediaId = trackId,
@@ -599,11 +672,18 @@ private class SnapshotQueueBackend : PlaybackBackend, QueuePlaybackBackend, Obse
         isPlaying = playWhenReady,
         playWhenReady = playWhenReady,
         positionMs = positionMs,
-        durationMs = null,
+        durationMs = durationMs,
         repeatMode = repeatMode,
         shuffleEnabled = shuffleEnabled,
         failure = failure,
     )
+}
+
+private class RecordingPlaybackHistory : PlaybackHistoryRecorder {
+    val records = mutableListOf<PlaybackHistoryRecord>()
+    override suspend fun record(record: PlaybackHistoryRecord) {
+        records += record
+    }
 }
 
 private class AsyncRecoveryBackend(

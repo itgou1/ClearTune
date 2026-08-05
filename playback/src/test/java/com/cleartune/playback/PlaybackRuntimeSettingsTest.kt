@@ -9,24 +9,25 @@ import org.junit.Test
 class PlaybackRuntimeSettingsTest {
     @Test
     fun `service policy applies noisy and background playback settings`() {
-        val disabled = PlaybackServicePolicy(
+        val provider = MutablePlaybackRuntimeSettingsProvider(
             PlaybackRuntimeSettings(
                 pauseOnHeadphoneDisconnect = false,
                 backgroundPlayback = false,
             ),
         )
-        assertFalse(disabled.handleAudioBecomingNoisy)
-        assertTrue(disabled.shouldStopOnTaskRemoved(playWhenReady = true, mediaItemCount = 1))
+        val policy = PlaybackServicePolicy(provider)
+        assertFalse(policy.handleAudioBecomingNoisy)
+        assertTrue(policy.shouldStopOnTaskRemoved(playWhenReady = true, mediaItemCount = 1))
 
-        val enabled = PlaybackServicePolicy(
+        provider.update(
             PlaybackRuntimeSettings(
                 pauseOnHeadphoneDisconnect = true,
                 backgroundPlayback = true,
             ),
         )
-        assertTrue(enabled.handleAudioBecomingNoisy)
-        assertFalse(enabled.shouldStopOnTaskRemoved(playWhenReady = true, mediaItemCount = 1))
-        assertTrue(enabled.shouldStopOnTaskRemoved(playWhenReady = false, mediaItemCount = 1))
+        assertTrue(policy.handleAudioBecomingNoisy)
+        assertFalse(policy.shouldStopOnTaskRemoved(playWhenReady = true, mediaItemCount = 1))
+        assertTrue(policy.shouldStopOnTaskRemoved(playWhenReady = false, mediaItemCount = 1))
     }
 
     @Test
@@ -42,5 +43,16 @@ class PlaybackRuntimeSettingsTest {
                 PlaybackRuntimeSettings(streamingCacheEnabled = true, cacheLimitBytes = 256L * 1024 * 1024),
             ),
         )
+    }
+
+    @Test
+    fun `streaming cache defaults to enabled with a 512 MB limit and live changes require rebuild`() {
+        val defaults = PlaybackRuntimeSettings()
+        assertEquals(512L * 1024 * 1024, cacheMaxBytesOrNull(defaults))
+
+        val disabled = defaults.copy(streamingCacheEnabled = false)
+        assertTrue(cacheConfigurationChanged(defaults, disabled))
+        assertTrue(cacheConfigurationChanged(defaults, defaults.copy(cacheLimitBytes = 256L * 1024 * 1024)))
+        assertFalse(cacheConfigurationChanged(defaults, defaults.copy(backgroundPlayback = true)))
     }
 }

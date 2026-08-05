@@ -2,6 +2,7 @@ package com.cleartune.core.model
 
 enum class DownloadState {
     QUEUED,
+    WAITING_FOR_WIFI,
     RUNNING,
     PAUSED,
     COMPLETED,

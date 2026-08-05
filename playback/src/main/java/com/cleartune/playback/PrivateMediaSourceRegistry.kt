@@ -14,6 +14,7 @@ internal object PrivateMediaSourceRegistry {
     private const val MAX_ENTRIES = 256
     private val sources = LinkedHashMap<String, PrivateMediaSource>(MAX_ENTRIES, 0.75f, true)
     private val activeSources = linkedMapOf<String, String>()
+    private val queueCatalog = linkedMapOf<String, PrivateMediaSource>()
 
     internal val capacity: Int get() = MAX_ENTRIES
     internal val size: Int @Synchronized get() = sources.size
@@ -45,47 +46,59 @@ internal object PrivateMediaSourceRegistry {
     }
 
     @Synchronized
-    fun replace(entries: List<Pair<String, String>>): List<String> {
-        require(entries.size <= MAX_ENTRIES) {
-            "Active playback queue exceeds private media registry capacity of $MAX_ENTRIES"
-        }
-        sources.clear()
-        activeSources.clear()
-        return entries.map { (mediaId, actualUri) ->
-            val source = PrivateMediaSource(actualUri)
-            val opaqueUri = opaqueUri(mediaId, source)
-            sources[opaqueUri] = source
-            activeSources[mediaId] = opaqueUri
-            opaqueUri
-        }
-    }
+    fun replace(entries: List<Pair<String, String>>): List<String> =
+        replaceSources(entries.map { (mediaId, actualUri) -> mediaId to PrivateMediaSource(actualUri) })
 
     @Synchronized
     fun replaceSources(entries: List<Pair<String, PrivateMediaSource>>): List<String> {
-        require(entries.size <= MAX_ENTRIES) {
-            "Active playback queue exceeds private media registry capacity of $MAX_ENTRIES"
-        }
         sources.clear()
         activeSources.clear()
-        return entries.map { (mediaId, source) ->
+        queueCatalog.clear()
+        val opaqueEntries = entries.map { (mediaId, source) ->
             val opaqueUri = opaqueUri(mediaId, source)
-            sources[opaqueUri] = source
-            activeSources[mediaId] = opaqueUri
-            opaqueUri
+            opaqueUri to source
         }
+        queueCatalog.putAll(opaqueEntries)
+        opaqueEntries.take(MAX_ENTRIES).forEach { (opaqueUri, source) -> sources[opaqueUri] = source }
+        if (entries.size <= MAX_ENTRIES) {
+            entries.zip(opaqueEntries).forEach { pair ->
+                activeSources[pair.first.first] = pair.second.first
+            }
+        }
+        return opaqueEntries.map(Pair<String, PrivateMediaSource>::first)
     }
 
     @Synchronized
     fun clear() {
         sources.clear()
         activeSources.clear()
+        queueCatalog.clear()
     }
 
     @Synchronized
-    fun resolve(opaqueUri: String): String? = sources[opaqueUri]?.actualUri
+    fun resolve(opaqueUri: String): String? = resolveEntry(opaqueUri)?.actualUri
 
     @Synchronized
-    fun resolveEntry(opaqueUri: String): PrivateMediaSource? = sources[opaqueUri]
+    fun resolveEntry(opaqueUri: String): PrivateMediaSource? {
+        sources[opaqueUri]?.let { return it }
+        val queued = queueCatalog[opaqueUri] ?: return null
+        makeRoomForOne()
+        sources[opaqueUri] = queued
+        return queued
+    }
+
+    @Synchronized
+    fun retainOnly(opaqueUri: String?) {
+        val retained = opaqueUri?.let { sources[it] ?: queueCatalog[it] }
+        sources.clear()
+        activeSources.clear()
+        queueCatalog.clear()
+        if (opaqueUri != null && retained != null) {
+            sources[opaqueUri] = retained
+            queueCatalog[opaqueUri] = retained
+            activeSources[opaqueUri] = opaqueUri
+        }
+    }
 
     fun opaqueUri(mediaId: String, actualUri: String): String =
         opaqueUri(mediaId, PrivateMediaSource(actualUri))

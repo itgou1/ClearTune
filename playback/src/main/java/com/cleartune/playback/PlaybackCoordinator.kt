@@ -2,12 +2,15 @@ package com.cleartune.playback
 
 import com.cleartune.core.contracts.PlaybackGateway
 import com.cleartune.core.contracts.PlaybackLibraryRepository
+import com.cleartune.core.contracts.PlaybackHistoryRecord
+import com.cleartune.core.contracts.PlaybackHistoryRecorder
 import com.cleartune.core.contracts.QueueRepository
 import com.cleartune.core.model.PlaybackCommand
 import com.cleartune.core.model.PlaybackState
 import com.cleartune.core.model.QueueCommand
 import com.cleartune.core.model.RepeatMode
 import com.cleartune.core.model.Track
+import com.cleartune.core.model.TrackId
 import com.cleartune.core.model.TrackLocation
 import com.cleartune.core.model.TrackSummary
 import kotlinx.coroutines.CancellationException
@@ -49,6 +52,7 @@ data class ResolvedQueueEntry(
 interface QueuePlaybackBackend {
     suspend fun loadQueue(entries: List<ResolvedQueueEntry>, startIndex: Int, positionMs: Long)
     suspend fun replaceCurrent(entry: ResolvedQueueEntry, positionMs: Long) = Unit
+    suspend fun clearFutureQueue(preserveOccurrenceId: String?) = Unit
 }
 
 data class BackendPlaybackSnapshot(
@@ -85,6 +89,8 @@ class PlaybackCoordinator(
     private val backend: PlaybackBackend,
     private val environment: PlaybackEnvironment,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val historyRecorder: PlaybackHistoryRecorder = PlaybackHistoryRecorder.None,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : PlaybackGateway {
     private val mutex = Mutex()
     private val mutableState = MutableStateFlow(PlaybackState(connected = backend.connected))
@@ -97,6 +103,10 @@ class PlaybackCoordinator(
     private var lastHandledFailure: BackendPlaybackFailure? = null
     private var snapshotSequence = 0L
     private var latestPersistedSnapshot = 0L
+    private var historySessionKey: String? = null
+    private var historyStartedAtEpochMs = 0L
+    private var historyThresholdRecorded = false
+    private var historyCompletionRecorded = false
 
     init {
         (backend as? ObservablePlaybackBackend)?.setPlaybackObserver(::onBackendState)
@@ -141,6 +151,11 @@ class PlaybackCoordinator(
     private suspend fun syncQueueLocked(): Boolean {
         val queueBackend = backend as? QueuePlaybackBackend ?: return false
         val queue = queueRepository.observeQueue().first()
+        if (queue.items.isEmpty()) {
+            queueBackend.clearFutureQueue(activeOccurrenceId)
+            activeQueueEntries = activePlayback?.let { mapOf(it.occurrenceId to it) }.orEmpty()
+            return true
+        }
         queueStateWriter()?.updatePlaybackState(playWhenReady = false)
         backend.pause()
         val resolved = linkedMapOf<com.cleartune.core.model.QueueItemId, ResolvedQueueEntry>()
@@ -416,6 +431,7 @@ class PlaybackCoordinator(
                 shuffleEnabled = snapshot.shuffleEnabled,
             )
             latestPersistedSnapshot = sequence
+            recordQualifiedHistory(snapshot)
             when (failure) {
                 is BackendPlaybackFailure.Global -> {
                     backend.pause()
@@ -425,6 +441,34 @@ class PlaybackCoordinator(
                 is BackendPlaybackFailure.Item -> retryNextLocation(failure, snapshot.playWhenReady)
                 null -> Unit
             }
+        }
+    }
+
+    private suspend fun recordQualifiedHistory(snapshot: BackendPlaybackSnapshot) {
+        val trackId = snapshot.mediaId?.takeIf(String::isNotBlank)?.let(::TrackId) ?: return
+        val sessionKey = snapshot.occurrenceId?.takeIf(String::isNotBlank) ?: trackId.value
+        if (sessionKey != historySessionKey) {
+            historySessionKey = sessionKey
+            historyStartedAtEpochMs = clock()
+            historyThresholdRecorded = false
+            historyCompletionRecorded = false
+        }
+        val duration = snapshot.durationMs?.takeIf { it > 0 }
+        val completed = duration != null && snapshot.positionMs >= duration
+        val qualified = snapshot.positionMs >= HISTORY_THRESHOLD_MS ||
+            (duration != null && snapshot.positionMs >= (duration + 1) / 2)
+        if (!qualified) return
+        if (!historyThresholdRecorded || (completed && !historyCompletionRecorded)) {
+            historyRecorder.record(
+                PlaybackHistoryRecord(
+                    sessionKey = sessionKey,
+                    trackId = trackId,
+                    playedAtEpochMs = historyStartedAtEpochMs,
+                    completed = completed,
+                ),
+            )
+            historyThresholdRecorded = true
+            if (completed) historyCompletionRecorded = true
         }
     }
 
@@ -483,4 +527,8 @@ class PlaybackCoordinator(
         val attempts: List<TrackLocation>,
         val attemptIndex: Int,
     )
+
+    private companion object {
+        const val HISTORY_THRESHOLD_MS = 30_000L
+    }
 }

@@ -18,6 +18,21 @@ interface PlaybackGateway {
     suspend fun dispatch(command: PlaybackCommand)
 }
 
+data class PlaybackHistoryRecord(
+    val sessionKey: String,
+    val trackId: TrackId,
+    val playedAtEpochMs: Long,
+    val completed: Boolean,
+)
+
+fun interface PlaybackHistoryRecorder {
+    suspend fun record(record: PlaybackHistoryRecord)
+
+    companion object {
+        val None = PlaybackHistoryRecorder { }
+    }
+}
+
 interface QueueRepository {
     fun observeQueue(): Flow<QueueSnapshot>
     suspend fun apply(command: QueueCommand)

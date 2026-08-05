@@ -46,6 +46,7 @@ class PersistentSettingsRepositoryTest {
         repository.dispatch(SettingsProductCommand.SetOfflineCacheEnabled(true))
         repository.dispatch(SettingsProductCommand.SetBackgroundPlayback(true))
         repository.dispatch(SettingsProductCommand.SetDynamicBackground(false))
+        repository.dispatch(SettingsProductCommand.SetWifiOnlyDownloads(false))
 
         val restored = PersistentSettingsRepository(storage).productSettings.first()
 
@@ -54,6 +55,7 @@ class PersistentSettingsRepositoryTest {
         assertTrue(restored.offlineCacheEnabled)
         assertTrue(restored.backgroundPlayback)
         assertFalse(restored.dynamicBackground)
+        assertFalse(restored.wifiOnlyDownloads)
     }
 
     @Test

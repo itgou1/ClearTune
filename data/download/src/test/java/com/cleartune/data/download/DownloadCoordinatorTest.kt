@@ -28,6 +28,17 @@ class DownloadCoordinatorTest {
     }
 
     @Test
+    fun `wifi constrained enqueue is durably visible while WorkManager waits`() = runTest {
+        val records = FakeRecords()
+        val scheduler = FakeScheduler().apply { waitsForWifi = true }
+        val coordinator = DownloadCoordinator(records, scheduler)
+
+        coordinator.dispatch(DownloadCommand.Enqueue(TrackId("track-1")))
+
+        assertEquals(DownloadState.WAITING_FOR_WIFI, records.values.value.single().state)
+    }
+
+    @Test
     fun `pause resume cancel and retry persist state before scheduling`() = runTest {
         val id = DownloadId("download-1")
         val records = FakeRecords(DownloadSummary(id, TrackId("track-1"), DownloadState.RUNNING))
@@ -154,6 +165,7 @@ class DownloadCoordinatorTest {
         var enqueueFailure: Exception? = null
         var stopFailure: Exception? = null
         var deleteFailure: Exception? = null
+        override var waitsForWifi: Boolean = false
         override suspend fun enqueue(id: DownloadId) {
             enqueueFailure?.let { throw it }
             enqueued += id

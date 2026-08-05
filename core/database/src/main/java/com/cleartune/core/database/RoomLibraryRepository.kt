@@ -3,11 +3,15 @@ package com.cleartune.core.database
 import com.cleartune.core.contracts.LibraryRepository
 import com.cleartune.core.contracts.LibraryWriteGateway
 import com.cleartune.core.contracts.PlaybackLibraryRepository
+import com.cleartune.core.contracts.PlaybackHistoryRecord
+import com.cleartune.core.contracts.PlaybackHistoryRecorder
 import com.cleartune.core.contracts.SourceRepository
 import com.cleartune.core.contracts.SourceWriteGateway
 import com.cleartune.core.database.dao.LibraryReadDao
 import com.cleartune.core.database.dao.LibraryWriteDao
 import com.cleartune.core.database.dao.SourceDao
+import com.cleartune.core.database.dao.PlaybackDao
+import com.cleartune.core.database.entity.PlaybackHistoryEntity
 import com.cleartune.core.database.entity.MusicSourceEntity
 import com.cleartune.core.database.entity.SyncSessionEntity
 import com.cleartune.core.database.model.AlbumRow
@@ -81,6 +85,7 @@ class RoomLibraryRepository(
     private val readDao: LibraryReadDao,
     private val writeDao: LibraryWriteDao,
     private val sourceDao: SourceDao,
+    private val playbackDao: PlaybackDao? = null,
 ) : LibraryRepository,
     LibraryWriteGateway,
     PlaybackLibraryRepository,
@@ -88,12 +93,14 @@ class RoomLibraryRepository(
     SourceWriteGateway,
     LibrarySnapshotStore,
     LibraryBrowseStore,
-    SyncSessionStore {
+    SyncSessionStore,
+    PlaybackHistoryRecorder {
 
     constructor(database: ClearTuneDatabase) : this(
         database.libraryReadDao(),
         database.libraryWriteDao(),
         database.sourceDao(),
+        database.playbackDao(),
     )
 
     override fun observeLibraryHome(): Flow<LibraryHome> = combine(
@@ -101,12 +108,32 @@ class RoomLibraryRepository(
         readDao.observeAlbumCount(),
         readDao.observeArtistCount(),
         readDao.observeTrackRows(),
-    ) { songCount, albumCount, artistCount, rows ->
+        playbackDao?.observeRecentHistory(HISTORY_LIMIT) ?: flowOf(emptyList()),
+    ) { songCount, albumCount, artistCount, rows, history ->
         LibraryHome(
             songCount = songCount,
             albumCount = albumCount,
             artistCount = artistCount,
             recentAdded = rows.sortedByDescending(LibraryTrackRow::addedAtEpochMs).take(4).map(LibraryTrackRow::toTrackSummary),
+            recentPlayed = history.asSequence()
+                .map(PlaybackHistoryEntity::trackId)
+                .distinct()
+                .mapNotNull { id -> rows.firstOrNull { it.trackId == id } }
+                .take(HOME_RECENT_LIMIT)
+                .map(LibraryTrackRow::toTrackSummary)
+                .toList(),
+        )
+    }
+
+    override suspend fun record(record: PlaybackHistoryRecord) {
+        val dao = requireNotNull(playbackDao) { "Playback history persistence is unavailable" }
+        dao.recordHistorySession(
+            PlaybackHistoryEntity(
+                id = stableHistoryId(record.sessionKey),
+                trackId = record.trackId.value,
+                playedAtEpochMs = record.playedAtEpochMs,
+                completed = record.completed,
+            ),
         )
     }
 
@@ -257,6 +284,13 @@ class RoomLibraryRepository(
         ),
     )
 }
+
+private const val HISTORY_LIMIT = 20
+private const val HOME_RECENT_LIMIT = 4
+
+private fun stableHistoryId(sessionKey: String): Long =
+    (java.util.UUID.nameUUIDFromBytes("cleartune-history:$sessionKey".toByteArray(Charsets.UTF_8))
+        .mostSignificantBits and Long.MAX_VALUE).takeIf { it != 0L } ?: 1L
 
 private fun MusicSourceEntity.toDomain(): MusicSource = MusicSource(
     id = SourceId(id),
