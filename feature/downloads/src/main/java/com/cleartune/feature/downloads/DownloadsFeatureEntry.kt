@@ -1,30 +1,32 @@
 package com.cleartune.feature.downloads
 
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import com.cleartune.core.contracts.DownloadRepository
 import com.cleartune.core.contracts.PlaybackGateway
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 
 data class DownloadsFeatureDependencies(
     val downloadRepository: DownloadRepository,
     val playbackGateway: PlaybackGateway,
+    val titleResolver: DownloadTitleResolver,
 )
 
 object DownloadsFeatureEntry {
     const val route = "downloads"
 
     @Composable
-    @Suppress("UNUSED_PARAMETER")
     fun Content(
         dependencies: DownloadsFeatureDependencies,
         onNavigate: (String) -> Unit,
     ) {
-        Text(
-            text = "Downloads module",
-            modifier = Modifier.semantics { stateDescription = "baseline stub" },
-        )
+        val downloads by dependencies.downloadRepository.observeDownloads()
+            .collectAsStateWithLifecycle(initialValue = emptyList())
+        val scope = rememberCoroutineScope()
+        DownloadsScreen(downloads, dependencies.titleResolver) { command ->
+            scope.launch { dependencies.downloadRepository.dispatch(command) }
+        }
     }
 }

@@ -9,6 +9,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { BaselineApp() }
+        val container = (application as ClearTuneApplication).container
+        setContent { ClearTuneApp(container) }
     }
 }

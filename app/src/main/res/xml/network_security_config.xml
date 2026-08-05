@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Dynamic WebDAV domains cannot be enumerated here. Every production client still
+         requires the persisted per-source opt-in and the exact parsed origin/subtree gate. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

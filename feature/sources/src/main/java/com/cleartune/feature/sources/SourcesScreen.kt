@@ -1,0 +1,376 @@
+package com.cleartune.feature.sources
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+
+@Composable
+fun SourcesScreen(
+    sources: List<SourceUiItem>,
+    onAddWebDav: () -> Unit,
+    onOpenSource: (SourceUiItem) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text("音乐来源", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "管理本地音乐和 WebDAV 资料库",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+        if (sources.isEmpty()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("还没有音乐来源", style = MaterialTheme.typography.titleMedium)
+                        Text("添加 WebDAV 后即可同步远程音乐；本地音乐权限可稍后开启。")
+                    }
+                }
+            }
+        } else {
+            val local = sources.filter(SourceUiItem::local)
+            val remote = sources.filterNot(SourceUiItem::local)
+            if (local.isNotEmpty()) {
+                item { SectionTitle("设备本地") }
+                items(local, key = { it.id.value }) { SourceRow(it) { onOpenSource(it) } }
+            }
+            if (remote.isNotEmpty()) {
+                item { SectionTitle("WebDAV") }
+                items(remote, key = { it.id.value }) { SourceRow(it) { onOpenSource(it) } }
+            }
+        }
+        item {
+            Button(onClick = onAddWebDav, modifier = Modifier.fillMaxWidth()) { Text("添加 WebDAV") }
+        }
+    }
+}
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+}
+
+@Composable
+private fun SourceRow(item: SourceUiItem, onClick: () -> Unit) {
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(item.name, style = MaterialTheme.typography.titleMedium)
+                Text(item.location, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    item.status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (item.insecure) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text("›", style = MaterialTheme.typography.headlineSmall)
+        }
+    }
+}
+
+@Composable
+fun WebDavSourceForm(
+    state: WebDavFormState,
+    onStateChange: (WebDavFormState) -> Unit,
+    onTestConnection: () -> Unit,
+    onSave: () -> Unit,
+    roots: List<SourceBrowseItem> = emptyList(),
+    currentRootPath: String = "",
+    rootSelectionComplete: Boolean = false,
+    onBrowseDirectory: (SourceBrowseItem) -> Unit = {},
+    onBrowseParent: () -> Unit = {},
+    onUseCurrentFolder: () -> Unit = {},
+) {
+    var confirmCleartext by remember { mutableStateOf(false) }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item { Text("添加 WebDAV", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold) }
+        item {
+            OutlinedTextField(state.name, { onStateChange(state.copy(name = it)) }, label = { Text("名称") }, modifier = Modifier.fillMaxWidth())
+        }
+        item {
+            OutlinedTextField(state.url, { onStateChange(state.copy(url = it)) }, label = { Text("服务器地址") }, supportingText = { Text("推荐使用 HTTPS") }, modifier = Modifier.fillMaxWidth())
+        }
+        item {
+            OutlinedTextField(state.username, { onStateChange(state.copy(username = it)) }, label = { Text("用户名") }, modifier = Modifier.fillMaxWidth())
+        }
+        item {
+            OutlinedTextField(
+                state.password,
+                { onStateChange(state.copy(password = it)) },
+                label = { Text("密码") },
+                visualTransformation = if (state.passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    TextButton(onClick = { onStateChange(state.copy(passwordVisible = !state.passwordVisible)) }) {
+                        Text(if (state.passwordVisible) "隐藏" else "显示")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("允许未加密 HTTP")
+                    Text("仅用于可信局域网", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                Switch(
+                    state.allowCleartext,
+                    { enabled ->
+                        if (enabled) confirmCleartext = true
+                        else onStateChange(state.copy(allowCleartext = false, cleartextConfirmed = false))
+                    },
+                )
+            }
+        }
+        if (state.allowCleartext) item {
+            Text("HTTP 会暴露传输内容，请优先配置 HTTPS。", color = MaterialTheme.colorScheme.error)
+        }
+        state.error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
+        state.connectionResult?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.primary) } }
+        if (state.connectionResult != null) {
+            item {
+                Text("Choose the WebDAV music root", style = MaterialTheme.typography.titleMedium)
+                Text(if (currentRootPath.isBlank()) "/" else "/$currentRootPath/")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (currentRootPath.isNotBlank()) {
+                        TextButton(onClick = onBrowseParent) { Text("Up") }
+                    }
+                    Button(onClick = onUseCurrentFolder) { Text("Use this folder") }
+                }
+            }
+            items(roots, key = SourceBrowseItem::key) { root ->
+                TextButton(onClick = { onBrowseDirectory(root) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Open ${root.name}/")
+                }
+            }
+        }
+        item { HorizontalDivider() }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(onClick = onTestConnection, enabled = !state.testing, modifier = Modifier.weight(1f)) {
+                    if (state.testing) CircularProgressIndicator(Modifier.height(20.dp)) else Text("测试连接")
+                }
+                Button(
+                    onClick = onSave,
+                    enabled = state.connectionResult != null && rootSelectionComplete,
+                    modifier = Modifier.weight(1f),
+                ) { Text("保存") }
+            }
+        }
+    }
+    if (confirmCleartext) {
+        AlertDialog(
+            onDismissRequest = { confirmCleartext = false },
+            title = { Text("Allow unencrypted HTTP?") },
+            text = {
+                Text("Only continue on a trusted network. Your username, password, and audio can be observed or changed in transit.")
+            },
+            confirmButton = { TextButton(onClick = {
+                confirmCleartext = false
+                onStateChange(state.copy(allowCleartext = true, cleartextConfirmed = true))
+            }) { Text("I understand") } },
+            dismissButton = { TextButton(onClick = { confirmCleartext = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+fun SourceDetailScreen(
+    source: SourceUiItem,
+    syncStatus: SourceSyncStatus?,
+    onEdit: () -> Unit,
+    onBrowse: () -> Unit,
+    onSync: suspend () -> SourceResult<Unit>,
+    onCancelSync: suspend () -> SourceResult<Unit>,
+    onDelete: suspend (deleteOfflineCopies: Boolean) -> SourceResult<Unit>,
+) {
+    var error by remember { mutableStateOf<String?>(null) }
+    var confirmRemoval by remember { mutableStateOf(false) }
+    var chooseOfflinePolicy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    Column(
+        Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(source.name, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text(source.location)
+        Text(source.status)
+        syncStatus?.let { status ->
+            Text("${status.discoveredTracks} tracks · ${status.visitedDirectories} folders · ${status.failureCount} failures")
+            if (status.active) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            status.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Button(onClick = onBrowse, modifier = Modifier.fillMaxWidth()) { Text("Browse") }
+        Button(
+            onClick = { scope.launch { error = onSync().failure?.message } },
+            enabled = syncStatus?.active != true,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Sync now")
+        }
+        if (syncStatus?.active == true) {
+            TextButton(
+                onClick = { scope.launch { error = onCancelSync().failure?.message } },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Cancel sync") }
+        }
+        TextButton(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Edit") }
+        TextButton(
+            onClick = { confirmRemoval = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Delete") }
+    }
+    if (confirmRemoval) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoval = false },
+            title = { Text("Remove this WebDAV source?") },
+            text = { Text("Sync work will stop and saved credentials will be removed.") },
+            confirmButton = { TextButton(onClick = {
+                confirmRemoval = false
+                chooseOfflinePolicy = true
+            }) { Text("Continue") } },
+            dismissButton = { TextButton(onClick = { confirmRemoval = false }) { Text("Cancel") } },
+        )
+    }
+    if (chooseOfflinePolicy) {
+        AlertDialog(
+            onDismissRequest = { chooseOfflinePolicy = false },
+            title = { Text("Offline copies") },
+            text = { Text("Keep downloaded copies for playback, or delete their files from this device?") },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        chooseOfflinePolicy = false
+                        scope.launch { error = onDelete(false).failure?.message }
+                    }) { Text("Keep copies") }
+                    TextButton(onClick = {
+                        chooseOfflinePolicy = false
+                        scope.launch { error = onDelete(true).failure?.message }
+                    }) { Text("Delete copies") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { chooseOfflinePolicy = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+fun LocalSourceDetailScreen(
+    source: SourceUiItem,
+    state: LocalSourceDetailState,
+    onRequestAccess: () -> Unit,
+    onScan: () -> Unit,
+    onOpenAppSettings: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(source.name, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text("Music stored on this device")
+        Text(source.status)
+        if (state.scanning) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Text("Scanning ${state.processed} of ${state.total}")
+        }
+        state.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        when (state.access) {
+            LocalMediaAccess.GRANTED -> Button(
+                onClick = onScan,
+                enabled = !state.scanning,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Scan local music") }
+            LocalMediaAccess.NEEDS_PERMISSION -> Button(
+                onClick = onRequestAccess,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Allow music access") }
+            LocalMediaAccess.PERMANENTLY_DENIED -> Button(
+                onClick = onOpenAppSettings,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Open app settings") }
+        }
+        Text(
+            "Local music is managed through Android media access. WebDAV credentials, browse, edit and delete actions do not apply.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+fun SourceBrowseScreen(
+    path: String,
+    items: List<SourceBrowseItem>,
+    loading: Boolean,
+    error: String?,
+    onOpen: (SourceBrowseItem) -> Unit,
+    onSync: () -> Unit,
+) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Text(if (path.isBlank()) "Source files" else path, style = MaterialTheme.typography.headlineLarge)
+            Button(onClick = onSync, modifier = Modifier.fillMaxWidth()) { Text("Sync now") }
+        }
+        if (loading) item { CircularProgressIndicator() }
+        error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
+        items(items, key = SourceBrowseItem::key) { entry ->
+            Card(onClick = { onOpen(entry) }, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = if (entry.isDirectory) "${entry.name}/" else entry.name,
+                    modifier = Modifier.padding(16.dp),
+                )
+            }
+        }
+    }
+}

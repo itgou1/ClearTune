@@ -1,0 +1,301 @@
+package com.cleartune.feature.sources
+
+import com.cleartune.core.contracts.SourceRepository
+import com.cleartune.core.model.MusicSource
+import com.cleartune.core.model.SourceId
+import com.cleartune.core.model.SourceType
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.util.Collections
+import java.util.IdentityHashMap
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+
+sealed interface SourceRoute {
+    data object List : SourceRoute
+    data object AddWebDav : SourceRoute
+    data class Edit(val sourceId: SourceId) : SourceRoute
+    data class Root(val sourceId: SourceId) : SourceRoute
+    data class Browse(val sourceId: SourceId, val relativePath: String) : SourceRoute
+    data class Invalid(val rawRoute: String) : SourceRoute
+
+    fun encoded(): String = when (this) {
+        List -> "sources"
+        AddWebDav -> "sources/add-webdav"
+        is Edit -> "sources/${encode(sourceId.value)}/edit"
+        is Root -> "sources/${encode(sourceId.value)}"
+        is Browse -> buildString {
+            append("sources/${encode(sourceId.value)}/browse")
+            if (relativePath.isNotBlank()) append('/').append(encode(relativePath))
+        }
+        is Invalid -> rawRoute
+    }
+
+    companion object {
+        fun parse(rawRoute: String): SourceRoute {
+            val parts = rawRoute.trim('/').split('/')
+            return try {
+                when {
+                    parts == listOf("sources") -> List
+                    parts == listOf("sources", "add-webdav") -> AddWebDav
+                    parts.size == 2 && parts[0] == "sources" -> Root(SourceId(decode(parts[1])))
+                    parts.size == 3 && parts[0] == "sources" && parts[2] == "edit" -> Edit(SourceId(decode(parts[1])))
+                    parts.size == 3 && parts[0] == "sources" && parts[2] == "browse" ->
+                        Browse(SourceId(decode(parts[1])), "")
+                    parts.size == 4 && parts[0] == "sources" && parts[2] == "browse" ->
+                        Browse(SourceId(decode(parts[1])), decode(parts[3]))
+                    else -> Invalid(rawRoute)
+                }
+            } catch (_: IllegalArgumentException) {
+                Invalid(rawRoute)
+            }
+        }
+
+        private fun encode(value: String): String =
+            URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
+        private fun decode(value: String): String = URLDecoder.decode(value, StandardCharsets.UTF_8.name())
+    }
+}
+
+data class SourceDraft(
+    val sourceId: SourceId?,
+    val name: String,
+    val url: String,
+    val username: String,
+    val password: CharArray,
+    val allowCleartext: Boolean,
+)
+
+data class SourceBrowseItem(val key: String, val name: String, val isDirectory: Boolean)
+data class SourceFailure(val code: String, val message: String, val retryable: Boolean)
+data class SourceResult<T>(val value: T? = null, val failure: SourceFailure? = null)
+enum class SourceSyncPhase { RUNNING, RETRYING, COMPLETED, FAILED, CANCELED }
+data class SourceSyncStatus(
+    val phase: SourceSyncPhase,
+    val discoveredTracks: Int,
+    val visitedDirectories: Int,
+    val failureCount: Int,
+    val errorMessage: String? = null,
+) {
+    val active: Boolean get() = phase == SourceSyncPhase.RUNNING || phase == SourceSyncPhase.RETRYING
+}
+fun interface SourceSyncStatusPort {
+    fun observe(sourceId: SourceId): Flow<SourceSyncStatus?>
+
+    companion object {
+        val None = SourceSyncStatusPort { flowOf(null) }
+    }
+}
+
+enum class LocalMediaAccess { GRANTED, NEEDS_PERMISSION, PERMANENTLY_DENIED }
+data class LocalSourceDetailState(
+    val access: LocalMediaAccess = LocalMediaAccess.NEEDS_PERMISSION,
+    val scanning: Boolean = false,
+    val processed: Int = 0,
+    val total: Int = 0,
+    val errorMessage: String? = null,
+)
+data class TestedRootState(val browsePath: String = "", val selectedRootPath: String? = null)
+class TestedSourceDraft internal constructor(internal var draft: SourceDraft) : AutoCloseable {
+    internal var browsePath: String = ""
+    internal var selectedRootPath: String? = null
+    internal fun rootState(): TestedRootState = TestedRootState(browsePath, selectedRootPath)
+    override fun close() = draft.password.fill('\u0000')
+}
+
+class SourceActionException(val failure: SourceFailure) : Exception(failure.message)
+
+interface SourceActionPort {
+    suspend fun test(draft: SourceDraft)
+    suspend fun browseTested(draft: SourceDraft, relativePath: String): List<SourceBrowseItem>
+    suspend fun selectRoot(draft: SourceDraft, relativePath: String): SourceDraft
+    suspend fun save(draft: SourceDraft): MusicSource
+    suspend fun delete(sourceId: SourceId, deleteOfflineCopies: Boolean)
+    suspend fun sync(sourceId: SourceId)
+    suspend fun cancelSync(sourceId: SourceId) = Unit
+    suspend fun browse(sourceId: SourceId, relativePath: String): List<SourceBrowseItem>
+}
+
+class SourceController(
+    private val sources: SourceRepository,
+    private val actions: SourceActionPort,
+) : AutoCloseable {
+    private val revision = AtomicLong()
+    private val receiptLock = Any()
+    private val receipts = Collections.newSetFromMap(IdentityHashMap<TestedSourceDraft, Boolean>())
+
+    suspend fun testConnection(state: WebDavFormState, sourceId: SourceId?): SourceResult<TestedSourceDraft> {
+        if (state.allowCleartext && !state.cleartextConfirmed) {
+            return SourceResult(
+                failure = SourceFailure(
+                    "cleartext_confirmation_required",
+                    "Confirm that this trusted network may expose credentials and audio over HTTP",
+                    false,
+                ),
+            )
+        }
+        val expectedRevision = revision.get()
+        val draft = SourceDraft(
+            sourceId,
+            state.name,
+            state.url,
+            state.username,
+            state.password.toCharArray(),
+            state.allowCleartext,
+        )
+        val tested = action(draft.password) {
+            actions.test(draft)
+            Unit
+        }
+        tested.failure?.let { return SourceResult(failure = it) }
+        synchronized(receiptLock) {
+            if (revision.get() != expectedRevision) {
+                draft.password.fill('\u0000')
+                return SourceResult(failure = SourceFailure(STALE_TEST_CODE, "Source details changed", false))
+            }
+            return SourceResult(value = TestedSourceDraft(draft).also(receipts::add))
+        }
+    }
+
+    suspend fun save(tested: TestedSourceDraft): SourceResult<MusicSource> {
+        if (!isValidReceipt(tested)) {
+            return SourceResult(failure = SourceFailure(STALE_TEST_CODE, "Connection test is no longer valid", false))
+        }
+        if (tested.selectedRootPath == null) {
+            return SourceResult(
+                failure = SourceFailure(
+                    "root_selection_required",
+                    "Choose the WebDAV music root before saving",
+                    false,
+                ),
+            )
+        }
+        return try {
+        action(tested.draft.password) { actions.save(tested.draft) }
+        } finally {
+            synchronized(receiptLock) { receipts.remove(tested) }
+            tested.close()
+        }
+    }
+
+    suspend fun browseTested(
+        tested: TestedSourceDraft,
+        relativePath: String,
+    ): SourceResult<List<SourceBrowseItem>> = action {
+        requireReceipt(tested)
+        val normalized = relativePath.trim('/')
+        require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
+        actions.browseTested(tested.draft, normalized).also { tested.browsePath = normalized }
+    }
+
+    suspend fun selectRoot(tested: TestedSourceDraft, relativePath: String): SourceResult<Unit> =
+        action {
+            requireReceipt(tested)
+            val normalized = relativePath.trim('/')
+            require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
+            tested.draft = actions.selectRoot(tested.draft, normalized)
+            tested.browsePath = normalized
+            tested.selectedRootPath = normalized
+        }
+
+    suspend fun delete(
+        sourceId: SourceId,
+        deleteOfflineCopies: Boolean = false,
+        onSuccess: () -> Unit = {},
+    ): SourceResult<Unit> {
+        webDavSource(sourceId)?.let { return SourceResult(failure = it) }
+        val result = action { actions.delete(sourceId, deleteOfflineCopies) }
+        if (result.failure == null) onSuccess()
+        return result
+    }
+
+    suspend fun requestSync(sourceId: SourceId): SourceResult<Unit> {
+        webDavSource(sourceId)?.let { return SourceResult(failure = it) }
+        return action { actions.sync(sourceId) }
+    }
+
+    suspend fun cancelSync(sourceId: SourceId): SourceResult<Unit> {
+        webDavSource(sourceId)?.let { return SourceResult(failure = it) }
+        return action { actions.cancelSync(sourceId) }
+    }
+
+    suspend fun browse(sourceId: SourceId, relativePath: String): SourceResult<List<SourceBrowseItem>> {
+        webDavSource(sourceId)?.let { return SourceResult(failure = it) }
+        return action {
+            val normalized = relativePath.trim('/')
+            require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
+            actions.browse(sourceId, normalized)
+        }
+    }
+
+    suspend fun syncAndBrowse(sourceId: SourceId, relativePath: String): SourceResult<List<SourceBrowseItem>> {
+        val sync = requestSync(sourceId)
+        sync.failure?.let { return SourceResult(failure = it) }
+        return browse(sourceId, relativePath)
+    }
+
+    fun abandon(tested: TestedSourceDraft?) {
+        synchronized(receiptLock) {
+            revision.incrementAndGet()
+            tested?.let {
+                receipts.remove(it)
+                it.close()
+            }
+        }
+    }
+
+    override fun close() {
+        synchronized(receiptLock) {
+            revision.incrementAndGet()
+            receipts.forEach(TestedSourceDraft::close)
+            receipts.clear()
+        }
+    }
+
+    suspend fun form(sourceId: SourceId): WebDavFormState? = sources.getSource(sourceId)?.let { source ->
+        WebDavFormState(
+            name = source.name,
+            url = source.baseUrl.orEmpty(),
+            allowCleartext = source.allowCleartext,
+            cleartextConfirmed = source.allowCleartext,
+        )
+    }
+
+    private suspend fun <T> action(secret: CharArray? = null, block: suspend () -> T): SourceResult<T> = try {
+        SourceResult(value = block())
+    } catch (cancellation: CancellationException) {
+        secret?.fill('\u0000')
+        throw cancellation
+    } catch (failure: SourceActionException) {
+        secret?.fill('\u0000')
+        SourceResult(failure = failure.failure)
+    } catch (failure: IllegalArgumentException) {
+        secret?.fill('\u0000')
+        SourceResult(failure = SourceFailure("invalid_input", failure.message ?: "Invalid source details", false))
+    } catch (_: Exception) {
+        secret?.fill('\u0000')
+        SourceResult(failure = SourceFailure("operation_failed", "Unable to complete source operation", true))
+    }
+
+    private fun requireReceipt(tested: TestedSourceDraft) {
+        check(isValidReceipt(tested)) { "Connection test is no longer valid" }
+    }
+
+    private fun isValidReceipt(tested: TestedSourceDraft): Boolean =
+        synchronized(receiptLock) { tested in receipts }
+
+    private suspend fun webDavSource(sourceId: SourceId): SourceFailure? {
+        val source = sources.getSource(sourceId)
+            ?: return SourceFailure("source_not_found", "Source not found", false)
+        return if (source.type == SourceType.WEBDAV) null else {
+            SourceFailure("wrong_source_type", "This action is only available for WebDAV sources", false)
+        }
+    }
+
+    private companion object {
+        const val STALE_TEST_CODE = "stale_test"
+    }
+}
