@@ -4,6 +4,10 @@ import com.cleartune.core.model.LibraryHome
 import com.cleartune.core.model.Album
 import com.cleartune.core.model.Artist
 import com.cleartune.core.model.TrackSummary
+import com.cleartune.core.model.PlaylistSummary
+import com.cleartune.core.model.TrackId
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 object LibraryRoutes {
     const val root = "library"
@@ -110,5 +114,16 @@ data class LibraryFeatureUiInputs(
     val onOpenFolder: (String) -> Unit = {},
     val onOpenAlbum: (Album) -> Unit = {},
     val onOpenArtist: (Artist) -> Unit = {},
+    val onOpenPlaylist: (PlaylistSummary) -> Unit = {},
     val onTrackMore: ((TrackSummary) -> Unit)? = null,
+    val observeTrackAction: (TrackId) -> Flow<LibraryTrackActionUi> = { flowOf(LibraryTrackActionUi()) },
+    val onToggleFavorite: suspend (TrackId) -> Unit = {},
+    val onToggleDownload: suspend (TrackId) -> Unit = {},
+)
+
+data class LibraryTrackActionUi(
+    val isFavorite: Boolean = false,
+    val isDownloaded: Boolean = false,
+    val canDownload: Boolean = false,
+    val downloadUnavailableReason: String = "Download unavailable",
 )

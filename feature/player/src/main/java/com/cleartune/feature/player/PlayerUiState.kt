@@ -19,7 +19,7 @@ sealed interface ArtworkPresentation {
 
 sealed interface LyricsUiState {
     data object Loading : LyricsUiState
-    data class Available(val lines: List<String>) : LyricsUiState
+    data class Available(val lines: List<LrcLine>) : LyricsUiState
     data object Unavailable : LyricsUiState
 }
 

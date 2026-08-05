@@ -2,6 +2,9 @@ package com.cleartune.app
 
 import android.Manifest
 import android.animation.ValueAnimator
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -46,6 +49,7 @@ import com.cleartune.feature.library.LibraryFeatureEntry
 import com.cleartune.feature.library.LibraryFeatureUiInputs
 import com.cleartune.feature.library.LibraryRoutes
 import com.cleartune.feature.library.LibrarySyncUiState
+import com.cleartune.feature.library.LibraryTrackActionUi
 import com.cleartune.feature.library.LocalAccessUiState
 import com.cleartune.feature.player.MiniPlayer
 import com.cleartune.feature.player.PlayerFeatureDependencies
@@ -68,6 +72,7 @@ import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flow
 
 object AppRoutes {
     const val Library = "library"
@@ -163,14 +168,24 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
     val context = LocalContext.current
     val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
     else Manifest.permission.READ_EXTERNAL_STORAGE
+    val activity = remember(context) { context.findActivity() }
+    val permissionHistory = remember(context) {
+        context.getSharedPreferences("audio_permission_history", Context.MODE_PRIVATE)
+    }
     var localAccess by remember(permission) {
         mutableStateOf(
             if (context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) LocalAccessUiState.GRANTED
-            else LocalAccessUiState.NOT_REQUESTED,
+            else if (permissionHistory.getBoolean(permission, false) && activity?.shouldShowRequestPermissionRationale(permission) == false) {
+                LocalAccessUiState.DENIED_PERMANENTLY
+            } else LocalAccessUiState.NOT_REQUESTED,
         )
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        localAccess = if (granted) LocalAccessUiState.GRANTED else LocalAccessUiState.DENIED_CAN_ASK
+        localAccess = AudioPermissionDecision.afterResult(
+            granted = granted,
+            requestWasMade = permissionHistory.getBoolean(permission, false),
+            shouldShowRationale = activity?.shouldShowRequestPermissionRationale(permission) == true,
+        )
         if (granted) container.enqueueLocalScan()
     }
     val scan by container.localScanState.collectAsState()
@@ -187,6 +202,8 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
             container.libraryBrowsePort,
             container.playbackGateway,
             container.playlistRepository,
+            container.queueRepository,
+            container.playbackGateway::syncQueue,
         )
     }
     val sourceDependencies = remember(container, localAccess, scan) {
@@ -228,21 +245,28 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
                     container.downloadRepository.observeDownloads(),
                     container.favoritesRepository.observeIsFavorite(trackId),
                 ) { downloads, isFavorite ->
+                    val downloaded = downloads.any { it.trackId == trackId && it.state == DownloadState.COMPLETED }
+                    val capability = TrackDownloadCapability.from(
+                        container.playbackLibraryRepository.getPlayableTrack(trackId),
+                        downloaded,
+                    )
                     PlayerTrackActionState(
                         isFavorite = isFavorite,
-                        isDownloaded = downloads.any { it.trackId == trackId && it.state == DownloadState.COMPLETED },
+                        isDownloaded = downloaded,
                         canFavorite = true,
-                        canDownload = true,
+                        canDownload = capability.canDownload,
+                        downloadUnavailableReason = capability.reason,
                     )
                 }
             },
             onToggleFavorite = container.favoritesRepository::toggle,
             onToggleDownload = { trackId ->
-                val existing = container.downloadRepository.observeDownloads().first().firstOrNull { it.trackId == trackId }
-                container.downloadRepository.dispatch(
-                    if (existing == null) DownloadCommand.Enqueue(trackId) else DownloadCommand.Delete(existing.id),
-                )
+                container.toggleTrackDownload(trackId)
             },
+            observeLyrics = { trackId -> flow {
+                emit(com.cleartune.feature.player.LyricsUiState.Loading)
+                emit(container.lyricsResolver.resolve(trackId))
+            } },
             onPlayOccurrence = { occurrenceId ->
                 playQueueOccurrence(
                     container.queueRepository,
@@ -283,7 +307,10 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
                     fun libraryInputs() = LibraryFeatureUiInputs(
                         localAccess = localAccess,
                         sync = sync,
-                        onRequestLocalAccess = { permissionLauncher.launch(permission) },
+                        onRequestLocalAccess = {
+                            permissionHistory.edit().putBoolean(permission, true).apply()
+                            permissionLauncher.launch(permission)
+                        },
                         onRefreshLocalLibrary = container::enqueueLocalScan,
                         onOpenSystemSettings = {
                             context.startActivity(
@@ -295,6 +322,27 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
                         onOpenFolder = { navController.navigate(AppRoutes.folder(it)) },
                         onOpenAlbum = { navController.navigate(AppRoutes.albumDetail(it.id.value)) },
                         onOpenArtist = { navController.navigate(AppRoutes.artistDetail(it.id.value)) },
+                        onOpenPlaylist = { navController.navigate(AppRoutes.playlistDetail(it.id.value)) },
+                        observeTrackAction = { trackId ->
+                            combine(
+                                container.downloadRepository.observeDownloads(),
+                                container.favoritesRepository.observeIsFavorite(trackId),
+                            ) { downloads, isFavorite ->
+                                val downloaded = downloads.any { it.trackId == trackId && it.state == DownloadState.COMPLETED }
+                                val capability = TrackDownloadCapability.from(
+                                    container.playbackLibraryRepository.getPlayableTrack(trackId),
+                                    downloaded,
+                                )
+                                LibraryTrackActionUi(
+                                    isFavorite = isFavorite,
+                                    isDownloaded = downloaded,
+                                    canDownload = capability.canDownload,
+                                    downloadUnavailableReason = capability.reason,
+                                )
+                            }
+                        },
+                        onToggleFavorite = container.favoritesRepository::toggle,
+                        onToggleDownload = { container.toggleTrackDownload(it) },
                     )
                     fun libraryRoute(pattern: String, featureRoute: String) = composable(pattern) {
                         LibraryFeatureEntry.Screen(
@@ -403,6 +451,12 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
             }
         }
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 private fun NavHostController.navigateOrBack(route: String) {

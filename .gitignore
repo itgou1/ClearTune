@@ -4,3 +4,5 @@ local.properties
 .idea/
 *.iml
 .worktrees/
+hs_err_pid*.log
+replay_pid*.log

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.cleartune.core.contracts.PlaybackGateway
 import com.cleartune.core.contracts.QueueRepository
 import com.cleartune.core.designsystem.theme.ClearTuneDimensions
+import com.cleartune.core.designsystem.component.SafeArtwork
 import com.cleartune.core.model.PlaybackCommand
 import com.cleartune.core.model.PlaybackState
 import com.cleartune.core.model.QueueCommand
@@ -328,29 +329,11 @@ private fun FullPlayerScreen(
 
 @Composable
 private fun Artwork(artwork: ArtworkPresentation, modifier: Modifier = Modifier) {
-    var failed by remember(artwork) { mutableStateOf(false) }
-    Box(
-        modifier = modifier.clip(RoundedCornerShape(ClearTuneDimensions.artworkCorner))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .semantics { contentDescription = "Album artwork" },
-        contentAlignment = Alignment.Center,
-    ) {
-        if (artwork is ArtworkPresentation.Remote && !failed) {
-            AsyncImage(
-                model = artwork.reference,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-                onError = { failed = true },
-            )
-        } else {
-            Text(
-                if (artwork is ArtworkPresentation.Fallback) artwork.monogram else "♪",
-                style = MaterialTheme.typography.displayMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-    }
+    SafeArtwork(
+        reference = (artwork as? ArtworkPresentation.Remote)?.reference,
+        fallback = (artwork as? ArtworkPresentation.Fallback)?.monogram ?: "♪",
+        modifier = modifier.semantics { contentDescription = "Album artwork" },
+    )
 }
 
 @Composable
@@ -363,7 +346,9 @@ private fun LyricsContent(lyrics: LyricsUiState, modifier: Modifier = Modifier) 
                 Text("Playback continues", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             is LyricsUiState.Available -> LazyColumn(Modifier.fillMaxSize()) {
-                items(lyrics.lines) { line -> Text(line, Modifier.padding(vertical = ClearTuneDimensions.spacingXs)) }
+                items(lyrics.lines, key = { "${it.timestampMs}:${it.text}" }) { line ->
+                    Text(line.text, Modifier.padding(vertical = ClearTuneDimensions.spacingXs))
+                }
             }
         }
     }
