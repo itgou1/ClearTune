@@ -2,6 +2,7 @@ package com.cleartune.data.webdav
 
 import android.content.pm.ServiceInfo
 import com.cleartune.core.model.MusicSource
+import com.cleartune.core.model.MutationDisposition
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.SourceType
 import kotlinx.coroutines.CancellationException
@@ -117,7 +118,7 @@ class WebDavSyncWorkerTest {
     }
 
     @Test
-    fun `retired sync report clears checkpoint and completes despite stale retryable failure`() = runTest {
+    fun `retired sync report persists retirement and completes despite stale retryable failure`() = runTest {
         val checkpoint = WebDavSyncCheckpoint(source.id, listOf("https://music.example/dav/"))
         val port = FakeSyncPort(source, checkpoint)
         val runner = DurableWebDavSyncRunner(port) { _, _, _ ->
@@ -130,7 +131,8 @@ class WebDavSyncWorkerTest {
         }
 
         assertEquals(WebDavWorkerOutcome.COMPLETED, runner.run(source.id))
-        assertEquals(1, port.clearCount)
+        assertEquals(1, port.retireCount)
+        assertEquals(0, port.clearCount)
     }
 
     @Test
@@ -193,16 +195,25 @@ private class FakeSyncPort(
     private var checkpoint = checkpoint
     val saved = mutableListOf<WebDavSyncCheckpoint>()
     var clearCount = 0
+    var retireCount = 0
     override suspend fun loadSource(sourceId: SourceId): MusicSource? = source
     override suspend fun loadCheckpoint(sourceId: SourceId): WebDavSyncCheckpoint? = checkpoint
-    override suspend fun saveCheckpoint(checkpoint: WebDavSyncCheckpoint) {
+    override suspend fun saveCheckpoint(checkpoint: WebDavSyncCheckpoint): MutationDisposition {
         saved += checkpoint
         this.checkpoint = checkpoint
+        return MutationDisposition.APPLIED
     }
     override suspend fun clearCheckpoint(sourceId: SourceId) {
         clearCount++
         checkpoint = null
     }
+    override suspend fun retireCheckpoint(sourceId: SourceId) {
+        retireCount++
+        checkpoint = null
+    }
     override suspend fun remoteFingerprint(sourceId: SourceId, sourceKey: String): RemoteFingerprint? = null
-    override suspend fun markUpdateAvailable(sourceId: SourceId, sourceKey: String) = Unit
+    override suspend fun markUpdateAvailable(
+        sourceId: SourceId,
+        sourceKey: String,
+    ) = MutationDisposition.APPLIED
 }

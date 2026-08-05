@@ -93,6 +93,7 @@ class WebDavSyncEngineTest {
 
         val report = WebDavSyncEngine(client, RecordingLibraryGateway()).sync(source, checkpoint) {
             checkpoints += it
+            MutationDisposition.APPLIED
         }
 
         assertEquals(listOf("/dav/album/"), calls)
@@ -225,7 +226,10 @@ class WebDavSyncEngineTest {
             },
             libraryWriteGateway = RecordingLibraryGateway(),
             fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
-            updatePublisher = RemoteUpdatePublisher { _, sourceKey -> updates += sourceKey },
+            updatePublisher = RemoteUpdatePublisher { _, sourceKey ->
+                updates += sourceKey
+                MutationDisposition.APPLIED
+            },
         ).sync(source)
 
         assertEquals(listOf("changed.mp3"), updates)
@@ -241,7 +245,10 @@ class WebDavSyncEngineTest {
             libraryWriteGateway = RecordingLibraryGateway(),
             fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
             metadataEnricher = WebDavMetadataEnricher { _, _ -> error("metadata unavailable") },
-            updatePublisher = RemoteUpdatePublisher { _, sourceKey -> updates += sourceKey },
+            updatePublisher = RemoteUpdatePublisher { _, sourceKey ->
+                updates += sourceKey
+                MutationDisposition.APPLIED
+            },
         )
 
         val report = engine.sync(source)
@@ -262,7 +269,10 @@ class WebDavSyncEngineTest {
                     throw IllegalStateException("database unavailable")
             },
             fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
-            updatePublisher = RemoteUpdatePublisher { _, sourceKey -> updates += sourceKey },
+            updatePublisher = RemoteUpdatePublisher { _, sourceKey ->
+                updates += sourceKey
+                MutationDisposition.APPLIED
+            },
         )
 
         runCatching { engine.sync(source) }
@@ -286,16 +296,80 @@ class WebDavSyncEngineTest {
                 }
             },
             fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
-            updatePublisher = RemoteUpdatePublisher { _, key -> updates += key },
+            updatePublisher = RemoteUpdatePublisher { _, key ->
+                updates += key
+                MutationDisposition.APPLIED
+            },
         )
 
-        val report = engine.sync(source, saveCheckpoint = { checkpoints += it })
+        val report = engine.sync(source, saveCheckpoint = {
+            checkpoints += it
+            MutationDisposition.APPLIED
+        })
 
         assertTrue(report.retired)
         assertEquals(1, mutations.size)
         assertTrue(mutations.single() is LibraryMutation.Upsert)
         assertTrue(updates.isEmpty())
         assertTrue(checkpoints.isEmpty())
+    }
+
+    @Test
+    fun `applied upsert then retirement before update publication stops finalization`() = runTest {
+        val gateway = RecordingLibraryGateway()
+        var updateAttempts = 0
+        var checkpointAttempts = 0
+        val engine = WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("late.mp3")!!, "late.mp3", false, 11, "v2"))
+            },
+            libraryWriteGateway = gateway,
+            fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
+            updatePublisher = RemoteUpdatePublisher { _, _ ->
+                updateAttempts += 1
+                MutationDisposition.SOURCE_RETIRED
+            },
+        )
+
+        val report = engine.sync(source, saveCheckpoint = {
+            checkpointAttempts += 1
+            MutationDisposition.APPLIED
+        })
+
+        assertTrue(report.retired)
+        assertEquals(1, updateAttempts)
+        assertEquals(0, checkpointAttempts)
+        assertEquals(1, gateway.mutations.size)
+        assertTrue(gateway.mutations.single() is LibraryMutation.Upsert)
+    }
+
+    @Test
+    fun `applied update then retirement before checkpoint save stops finalization`() = runTest {
+        val gateway = RecordingLibraryGateway()
+        var updateAttempts = 0
+        var checkpointAttempts = 0
+        val engine = WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("late.mp3")!!, "late.mp3", false, 11, "v2"))
+            },
+            libraryWriteGateway = gateway,
+            fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, "v1") },
+            updatePublisher = RemoteUpdatePublisher { _, _ ->
+                updateAttempts += 1
+                MutationDisposition.APPLIED
+            },
+        )
+
+        val report = engine.sync(source, saveCheckpoint = {
+            checkpointAttempts += 1
+            MutationDisposition.SOURCE_RETIRED
+        })
+
+        assertTrue(report.retired)
+        assertEquals(1, updateAttempts)
+        assertEquals(1, checkpointAttempts)
+        assertEquals(1, gateway.mutations.size)
+        assertTrue(gateway.mutations.single() is LibraryMutation.Upsert)
     }
 
     @Test
@@ -308,7 +382,10 @@ class WebDavSyncEngineTest {
             RecordingLibraryGateway(),
         )
 
-        val report = engine.sync(source, saveCheckpoint = { checkpoints += it })
+        val report = engine.sync(source, saveCheckpoint = {
+            checkpoints += it
+            MutationDisposition.APPLIED
+        })
 
         assertTrue(report.failures.single().retryable)
         assertEquals(listOf(base.toString()), checkpoints.last().pendingDirectories)

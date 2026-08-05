@@ -40,7 +40,7 @@ class RoomWebDavSourceRemovalCoordinator(
     private val sourceWork: SourceWorkCancellation,
     private val downloadWork: DownloadWorkCancellation,
     private val credentials: CredentialDeletion,
-    private val clearCheckpoint: suspend (SourceId) -> Unit = {},
+    private val retireCheckpoint: suspend (SourceId) -> Unit = {},
     private val artworkCache: ArtworkCache = ArtworkCache.None,
 ) {
     private val root = downloadRoot.canonicalFile
@@ -67,7 +67,7 @@ class RoomWebDavSourceRemovalCoordinator(
             },
         )
 
-        clearCheckpoint(sourceId)
+        retireCheckpoint(sourceId)
         clearArtwork(sourceId)
         committed.source.credentialAlias?.let { alias ->
             credentials.delete(CredentialAlias(alias))
@@ -83,10 +83,13 @@ class RoomWebDavSourceRemovalCoordinator(
                 ?.let { database.libraryWriteDao().markLocationUnavailable(it.id) }
         }
         val cleanupPending = deleteOfflineCopies || download.cleanupPending
-        val retainedCompleted = !cleanupPending && download.state == DownloadState.COMPLETED.name
+        val retainedCompleted = !cleanupPending && download.state in setOf(
+            DownloadState.COMPLETED.name,
+            DownloadState.UPDATE_AVAILABLE.name,
+        )
         database.downloadDao().upsert(
             download.copy(
-                state = if (retainedCompleted) download.state else DownloadState.CANCELED.name,
+                state = if (retainedCompleted) DownloadState.COMPLETED.name else DownloadState.CANCELED.name,
                 cleanupPending = cleanupPending,
                 errorMessage = if (cleanupPending) CLEANUP_PENDING_MESSAGE else null,
                 updatedAtEpochMs = System.currentTimeMillis(),
@@ -99,12 +102,15 @@ class RoomWebDavSourceRemovalCoordinator(
             database.libraryWriteDao().markRemoteLocationsUnavailable(sourceId.value)
             val affected = database.downloadDao().downloadsForSource(sourceId.value)
             affected.forEach { download ->
-                if (download.state != DownloadState.COMPLETED.name &&
-                    download.state != DownloadState.CANCELED.name
-                ) {
+                val repairedState = when (download.state) {
+                    DownloadState.COMPLETED.name, DownloadState.CANCELED.name -> null
+                    DownloadState.UPDATE_AVAILABLE.name -> DownloadState.COMPLETED.name
+                    else -> DownloadState.CANCELED.name
+                }
+                if (repairedState != null) {
                     database.downloadDao().upsert(
                         download.copy(
-                            state = DownloadState.CANCELED.name,
+                            state = repairedState,
                             errorMessage = null,
                             updatedAtEpochMs = System.currentTimeMillis(),
                         ),
@@ -155,7 +161,7 @@ class RoomWebDavSourceRemovalCoordinator(
             val downloadIds = committedDownloadsForTombstone(sourceId)
             sourceWork.cancel(sourceId)
             downloadIds.forEach { downloadWork.stop(it) }
-            clearCheckpoint(sourceId)
+            retireCheckpoint(sourceId)
             clearArtwork(sourceId)
             source.credentialAlias?.let { alias ->
                 credentials.delete(CredentialAlias(alias))

@@ -3,6 +3,7 @@ package com.cleartune.data.webdav
 import com.cleartune.core.model.MusicSource
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.SourceType
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.awt.image.BufferedImage
 import java.nio.ByteBuffer
@@ -18,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -123,6 +125,7 @@ class RangeWebDavMetadataEnricherTest {
                     RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
                 },
                 artworkCache = EmbeddedArtworkCache(root, maximumArtworkBytes = 1_024),
+                jpegDecodeProbe = imageIoJpegDecodeProbe(),
             )
 
             val metadata = enricher.enrich(source(), entry("art.mp3", fixture.size.toLong()))
@@ -196,6 +199,7 @@ class RangeWebDavMetadataEnricherTest {
                 RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
             },
             artworkCache = cache,
+            jpegDecodeProbe = imageIoJpegDecodeProbe(),
         )
 
         val metadata = enricher.enrich(source(), entry("jpeg-cover.flac", fixture.size.toLong()))
@@ -217,6 +221,7 @@ class RangeWebDavMetadataEnricherTest {
                 RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
             },
             artworkCache = cache,
+            jpegDecodeProbe = imageIoJpegDecodeProbe(),
         )
 
         val metadata = enricher.enrich(source(), entry("progressive.mp3", fixture.size.toLong()))
@@ -293,6 +298,7 @@ class RangeWebDavMetadataEnricherTest {
                     RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
                 },
                 artworkCache = cache,
+                jpegDecodeProbe = imageIoJpegDecodeProbe(),
             )
 
             val metadata = enricher.enrich(source(), entry("$case.mp3", fixture.size.toLong()))
@@ -335,6 +341,43 @@ class RangeWebDavMetadataEnricherTest {
             assertEquals("Metadata survives $case", metadata.title)
             assertNull("$case must not produce an artwork reference", metadata.artworkRef)
             assertTrue("$case must not reach the cache", cache.stored.isEmpty())
+        }
+    }
+
+    @Test
+    fun `mature JPEG decoder rejects entropy restart and progressive forgeries`() {
+        assertTrue("baseline JPEG fixture must be decodable", imageIoCanDecode(JPEG_1X1, 1, 1))
+        assertTrue("progressive JPEG fixture must be decodable", imageIoCanDecode(progressiveJpeg(), 1, 1))
+
+        matureDecoderRejectedJpegs().forEach { fixture ->
+            assertFalse(
+                "${fixture.name} must be rejected by the mature decoder",
+                imageIoCanDecode(fixture.bytes, fixture.width, fixture.height),
+            )
+        }
+    }
+
+    @Test
+    fun `MP3 APIC rejects JPEGs a mature decoder cannot decode but preserves metadata`() = runTest {
+        matureDecoderRejectedJpegs().forEach { invalid ->
+            val cache = RecordingArtworkCache()
+            val fixture = id3(
+                "TIT2" to text("Metadata survives ${invalid.name}"),
+                "APIC" to apic("image/jpeg", invalid.bytes),
+            )
+            val enricher = RangeWebDavMetadataEnricher(
+                reader = WebDavRangeReader { _, _, _, _, _ ->
+                    RangeResponse(fixture, "bytes 0-${fixture.lastIndex}/${fixture.size}", true, null)
+                },
+                artworkCache = cache,
+                jpegDecodeProbe = imageIoJpegDecodeProbe(),
+            )
+
+            val metadata = enricher.enrich(source(), entry("${invalid.name}.mp3", fixture.size.toLong()))
+
+            assertEquals("Metadata survives ${invalid.name}", metadata.title)
+            assertNull("${invalid.name} must not produce an artwork reference", metadata.artworkRef)
+            assertTrue("${invalid.name} must not reach the cache", cache.stored.isEmpty())
         }
     }
 
@@ -564,6 +607,130 @@ class RangeWebDavMetadataEnricherTest {
         jpeg[scanStart + 1] = marker.toByte()
     }
 
+    private data class InvalidJpeg(
+        val name: String,
+        val bytes: ByteArray,
+        val width: Int,
+        val height: Int,
+    )
+
+    private fun matureDecoderRejectedJpegs(): List<InvalidJpeg> {
+        val largerBaseline = baselineJpeg(width = 64, height = 16)
+        return listOf(
+            InvalidJpeg("one byte entropy", JPEG_1X1.withOnlyJpegEntropy(byteArrayOf(0)), 1, 1),
+            InvalidJpeg(
+                "invalid Huffman entropy code",
+                JPEG_1X1.withOnlyJpegEntropy(byteArrayOf(0xff.toByte(), 0)),
+                1,
+                1,
+            ),
+            InvalidJpeg(
+                "premature multi MCU termination",
+                largerBaseline.withOnlyJpegEntropy(byteArrayOf(0)),
+                64,
+                16,
+            ),
+            InvalidJpeg(
+                "consecutive restart markers",
+                JPEG_1X1.withRestartIntervalAndEntropy(
+                    interval = 1,
+                    entropy = byteArrayOf(0, 0xff.toByte(), 0xd0.toByte(), 0xff.toByte(), 0xd1.toByte(), 0),
+                ),
+                1,
+                1,
+            ),
+            InvalidJpeg(
+                "missing restart markers",
+                largerBaseline.withRestartInterval(interval = 1),
+                64,
+                16,
+            ),
+            InvalidJpeg("progressive refinement before initial scan", progressiveJpeg().withInvalidFirstProgressiveScan(), 1, 1),
+        )
+    }
+
+    private fun ByteArray.withOnlyJpegEntropy(entropy: ByteArray): ByteArray {
+        val scanStart = jpegScanStart()
+        return copyOfRange(0, scanStart) + entropy + byteArrayOf(0xff.toByte(), 0xd9.toByte())
+    }
+
+    private fun ByteArray.withRestartIntervalAndEntropy(interval: Int, entropy: ByteArray): ByteArray {
+        val sos = jpegMarkerOffset(0xda)
+        val scanStart = jpegScanStart(sos)
+        val dri = byteArrayOf(
+            0xff.toByte(), 0xdd.toByte(), 0, 4,
+            (interval ushr 8).toByte(), interval.toByte(),
+        )
+        return copyOfRange(0, sos) + dri + copyOfRange(sos, scanStart) + entropy +
+            byteArrayOf(0xff.toByte(), 0xd9.toByte())
+    }
+
+    private fun ByteArray.withRestartInterval(interval: Int): ByteArray {
+        val sos = jpegMarkerOffset(0xda)
+        val dri = byteArrayOf(
+            0xff.toByte(), 0xdd.toByte(), 0, 4,
+            (interval ushr 8).toByte(), interval.toByte(),
+        )
+        return copyOfRange(0, sos) + dri + copyOfRange(sos, size)
+    }
+
+    private fun ByteArray.withInvalidFirstProgressiveScan(): ByteArray = copyOf().also { jpeg ->
+        val sos = jpeg.jpegMarkerOffset(0xda)
+        val segmentLength = ((jpeg[sos + 2].toInt() and 0xff) shl 8) or (jpeg[sos + 3].toInt() and 0xff)
+        jpeg[sos + 1 + segmentLength] = 0x10
+    }
+
+    private fun ByteArray.jpegScanStart(sos: Int = jpegMarkerOffset(0xda)): Int {
+        val segmentLength = ((this[sos + 2].toInt() and 0xff) shl 8) or (this[sos + 3].toInt() and 0xff)
+        return sos + 2 + segmentLength
+    }
+
+    private fun ByteArray.jpegMarkerOffset(marker: Int): Int = indices.firstOrNull { index ->
+        index + 1 < size && (this[index].toInt() and 0xff) == 0xff &&
+            (this[index + 1].toInt() and 0xff) == marker
+    } ?: error("missing JPEG marker ${marker.toString(16)}")
+
+    private fun imageIoJpegDecodeProbe() = JpegDecodeProbe { bytes, start, end, width, height ->
+        imageIoCanDecode(bytes, width, height, start, end)
+    }
+
+    private fun imageIoCanDecode(
+        bytes: ByteArray,
+        expectedWidth: Int,
+        expectedHeight: Int,
+        start: Int = 0,
+        end: Int = bytes.size,
+    ): Boolean = try {
+        ByteArrayInputStream(bytes, start, end - start).use { stream ->
+            ImageIO.createImageInputStream(stream)?.use { input ->
+                val readers = ImageIO.getImageReaders(input)
+                if (!readers.hasNext()) return false
+                val reader = readers.next()
+                try {
+                    val warnings = mutableListOf<String>()
+                    reader.addIIOReadWarningListener { _, warning -> warnings += warning }
+                    reader.input = input
+                    if (reader.getWidth(0) != expectedWidth || reader.getHeight(0) != expectedHeight) return false
+                    var sample = 1
+                    while ((expectedWidth + sample - 1) / sample > 64 ||
+                        (expectedHeight + sample - 1) / sample > 64
+                    ) {
+                        sample *= 2
+                    }
+                    val parameters = reader.defaultReadParam.apply {
+                        setSourceSubsampling(sample, sample, 0, 0)
+                    }
+                    val decoded = reader.read(0, parameters) ?: return false
+                    warnings.isEmpty() && decoded.width in 1..64 && decoded.height in 1..64
+                } finally {
+                    reader.dispose()
+                }
+            } ?: false
+        }
+    } catch (_: Exception) {
+        false
+    }
+
     private fun forgedSofAndEoiJpeg(): ByteArray = byteArrayOf(
         0xff.toByte(), 0xd8.toByte(),
         0xff.toByte(), 0xc0.toByte(), 0, 8, 8, 0, 1, 0, 1, 0,
@@ -578,6 +745,21 @@ class RangeWebDavMetadataEnricherTest {
                 writer.output = imageOutput
                 val parameters = writer.defaultWriteParam.apply { progressiveMode = ImageWriteParam.MODE_DEFAULT }
                 writer.write(null, IIOImage(image, null, null), parameters)
+            }
+            writer.dispose()
+            output.toByteArray()
+        }
+    }
+
+    private fun baselineJpeg(width: Int, height: Int): ByteArray {
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB).apply {
+            for (y in 0 until height) for (x in 0 until width) setRGB(x, y, (x * 31 shl 16) xor (y * 17 shl 8))
+        }
+        val writer = ImageIO.getImageWritersByFormatName("jpeg").next()
+        return ByteArrayOutputStream().use { output ->
+            ImageIO.createImageOutputStream(output).use { imageOutput ->
+                writer.output = imageOutput
+                writer.write(null, IIOImage(image, null, null), writer.defaultWriteParam)
             }
             writer.dispose()
             output.toByteArray()

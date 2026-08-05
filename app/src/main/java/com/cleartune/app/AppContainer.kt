@@ -157,7 +157,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
             override suspend fun deleteFile(file: File): Boolean = !file.exists() || file.delete()
         },
         credentials = CredentialDeletion(credentialStore::delete),
-        clearCheckpoint = webDavPersistence::clearCheckpoint,
+        retireCheckpoint = webDavPersistence::retireCheckpoint,
         artworkCache = artworkCache,
     )
     val sourceController = SourceController(

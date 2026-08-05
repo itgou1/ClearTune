@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cleartune.core.contracts.CredentialStore
+import com.cleartune.core.contracts.LibraryWriteGateway
 import com.cleartune.core.contracts.WebDavCredential
 import com.cleartune.core.database.ClearTuneDatabase
 import com.cleartune.core.database.RoomLibraryRepository
@@ -18,6 +19,8 @@ import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.DownloadSummary
 import com.cleartune.core.model.LocationType
+import com.cleartune.core.model.MutationDisposition
+import com.cleartune.core.model.MutationResult
 import com.cleartune.core.model.PlaylistCommand
 import com.cleartune.core.model.QueueCommand
 import com.cleartune.core.model.SourceId
@@ -25,6 +28,7 @@ import com.cleartune.core.model.TrackId
 import com.cleartune.data.webdav.DirectoryListingClient
 import com.cleartune.data.webdav.DurableWebDavSyncRunner
 import com.cleartune.data.webdav.EnrichedTrackMetadata
+import com.cleartune.data.webdav.RemoteFingerprint
 import com.cleartune.data.webdav.RemoteFingerprintLookup
 import com.cleartune.data.webdav.WebDavEntry
 import com.cleartune.data.webdav.WebDavMetadataEnricher
@@ -54,6 +58,10 @@ class WebDavSourceRemovalAndroidTest {
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        context.getSharedPreferences("webdav_sync_checkpoints", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
         database = Room.inMemoryDatabaseBuilder(context, ClearTuneDatabase::class.java)
             .allowMainThreadQueries()
             .build()
@@ -207,8 +215,9 @@ class WebDavSourceRemovalAndroidTest {
         val repository = RoomLibraryRepository(database)
         val checkpoints = object : WebDavCheckpointStore {
             override suspend fun load(sourceId: SourceId): WebDavSyncCheckpoint? = null
-            override suspend fun save(checkpoint: WebDavSyncCheckpoint) = Unit
+            override suspend fun save(checkpoint: WebDavSyncCheckpoint) = MutationDisposition.APPLIED
             override suspend fun clear(sourceId: SourceId) = Unit
+            override suspend fun retire(sourceId: SourceId) = Unit
         }
         val persistence = RoomWebDavPersistenceAdapter(database, repository, checkpoints)
         val syncPausedAfterLoad = CompletableDeferred<Unit>()
@@ -243,7 +252,7 @@ class WebDavSourceRemovalAndroidTest {
             effects,
             effects,
             effects,
-            clearCheckpoint = persistence::clearCheckpoint,
+            retireCheckpoint = persistence::retireCheckpoint,
         )
 
         val sync = async { runner.run(SOURCE_ID) }
@@ -258,6 +267,106 @@ class WebDavSourceRemovalAndroidTest {
         )
         assertEquals("late-sync-location", stable.id)
         assertFalse(stable.available)
+    }
+
+    @Test
+    fun removalCommittedBeforeLateUpdateRejectsPublicationAndRetainsCompletedOfflineCopy() = runBlocking {
+        seedGraph()
+        val repository = RoomLibraryRepository(database)
+        val checkpointStore = SharedPreferencesWebDavCheckpointStore(
+            ApplicationProvider.getApplicationContext(),
+        )
+        val persistence = RoomWebDavPersistenceAdapter(database, repository, checkpointStore)
+        val markReached = CompletableDeferred<Unit>()
+        val resumeMark = CompletableDeferred<Unit>()
+        val runner = updateRaceRunner(persistence) { sourceId, sourceKey ->
+            markReached.complete(Unit)
+            resumeMark.await()
+            persistence.markUpdateAvailable(sourceId, sourceKey)
+        }
+        val effects = RecordingRemovalEffects()
+        val coordinator = RoomWebDavSourceRemovalCoordinator(
+            database,
+            root,
+            effects,
+            effects,
+            effects,
+            retireCheckpoint = persistence::retireCheckpoint,
+        )
+
+        val sync = async { runner.run(SOURCE_ID) }
+        markReached.await()
+        coordinator.remove(SOURCE_ID, deleteOfflineCopies = false)
+        resumeMark.complete(Unit)
+
+        assertEquals(WebDavWorkerOutcome.COMPLETED, sync.await())
+        assertEquals(DownloadState.COMPLETED.name, database.downloadDao().download(DOWNLOAD_ID)?.state)
+        assertEquals(
+            MutationDisposition.SOURCE_RETIRED,
+            checkpointStore.save(WebDavSyncCheckpoint(SOURCE_ID, emptyList())),
+        )
+        assertNull(checkpointStore.load(SOURCE_ID))
+    }
+
+    @Test
+    fun updateCommittedBeforeRemovalIsRestoredAndLateCheckpointIsRejected() = runBlocking {
+        seedGraph()
+        val repository = RoomLibraryRepository(database)
+        val checkpointStore = SharedPreferencesWebDavCheckpointStore(
+            ApplicationProvider.getApplicationContext(),
+        )
+        val persistence = RoomWebDavPersistenceAdapter(database, repository, checkpointStore)
+        val markApplied = CompletableDeferred<Unit>()
+        val resumeAfterRemoval = CompletableDeferred<Unit>()
+        val runner = updateRaceRunner(persistence) { sourceId, sourceKey ->
+            val disposition = persistence.markUpdateAvailable(sourceId, sourceKey)
+            markApplied.complete(Unit)
+            resumeAfterRemoval.await()
+            disposition
+        }
+        val effects = RecordingRemovalEffects()
+        val coordinator = RoomWebDavSourceRemovalCoordinator(
+            database,
+            root,
+            effects,
+            effects,
+            effects,
+            retireCheckpoint = persistence::retireCheckpoint,
+        )
+
+        val sync = async { runner.run(SOURCE_ID) }
+        markApplied.await()
+        assertEquals(DownloadState.UPDATE_AVAILABLE.name, database.downloadDao().download(DOWNLOAD_ID)?.state)
+        coordinator.remove(SOURCE_ID, deleteOfflineCopies = false)
+        assertEquals(DownloadState.COMPLETED.name, database.downloadDao().download(DOWNLOAD_ID)?.state)
+        resumeAfterRemoval.complete(Unit)
+
+        assertEquals(WebDavWorkerOutcome.COMPLETED, sync.await())
+        assertNull(checkpointStore.load(SOURCE_ID))
+        assertEquals(
+            MutationDisposition.SOURCE_RETIRED,
+            checkpointStore.save(WebDavSyncCheckpoint(SOURCE_ID, emptyList())),
+        )
+    }
+
+    @Test
+    fun checkpointRetirementPersistsAcrossStoreInstancesAndWinsBothOrderings() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sourceId = SourceId("checkpoint-ordering")
+        val checkpoint = WebDavSyncCheckpoint(sourceId, listOf("https://music.example/dav/"))
+        val first = SharedPreferencesWebDavCheckpointStore(context)
+
+        assertEquals(MutationDisposition.APPLIED, first.save(checkpoint))
+        assertEquals(checkpoint, first.load(sourceId))
+        first.retire(sourceId)
+        assertNull(first.load(sourceId))
+        assertEquals(MutationDisposition.SOURCE_RETIRED, first.save(checkpoint))
+
+        val recreated = SharedPreferencesWebDavCheckpointStore(context)
+        assertNull(recreated.load(sourceId))
+        assertEquals(MutationDisposition.SOURCE_RETIRED, recreated.save(checkpoint))
+        recreated.clear(sourceId)
+        assertEquals(MutationDisposition.SOURCE_RETIRED, recreated.save(checkpoint))
     }
 
     @Test
@@ -354,6 +463,31 @@ class WebDavSourceRemovalAndroidTest {
         playlists.apply(PlaylistCommand.AddTrack(com.cleartune.core.model.PlaylistId("playlist"), trackId))
         database.playbackDao().upsertHistory(PlaybackHistoryEntity(trackId = trackId.value, playedAtEpochMs = 1, completed = true))
         return Fixture(trackId, "playlist", file)
+    }
+
+    private fun updateRaceRunner(
+        persistence: RoomWebDavPersistenceAdapter,
+        publish: suspend (SourceId, String) -> MutationDisposition,
+    ): DurableWebDavSyncRunner = DurableWebDavSyncRunner(persistence) { source, checkpoint, saveCheckpoint ->
+        WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(
+                    WebDavEntry(
+                        "https://music.example/dav/song.flac".toHttpUrl(),
+                        "song.flac",
+                        false,
+                        5,
+                        "v2",
+                    ),
+                )
+            },
+            libraryWriteGateway = object : LibraryWriteGateway {
+                override suspend fun applyLibraryMutation(mutation: com.cleartune.core.model.LibraryMutation) =
+                    MutationResult(disposition = MutationDisposition.APPLIED)
+            },
+            fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(4, "v1", true) },
+            updatePublisher = com.cleartune.data.webdav.RemoteUpdatePublisher(publish),
+        ).sync(source, checkpoint, saveCheckpoint)
     }
 
     private data class Fixture(val trackId: TrackId, val playlistId: String, val file: File)

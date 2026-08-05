@@ -1,6 +1,7 @@
 package com.cleartune.data.webdav
 
 import com.cleartune.core.model.MusicSource
+import com.cleartune.core.model.MutationDisposition
 import com.cleartune.core.model.SourceId
 import kotlinx.coroutines.CancellationException
 
@@ -23,10 +24,11 @@ data class WebDavSyncCheckpoint(
 interface WebDavSyncPort {
     suspend fun loadSource(sourceId: SourceId): MusicSource?
     suspend fun loadCheckpoint(sourceId: SourceId): WebDavSyncCheckpoint?
-    suspend fun saveCheckpoint(checkpoint: WebDavSyncCheckpoint)
+    suspend fun saveCheckpoint(checkpoint: WebDavSyncCheckpoint): MutationDisposition
     suspend fun clearCheckpoint(sourceId: SourceId)
+    suspend fun retireCheckpoint(sourceId: SourceId)
     suspend fun remoteFingerprint(sourceId: SourceId, sourceKey: String): RemoteFingerprint?
-    suspend fun markUpdateAvailable(sourceId: SourceId, sourceKey: String)
+    suspend fun markUpdateAvailable(sourceId: SourceId, sourceKey: String): MutationDisposition
 }
 
 class WebDavSyncException(
@@ -38,7 +40,7 @@ fun interface WebDavSyncOperation {
     suspend fun sync(
         source: MusicSource,
         checkpoint: WebDavSyncCheckpoint?,
-        saveCheckpoint: suspend (WebDavSyncCheckpoint) -> Unit,
+        saveCheckpoint: suspend (WebDavSyncCheckpoint) -> MutationDisposition,
     ): WebDavSyncReport
 }
 
@@ -67,7 +69,7 @@ class DurableWebDavSyncRunner(
             val report = operation.sync(source, checkpoint, port::saveCheckpoint)
             when {
                 report.retired -> {
-                    port.clearCheckpoint(sourceId)
+                    port.retireCheckpoint(sourceId)
                     WebDavWorkerOutcome.COMPLETED
                 }
                 report.failures.isEmpty() -> {

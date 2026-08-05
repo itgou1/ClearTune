@@ -7,6 +7,7 @@ import com.cleartune.core.contracts.SourceRepository
 import com.cleartune.core.database.ClearTuneDatabase
 import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.MusicSource
+import com.cleartune.core.model.MutationDisposition
 import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.SourceType
 import com.cleartune.core.network.WebDavUrlPolicy
@@ -51,8 +52,9 @@ object SourceOriginMatcher {
 
 interface WebDavCheckpointStore {
     suspend fun load(sourceId: SourceId): WebDavSyncCheckpoint?
-    suspend fun save(checkpoint: WebDavSyncCheckpoint)
+    suspend fun save(checkpoint: WebDavSyncCheckpoint): MutationDisposition
     suspend fun clear(sourceId: SourceId)
+    suspend fun retire(sourceId: SourceId)
 }
 
 class SharedPreferencesWebDavCheckpointStore(context: Context) : WebDavCheckpointStore {
@@ -60,19 +62,34 @@ class SharedPreferencesWebDavCheckpointStore(context: Context) : WebDavCheckpoin
     private val mutex = Mutex()
 
     override suspend fun load(sourceId: SourceId): WebDavSyncCheckpoint? = mutex.withLock {
+        if (preferences.getBoolean(retiredKey(sourceId), false)) return@withLock null
         preferences.getString(sourceId.value, null)?.let(::decode)
             ?.takeIf { it.sourceId == sourceId }
     }
 
     override suspend fun save(checkpoint: WebDavSyncCheckpoint) = mutex.withLock {
+        if (preferences.getBoolean(retiredKey(checkpoint.sourceId), false)) {
+            return@withLock MutationDisposition.SOURCE_RETIRED
+        }
         preferences.edit().putString(checkpoint.sourceId.value, encode(checkpoint)).commit().also(::check)
-        Unit
+        MutationDisposition.APPLIED
     }
 
     override suspend fun clear(sourceId: SourceId) = mutex.withLock {
         preferences.edit().remove(sourceId.value).commit().also(::check)
         Unit
     }
+
+    override suspend fun retire(sourceId: SourceId) = mutex.withLock {
+        preferences.edit()
+            .remove(sourceId.value)
+            .putBoolean(retiredKey(sourceId), true)
+            .commit()
+            .also(::check)
+        Unit
+    }
+
+    private fun retiredKey(sourceId: SourceId) = "$RETIRED_PREFIX${sourceId.value}"
 
     private fun encode(checkpoint: WebDavSyncCheckpoint) = JSONObject()
         .put("sourceId", checkpoint.sourceId.value)
@@ -112,7 +129,10 @@ class SharedPreferencesWebDavCheckpointStore(context: Context) : WebDavCheckpoin
         repeat(length()) { index -> add(getString(index)) }
     }
 
-    private companion object { const val PREFERENCES = "webdav_sync_checkpoints" }
+    private companion object {
+        const val PREFERENCES = "webdav_sync_checkpoints"
+        const val RETIRED_PREFIX = "retired:"
+    }
 }
 
 class RoomWebDavPersistenceAdapter(
@@ -124,16 +144,22 @@ class RoomWebDavPersistenceAdapter(
     override suspend fun loadCheckpoint(sourceId: SourceId): WebDavSyncCheckpoint? = checkpoints.load(sourceId)
     override suspend fun saveCheckpoint(checkpoint: WebDavSyncCheckpoint) = checkpoints.save(checkpoint)
     override suspend fun clearCheckpoint(sourceId: SourceId) = checkpoints.clear(sourceId)
+    override suspend fun retireCheckpoint(sourceId: SourceId) = checkpoints.retire(sourceId)
 
     override suspend fun remoteFingerprint(sourceId: SourceId, sourceKey: String): RemoteFingerprint? =
         database.libraryWriteDao().locationIncludingUnavailable(sourceId.value, sourceKey)
             ?.let { RemoteFingerprint(it.sizeBytes, it.etag, it.available) }
 
-    override suspend fun markUpdateAvailable(sourceId: SourceId, sourceKey: String) {
+    override suspend fun markUpdateAvailable(sourceId: SourceId, sourceKey: String): MutationDisposition =
         database.withTransaction {
+            if (!database.libraryWriteDao().isSourceActive(sourceId.value)) {
+                return@withTransaction MutationDisposition.SOURCE_RETIRED
+            }
             val location = database.libraryWriteDao()
-                .locationIncludingUnavailable(sourceId.value, sourceKey) ?: return@withTransaction
-            val download = database.downloadDao().downloadForTrack(location.trackId) ?: return@withTransaction
+                .locationIncludingUnavailable(sourceId.value, sourceKey)
+                ?: return@withTransaction MutationDisposition.APPLIED
+            val download = database.downloadDao().downloadForTrack(location.trackId)
+                ?: return@withTransaction MutationDisposition.APPLIED
             if (download.state == DownloadState.COMPLETED.name) {
                 database.downloadDao().upsert(
                     download.copy(
@@ -142,8 +168,8 @@ class RoomWebDavPersistenceAdapter(
                     ),
                 )
             }
+            MutationDisposition.APPLIED
         }
-    }
 }
 
 class WebDavSourceActionAdapter(

@@ -21,6 +21,7 @@ class RangeWebDavMetadataEnricher(
     private val maximumHeadBytes: Int = 256 * 1024,
     private val maximumArtworkBytes: Int = 512 * 1024,
     private val artworkCache: ArtworkCache = ArtworkCache.None,
+    private val jpegDecodeProbe: JpegDecodeProbe = AndroidJpegDecodeProbe,
 ) : WebDavMetadataEnricher {
     init {
         require(maximumHeadBytes in 1..MAXIMUM_METADATA_BYTES)
@@ -42,8 +43,8 @@ class RangeWebDavMetadataEnricher(
         if (!response.rangeHonored || !response.contentRange.isHeadRange()) return fallback
         val parsed = try {
             when (entry.name.substringAfterLast('.', "").lowercase()) {
-                "mp3" -> parseId3(response.bytes, maximumArtworkBytes)
-                "flac" -> parseFlac(response.bytes, maximumArtworkBytes)
+                "mp3" -> parseId3(response.bytes, maximumArtworkBytes, jpegDecodeProbe)
+                "flac" -> parseFlac(response.bytes, maximumArtworkBytes, jpegDecodeProbe)
                 else -> null
             }
         } catch (cancelled: CancellationException) {
@@ -75,7 +76,11 @@ class RangeWebDavMetadataEnricher(
     }
 }
 
-private fun parseId3(bytes: ByteArray, maximumArtworkBytes: Int): ParsedTrackMetadata? {
+private fun parseId3(
+    bytes: ByteArray,
+    maximumArtworkBytes: Int,
+    jpegDecodeProbe: JpegDecodeProbe,
+): ParsedTrackMetadata? {
     if (bytes.size < 10 || bytes.copyOfRange(0, 3).toString(Charsets.US_ASCII) != "ID3") return null
     val version = bytes[3].toInt() and 0xff
     if (version !in 3..4) return null
@@ -101,7 +106,7 @@ private fun parseId3(bytes: ByteArray, maximumArtworkBytes: Int): ParsedTrackMet
             "TPE1" -> decodeId3Text(payload)?.split('\u0000', ';')
                 ?.map(String::trim)?.filter(String::isNotBlank)?.let(artists::addAll)
             "TLEN" -> duration = decodeId3Text(payload)?.trim()?.toLongOrNull()?.takeIf { it >= 0 }
-            "APIC" -> artwork = parseId3Picture(payload, maximumArtworkBytes) ?: artwork
+            "APIC" -> artwork = parseId3Picture(payload, maximumArtworkBytes, jpegDecodeProbe) ?: artwork
         }
         offset = payloadEnd
     }
@@ -123,7 +128,11 @@ private fun decodeId3Text(payload: ByteArray): String? {
     return decoded.trim('\u0000', ' ', '\r', '\n', '\t')
 }
 
-private fun parseFlac(bytes: ByteArray, maximumArtworkBytes: Int): ParsedTrackMetadata? {
+private fun parseFlac(
+    bytes: ByteArray,
+    maximumArtworkBytes: Int,
+    jpegDecodeProbe: JpegDecodeProbe,
+): ParsedTrackMetadata? {
     if (bytes.size < 8 || bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) != "fLaC") return null
     var offset = 4
     var title: String? = null
@@ -156,7 +165,7 @@ private fun parseFlac(bytes: ByteArray, maximumArtworkBytes: Int): ParsedTrackMe
                     "ARTIST" -> artists += value
                 }
             }
-            6 -> artwork = parseFlacPicture(bytes, start, end, maximumArtworkBytes) ?: artwork
+            6 -> artwork = parseFlacPicture(bytes, start, end, maximumArtworkBytes, jpegDecodeProbe) ?: artwork
         }
         offset = end
         if (last) break
@@ -166,7 +175,11 @@ private fun parseFlac(bytes: ByteArray, maximumArtworkBytes: Int): ParsedTrackMe
     }
 }
 
-private fun parseId3Picture(payload: ByteArray, maximumArtworkBytes: Int): EmbeddedArtwork? {
+private fun parseId3Picture(
+    payload: ByteArray,
+    maximumArtworkBytes: Int,
+    jpegDecodeProbe: JpegDecodeProbe,
+): EmbeddedArtwork? {
     if (payload.size < 5) return null
     val encoding = payload[0].toInt() and 0xff
     val mimeEnd = payload.indexOfByte(0, 1).takeIf { it >= 0 } ?: return null
@@ -185,6 +198,7 @@ private fun parseId3Picture(payload: ByteArray, maximumArtworkBytes: Int): Embed
         start = imageStart,
         end = payload.size,
         maximumArtworkBytes = maximumArtworkBytes,
+        jpegDecodeProbe = jpegDecodeProbe,
     )
 }
 
@@ -207,6 +221,7 @@ private fun parseFlacPicture(
     start: Int,
     end: Int,
     maximumArtworkBytes: Int,
+    jpegDecodeProbe: JpegDecodeProbe,
 ): EmbeddedArtwork? {
     val cursor = BigEndianCursor(bytes, start, end)
     cursor.readUnsignedInt() ?: return null // picture type
@@ -231,6 +246,7 @@ private fun parseFlacPicture(
         start = imageStart,
         end = cursor.position,
         maximumArtworkBytes = maximumArtworkBytes,
+        jpegDecodeProbe = jpegDecodeProbe,
         declaredWidth = width,
         declaredHeight = height,
     )

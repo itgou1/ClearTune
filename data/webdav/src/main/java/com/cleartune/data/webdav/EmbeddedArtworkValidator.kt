@@ -6,6 +6,16 @@ import java.util.zip.Inflater
 
 internal data class EmbeddedArtwork(val mimeType: String, val bytes: ByteArray)
 
+fun interface JpegDecodeProbe {
+    fun canDecode(
+        bytes: ByteArray,
+        start: Int,
+        end: Int,
+        expectedWidth: Int,
+        expectedHeight: Int,
+    ): Boolean
+}
+
 private data class SniffedArtwork(
     val mimeType: String,
     val width: Long,
@@ -13,10 +23,9 @@ private data class SniffedArtwork(
 )
 
 /**
- * Structurally validates bounded embedded artwork without allocating pixels or invoking a platform
- * image decoder. The supported subset is standard PNG (including Adam7) and 8-bit Huffman-coded
- * baseline/progressive JPEG. Unsupported or malformed images return null so track metadata can
- * continue through the normal no-artwork fallback without caching untrusted bytes.
+ * Structurally validates bounded embedded artwork. JPEGs also have to survive a tightly sampled
+ * platform decode before their compressed bytes may reach the cache. Unsupported or malformed
+ * images return null so track metadata can continue through the normal no-artwork fallback.
  */
 internal fun validateEmbeddedArtwork(
     declaredMimeType: String,
@@ -24,6 +33,7 @@ internal fun validateEmbeddedArtwork(
     start: Int,
     end: Int,
     maximumArtworkBytes: Int,
+    jpegDecodeProbe: JpegDecodeProbe,
     declaredWidth: Long? = null,
     declaredHeight: Long? = null,
 ): EmbeddedArtwork? {
@@ -36,6 +46,21 @@ internal fun validateEmbeddedArtwork(
     if (!validArtworkDimensions(sniffed.width, sniffed.height)) return null
     if (declaredWidth != null && declaredWidth != sniffed.width) return null
     if (declaredHeight != null && declaredHeight != sniffed.height) return null
+    if (sniffed.mimeType == "image/jpeg") {
+        if (byteCount > MAXIMUM_JPEG_DECODE_BYTES) return null
+        val decodable = try {
+            jpegDecodeProbe.canDecode(
+                bytes = bytes,
+                start = start,
+                end = end,
+                expectedWidth = sniffed.width.toInt(),
+                expectedHeight = sniffed.height.toInt(),
+            )
+        } catch (_: Exception) {
+            false
+        }
+        if (!decodable) return null
+    }
     return EmbeddedArtwork(sniffed.mimeType, bytes.copyOfRange(start, end))
 }
 
@@ -584,5 +609,6 @@ private const val MAXIMUM_PNG_CHUNKS = 4_096
 private const val MAXIMUM_PNG_INFLATED_BYTES = 64L * 1024L * 1024L
 private const val JPEG_MINIMUM_BYTES = 14
 private const val MAXIMUM_JPEG_SEGMENTS = 1_024
+private const val MAXIMUM_JPEG_DECODE_BYTES = 256 * 1024
 private const val MAXIMUM_ARTWORK_DIMENSION = 8_192L
 private const val MAXIMUM_ARTWORK_PIXELS = 32_000_000L

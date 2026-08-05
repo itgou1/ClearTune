@@ -41,7 +41,9 @@ class WebDavSyncEngine(
     private val metadataEnricher: WebDavMetadataEnricher = WebDavMetadataEnricher { _, entry ->
         EnrichedTrackMetadata(entry.name.substringBeforeLast('.', entry.name))
     },
-    private val updatePublisher: RemoteUpdatePublisher = RemoteUpdatePublisher { _, _ -> },
+    private val updatePublisher: RemoteUpdatePublisher = RemoteUpdatePublisher { _, _ ->
+        MutationDisposition.APPLIED
+    },
     private val maxEnrichmentConcurrency: Int = 4,
 ) {
     init {
@@ -51,7 +53,9 @@ class WebDavSyncEngine(
     suspend fun sync(
         source: MusicSource,
         checkpoint: WebDavSyncCheckpoint? = null,
-        saveCheckpoint: suspend (WebDavSyncCheckpoint) -> Unit = {},
+        saveCheckpoint: suspend (WebDavSyncCheckpoint) -> MutationDisposition = {
+            MutationDisposition.APPLIED
+        },
     ): WebDavSyncReport {
         val base = WebDavUrlPolicy.normalizeBaseUrl(requireNotNull(source.baseUrl), source.allowCleartext)
         require(checkpoint == null || checkpoint.sourceId == source.id)
@@ -84,7 +88,12 @@ class WebDavSyncEngine(
                     visited.remove(directory.toString())
                     queue.addFirst(directory)
                 }
-                saveCheckpoint(checkpoint(source.id, queue, visited, retained, discovered, failures))
+                val saveResult = saveCheckpoint(
+                    checkpoint(source.id, queue, visited, retained, discovered, failures),
+                )
+                if (saveResult == MutationDisposition.SOURCE_RETIRED) {
+                    return WebDavSyncReport(discovered, visited.size, failures, retired = true)
+                }
                 if (retryable) break
                 continue
             }
@@ -139,10 +148,18 @@ class WebDavSyncEngine(
                     return WebDavSyncReport(discovered, visited.size, failures, retired = true)
                 }
                 changed.filter { it.second }.forEach { (entry, _) ->
-                    updatePublisher.markUpdateAvailable(source.id, entry.relativeKey(base))
+                    val publication = updatePublisher.markUpdateAvailable(source.id, entry.relativeKey(base))
+                    if (publication == MutationDisposition.SOURCE_RETIRED) {
+                        return WebDavSyncReport(discovered, visited.size, failures, retired = true)
+                    }
                 }
             }
-            saveCheckpoint(checkpoint(source.id, queue, visited, retained, discovered, failures))
+            val saveResult = saveCheckpoint(
+                checkpoint(source.id, queue, visited, retained, discovered, failures),
+            )
+            if (saveResult == MutationDisposition.SOURCE_RETIRED) {
+                return WebDavSyncReport(discovered, visited.size, failures, retired = true)
+            }
         }
         if (failures.isEmpty()) {
             val mutationResult = libraryWriteGateway.applyLibraryMutation(
@@ -207,7 +224,10 @@ fun interface WebDavMetadataEnricher {
 }
 
 fun interface RemoteUpdatePublisher {
-    suspend fun markUpdateAvailable(sourceId: com.cleartune.core.model.SourceId, sourceKey: String)
+    suspend fun markUpdateAvailable(
+        sourceId: com.cleartune.core.model.SourceId,
+        sourceKey: String,
+    ): MutationDisposition
 }
 
 private fun WebDavEntry.extension(): String = name.substringAfterLast('.', "").lowercase()
