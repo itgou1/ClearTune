@@ -223,7 +223,9 @@ class RoomLibraryTransactionTest {
             ),
         )
 
-        assertEquals(listOf("Artist/Album"), repository.observeFolders().first().map { it.relativeFolder })
+        val folders = repository.observeFolders().first()
+        assertEquals(listOf("Artist/Album"), folders.map { it.relativeFolder })
+        assertEquals(listOf("Remote"), folders.map { it.sourceName })
         assertEquals(listOf(trackId), repository.observeFolderTracks("Artist/Album").first().map { it.id })
         val location = requireNotNull(database.libraryWriteDao().locationIncludingUnavailable(remoteSource.value, "Artist/Album/song.flac"))
         assertEquals(9L, location.modifiedEpochSeconds)

@@ -12,6 +12,7 @@ import com.cleartune.data.local.LocalScanState
 import com.cleartune.data.local.LocalSnapshotRequest
 import com.cleartune.data.webdav.WebDavSyncWorkerHost
 import com.cleartune.playback.LibrarySessionCatalogOwner
+import com.cleartune.core.database.model.FolderRow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -118,6 +119,14 @@ class AppContainerIntegrationTest {
         assertFalse(bindings.any { it.simpleName.startsWith("Empty") })
         assertFalse(bindings.any { it.simpleName.contains("InMemory") })
         assertFalse(bindings.any { it.name == "com.cleartune.feature.settings.PersistentSettingsRepository" })
+    }
+
+    @Test
+    fun `folder projection preserves its authoritative source label`() {
+        assertEquals(
+            "Home NAS",
+            FolderRow("Artist/Album", 2, "Home NAS").toLibraryFolderUi().sourceName,
+        )
     }
 
     private fun webDav(id: String, url: String, allowCleartext: Boolean = false) = MusicSource(

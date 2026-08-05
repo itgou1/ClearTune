@@ -2,6 +2,7 @@ package com.cleartune.app
 
 import com.cleartune.core.model.LocationType
 import com.cleartune.core.model.PlayableTrack
+import com.cleartune.core.model.DownloadState
 import com.cleartune.feature.library.LocalAccessUiState
 import com.cleartune.data.local.LocalScanOutcome
 import com.cleartune.data.local.LocalScanResult
@@ -39,6 +40,17 @@ object AudioPermissionDecision {
         else -> LocalAccessUiState.DENIED_CAN_ASK
     }
 }
+
+internal fun requestAudioPermission(
+    recordRequest: () -> Unit,
+    launchRequest: () -> Unit,
+) {
+    recordRequest()
+    launchRequest()
+}
+
+internal fun canReconcileMissingDownloadWork(state: DownloadState): Boolean =
+    state == DownloadState.QUEUED || state == DownloadState.WAITING_FOR_WIFI
 
 object LocalScanTerminalGate {
     fun requireSuccess(result: LocalScanResult) {

@@ -69,6 +69,7 @@ fun ArtistRow.toDomain(): Artist = Artist(ArtistId(artistId), name)
 data class FolderRow(
     val relativeFolder: String,
     val trackCount: Int,
+    val sourceName: String,
 )
 
 data class MediaCatalogRow(

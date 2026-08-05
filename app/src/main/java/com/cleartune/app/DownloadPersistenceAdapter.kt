@@ -121,7 +121,9 @@ class RoomDownloadPersistenceAdapter(
 
     override suspend fun reconcileMissingWork(downloadId: DownloadId): Boolean = database.withTransaction {
         val current = database.downloadDao().download(downloadId.value) ?: return@withTransaction false
-        if (current.state != DownloadState.QUEUED.name) return@withTransaction false
+        val state = runCatching { DownloadState.valueOf(current.state) }.getOrNull()
+            ?: return@withTransaction false
+        if (!canReconcileMissingDownloadWork(state)) return@withTransaction false
         database.downloadDao().upsert(
             current.copy(
                 state = DownloadState.FAILED.name,

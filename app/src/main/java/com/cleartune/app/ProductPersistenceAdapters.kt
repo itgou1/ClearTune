@@ -14,6 +14,7 @@ import com.cleartune.core.database.RoomSettingsRepository
 import com.cleartune.core.database.dao.PlaybackDao
 import com.cleartune.core.database.entity.PlaybackQueueEntity
 import com.cleartune.core.database.entity.PlaybackStateEntity
+import com.cleartune.core.database.model.FolderRow
 import com.cleartune.core.database.model.toDomain
 import com.cleartune.core.model.Album
 import com.cleartune.core.model.Artist
@@ -64,7 +65,7 @@ class RoomLibraryBrowseAdapter(
     override fun observeAlbums(): Flow<List<Album>> = store.observeAlbums().map { rows -> rows.map { it.toDomain() } }
     override fun observeArtists(): Flow<List<Artist>> = store.observeArtists().map { rows -> rows.map { it.toDomain() } }
     override fun observeFolders(): Flow<List<LibraryFolderUi>> = store.observeFolders().map { rows ->
-        rows.map { LibraryFolderUi(it.relativeFolder, it.trackCount) }
+        rows.map(FolderRow::toLibraryFolderUi)
     }
 
     override fun observeArtistTracks(artistId: ArtistId): Flow<List<TrackSummary>> = combine(
@@ -79,6 +80,9 @@ class RoomLibraryBrowseAdapter(
 
     override fun observeFolderTracks(path: String): Flow<List<TrackSummary>> = store.observeFolderTracks(path)
 }
+
+internal fun FolderRow.toLibraryFolderUi(): LibraryFolderUi =
+    LibraryFolderUi(relativeFolder, trackCount, sourceName)
 
 class RoomPlaylistDetailsAdapter(
     private val database: ClearTuneDatabase,

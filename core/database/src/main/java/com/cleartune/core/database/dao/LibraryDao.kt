@@ -221,7 +221,19 @@ interface LibraryReadDao {
     @Query("SELECT trackId FROM track_search_fts WHERE track_search_fts MATCH :matchQuery")
     fun observeSearchTrackIds(matchQuery: String): Flow<List<String>>
 
-    @Query("SELECT relativeFolder, COUNT(DISTINCT trackId) AS trackCount FROM track_locations WHERE available = 1 AND relativeFolder != '' GROUP BY relativeFolder ORDER BY relativeFolder COLLATE NOCASE")
+    @Query("""
+        SELECT l.relativeFolder AS relativeFolder,
+               COUNT(DISTINCT l.trackId) AS trackCount,
+               CASE WHEN COUNT(DISTINCT l.sourceId) = 1
+                    THEN COALESCE(MAX(s.name), 'Unknown source')
+                    ELSE 'Multiple sources'
+               END AS sourceName
+        FROM track_locations l
+        LEFT JOIN music_sources s ON s.id = l.sourceId
+        WHERE l.available = 1 AND l.relativeFolder != ''
+        GROUP BY l.relativeFolder
+        ORDER BY l.relativeFolder COLLATE NOCASE
+    """)
     fun observeFolders(): Flow<List<FolderRow>>
 
     @Query("SELECT * FROM tracks WHERE id = :trackId")

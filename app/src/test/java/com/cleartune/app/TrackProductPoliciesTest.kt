@@ -1,6 +1,7 @@
 package com.cleartune.app
 
 import com.cleartune.core.model.LocationId
+import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.LocationType
 import com.cleartune.core.model.PlayableTrack
 import com.cleartune.core.model.SourceId
@@ -41,6 +42,26 @@ class TrackProductPoliciesTest {
             LocalAccessUiState.DENIED_PERMANENTLY,
             AudioPermissionDecision.afterResult(granted = false, requestWasMade = true, shouldShowRationale = false),
         )
+    }
+
+    @Test
+    fun `every audio permission entry records the request before launch`() {
+        val events = mutableListOf<String>()
+
+        requestAudioPermission(
+            recordRequest = { events += "recorded" },
+            launchRequest = { events += "launched" },
+        )
+
+        assertEquals(listOf("recorded", "launched"), events)
+    }
+
+    @Test
+    fun `missing remote work reconciles every schedulable waiting state`() {
+        assertTrue(canReconcileMissingDownloadWork(DownloadState.QUEUED))
+        assertTrue(canReconcileMissingDownloadWork(DownloadState.WAITING_FOR_WIFI))
+        assertFalse(canReconcileMissingDownloadWork(DownloadState.RUNNING))
+        assertFalse(canReconcileMissingDownloadWork(DownloadState.CANCELED))
     }
 
     @Test

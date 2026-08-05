@@ -188,6 +188,12 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
         )
         if (granted) container.enqueueLocalScan()
     }
+    val requestLocalAccess = {
+        requestAudioPermission(
+            recordRequest = { permissionHistory.edit().putBoolean(permission, true).apply() },
+            launchRequest = { permissionLauncher.launch(permission) },
+        )
+    }
     val scan by container.localScanState.collectAsState()
     val sync = when (scan.phase) {
         com.cleartune.data.local.LocalScanPhase.READING,
@@ -223,7 +229,7 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
                 total = scan.total,
                 errorMessage = scan.errorMessage,
             ),
-            onRequestLocalAccess = { permissionLauncher.launch(permission) },
+            onRequestLocalAccess = requestLocalAccess,
             onScanLocal = container::enqueueLocalScan,
             onOpenAppSettings = {
                 context.startActivity(
@@ -307,10 +313,7 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
                     fun libraryInputs() = LibraryFeatureUiInputs(
                         localAccess = localAccess,
                         sync = sync,
-                        onRequestLocalAccess = {
-                            permissionHistory.edit().putBoolean(permission, true).apply()
-                            permissionLauncher.launch(permission)
-                        },
+                        onRequestLocalAccess = requestLocalAccess,
                         onRefreshLocalLibrary = container::enqueueLocalScan,
                         onOpenSystemSettings = {
                             context.startActivity(
