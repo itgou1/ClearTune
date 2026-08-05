@@ -22,6 +22,9 @@ data class DownloadWork(
 /** Database boundary implemented transactionally by the app assembly. */
 interface DownloadPersistencePort {
     suspend fun loadWork(downloadId: DownloadId): DownloadWork?
+    /** Reconciles a queued record whose authoritative remote work can no longer be resolved. */
+    suspend fun reconcileMissingWork(downloadId: DownloadId): Boolean =
+        recordFailure(downloadId, generation = 0, code = "work_missing")
     suspend fun markRunning(downloadId: DownloadId)
     suspend fun beginWork(downloadId: DownloadId): Long? {
         markRunning(downloadId)

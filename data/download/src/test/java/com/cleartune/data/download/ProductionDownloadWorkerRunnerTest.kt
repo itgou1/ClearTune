@@ -25,6 +25,18 @@ class ProductionDownloadWorkerRunnerTest {
     private val id = DownloadId("download-1")
 
     @Test
+    fun `missing work reconciles its queued record to a terminal failure`() = runTest {
+        val port = FakeDownloadPort(null)
+
+        val outcome = ProductionDownloadWorkerRunner(port) {
+            error("transfer must not start when work is missing")
+        }.run(id)
+
+        assertEquals(WorkerOutcome.FAILED, outcome)
+        assertEquals("work_missing", port.failureCode)
+    }
+
+    @Test
     fun `process recreated worker resolves runner from application host`() {
         val runner = DownloadWorkerRunner { WorkerOutcome.COMPLETED }
         val host = object : DownloadWorkerHost { override val downloadWorkerRunner = runner }

@@ -79,7 +79,7 @@ class WebDavSyncEngine(
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (failure: Exception) {
-                val relativeDirectory = directory.relativeDirectory()
+                val relativeDirectory = directory.relativeDirectory(base)
                 val retryable = (failure as? WebDavProtocolException)?.failure?.retryable == true ||
                     failure is java.io.IOException
                 failures.removeAll { it.relativeDirectory == relativeDirectory }
@@ -97,7 +97,7 @@ class WebDavSyncEngine(
                 if (retryable) break
                 continue
             }
-            failures.removeAll { it.relativeDirectory == directory.relativeDirectory() }
+            failures.removeAll { it.relativeDirectory == directory.relativeDirectory(base) }
             entries.filter { it.isDirectory }.forEach { entry ->
                 if (WebDavUrlPolicy.isInBaseSubtree(base, entry.href) && entry.href.toString() !in visited) {
                     queue.addLast(entry.href)
@@ -108,9 +108,7 @@ class WebDavSyncEngine(
             val changed = audio.mapNotNull { entry ->
                 val sourceKey = entry.relativeKey(base)
                 val previous = fingerprintLookup.find(source.id, sourceKey)
-                if (previous?.available == true &&
-                    previous.sizeBytes == entry.sizeBytes && previous.etag == entry.etag
-                ) return@mapNotNull null
+                if (previous?.available == true && previous.matches(entry)) return@mapNotNull null
                 entry to (previous != null)
             }
             if (changed.isNotEmpty()) {
@@ -138,6 +136,8 @@ class WebDavSyncEngine(
                         uri = entry.href.toString(),
                         sizeBytes = entry.sizeBytes,
                         etag = entry.etag,
+                        relativeFolder = sourceKey.substringBeforeLast('/', ""),
+                        modifiedEpochMs = entry.modifiedEpochMs,
                     )
                 }
                 discovered += tracks.size
@@ -232,8 +232,18 @@ fun interface RemoteUpdatePublisher {
 
 private fun WebDavEntry.extension(): String = name.substringAfterLast('.', "").lowercase()
 
-private fun okhttp3.HttpUrl.relativeDirectory(): String =
-    pathSegments.lastOrNull { it.isNotBlank() } ?: "/"
+private fun okhttp3.HttpUrl.relativeDirectory(base: okhttp3.HttpUrl): String =
+    encodedPath.removePrefix(base.encodedPath).trim('/').ifEmpty { "/" }
+
+private fun RemoteFingerprint.matches(entry: WebDavEntry): Boolean {
+    if (sizeBytes != entry.sizeBytes) return false
+    return when {
+        etag != null && entry.etag != null -> etag == entry.etag
+        etag == null && entry.etag == null && modifiedEpochMs != null && entry.modifiedEpochMs != null ->
+            modifiedEpochMs / 1_000 == entry.modifiedEpochMs / 1_000
+        else -> false
+    }
+}
 
 private fun WebDavEntry.relativeKey(base: okhttp3.HttpUrl): String =
     href.encodedPath.removePrefix(base.encodedPath).trimStart('/')

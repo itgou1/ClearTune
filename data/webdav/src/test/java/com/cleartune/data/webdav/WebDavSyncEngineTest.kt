@@ -72,6 +72,33 @@ class WebDavSyncEngineTest {
     }
 
     @Test
+    fun `duplicate directory leaf failure keeps its full identity and blocks retain`() = runTest {
+        val failed = base.resolve("A/Music/")!!
+        val successful = base.resolve("B/Music/")!!
+        val client = DirectoryListingClient { _, directory ->
+            when (directory.encodedPath) {
+                "/dav/" -> listOf(
+                    WebDavEntry(base.resolve("A/")!!, "A", true, null, null),
+                    WebDavEntry(base.resolve("B/")!!, "B", true, null, null),
+                )
+                "/dav/A/" -> listOf(WebDavEntry(failed, "Music", true, null, null))
+                "/dav/B/" -> listOf(WebDavEntry(successful, "Music", true, null, null))
+                "/dav/A/Music/" -> error("listing denied")
+                "/dav/B/Music/" -> listOf(
+                    WebDavEntry(base.resolve("B/Music/song.mp3")!!, "song.mp3", false, 8, "v1"),
+                )
+                else -> emptyList()
+            }
+        }
+        val gateway = RecordingLibraryGateway()
+
+        val report = WebDavSyncEngine(client, gateway).sync(source)
+
+        assertEquals(listOf("A/Music"), report.failures.map(SyncFailure::relativeDirectory))
+        assertFalse(gateway.mutations.any { it is LibraryMutation.RetainSourceKeys })
+    }
+
+    @Test
     fun `resumes persisted breadth first frontier and checkpoints after each directory`() = runTest {
         val album = base.resolve("album/")!!
         val calls = mutableListOf<String>()
@@ -126,6 +153,51 @@ class WebDavSyncEngineTest {
         assertEquals(0, report.discoveredTracks)
         assertEquals(0, enrichmentCalls)
         assertFalse(gateway.mutations.any { it is LibraryMutation.Upsert })
+    }
+
+    @Test
+    fun `validator-less same-size entry is enriched instead of assumed unchanged`() = runTest {
+        var enrichmentCalls = 0
+        val gateway = RecordingLibraryGateway()
+        val engine = WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("same.mp3")!!, "same.mp3", false, 10, null, 2_000))
+            },
+            libraryWriteGateway = gateway,
+            fingerprintLookup = RemoteFingerprintLookup { _, _ -> RemoteFingerprint(10, null) },
+            metadataEnricher = WebDavMetadataEnricher { _, entry ->
+                enrichmentCalls++
+                EnrichedTrackMetadata(entry.name.substringBeforeLast('.'))
+            },
+        )
+
+        engine.sync(source)
+
+        assertEquals(1, enrichmentCalls)
+        assertEquals(1, gateway.mutations.filterIsInstance<LibraryMutation.Upsert>().single().locations.size)
+    }
+
+    @Test
+    fun `validator-less same-size entry compares persisted last modified`() = runTest {
+        var enrichmentCalls = 0
+        val gateway = RecordingLibraryGateway()
+        WebDavSyncEngine(
+            client = DirectoryListingClient { _, _ ->
+                listOf(WebDavEntry(base.resolve("same.mp3")!!, "same.mp3", false, 10, null, 2_000))
+            },
+            libraryWriteGateway = gateway,
+            fingerprintLookup = RemoteFingerprintLookup { _, _ ->
+                RemoteFingerprint(10, null, modifiedEpochMs = 1_000)
+            },
+            metadataEnricher = WebDavMetadataEnricher { _, entry ->
+                enrichmentCalls++
+                EnrichedTrackMetadata(entry.name.substringBeforeLast('.'))
+            },
+        ).sync(source)
+
+        assertEquals(1, enrichmentCalls)
+        val location = gateway.mutations.filterIsInstance<LibraryMutation.Upsert>().single().locations.single()
+        assertEquals(2_000L, location.modifiedEpochMs)
     }
 
     @Test

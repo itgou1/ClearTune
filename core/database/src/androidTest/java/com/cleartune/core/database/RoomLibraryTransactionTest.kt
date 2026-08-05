@@ -197,6 +197,39 @@ class RoomLibraryTransactionTest {
     }
 
     @Test
+    fun webDavUpsertPreservesNestedFolderHierarchyAndModifiedValidator() = runBlocking {
+        val remoteSource = SourceId("webdav-home")
+        repository.applySourceMutation(
+            SourceMutation.Upsert(MusicSource(remoteSource, "Remote", SourceType.WEBDAV, baseUrl = "https://example.test/")),
+        )
+        val trackId = com.cleartune.core.model.TrackId("remote-track")
+
+        repository.applyLibraryMutation(
+            LibraryMutation.Upsert(
+                sourceId = remoteSource,
+                tracks = listOf(Track(trackId, "Song")),
+                locations = listOf(
+                    TrackLocation(
+                        id = LocationId("remote-location"),
+                        trackId = trackId,
+                        sourceId = remoteSource,
+                        sourceKey = "Artist/Album/song.flac",
+                        type = LocationType.REMOTE_URL,
+                        uri = "https://example.test/Artist/Album/song.flac",
+                        relativeFolder = "Artist/Album",
+                        modifiedEpochMs = 9_000,
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(listOf("Artist/Album"), repository.observeFolders().first().map { it.relativeFolder })
+        assertEquals(listOf(trackId), repository.observeFolderTracks("Artist/Album").first().map { it.id })
+        val location = requireNotNull(database.libraryWriteDao().locationIncludingUnavailable(remoteSource.value, "Artist/Album/song.flac"))
+        assertEquals(9L, location.modifiedEpochSeconds)
+    }
+
+    @Test
     fun queue_and_playlist_contract_adapters_persist_commands() = runBlocking {
         repository.applyLocalSnapshot(SOURCE, "Local music", listOf(record()), 100)
         val trackId = repository.observeSongs().first().single().id

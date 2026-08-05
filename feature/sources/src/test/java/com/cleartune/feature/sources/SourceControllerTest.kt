@@ -181,6 +181,29 @@ class SourceControllerTest {
     }
 
     @Test
+    fun `local source cannot dispatch WebDAV sync browse or delete actions`() = runTest {
+        val local = MusicSource(SourceId("local"), "Device", SourceType.LOCAL)
+        val actions = FakeSourceActions(local)
+        val controller = SourceController(FakeSourceRepository(local), actions)
+
+        assertEquals("wrong_source_type", controller.requestSync(local.id).failure?.code)
+        assertEquals("wrong_source_type", controller.browse(local.id, "").failure?.code)
+        assertEquals("wrong_source_type", controller.delete(local.id).failure?.code)
+        assertTrue(actions.calls.isEmpty())
+    }
+
+    @Test
+    fun `cancel sync dispatches source work cancellation`() = runTest {
+        val source = source()
+        val actions = FakeSourceActions(source)
+        val controller = SourceController(FakeSourceRepository(source), actions)
+
+        assertNull(controller.cancelSync(source.id).failure)
+
+        assertEquals(listOf("cancel-sync"), actions.calls)
+    }
+
+    @Test
     fun `tested new source can browse and select a root before save and first sync`() = runTest {
         val source = source().copy(baseUrl = "https://music.example/dav/library/")
         val actions = FakeSourceActions(source)
@@ -289,6 +312,9 @@ private class FakeSourceActions(private val source: MusicSource) : SourceActionP
     override suspend fun sync(sourceId: SourceId) {
         calls += "sync"
         syncFailure?.let { throw SourceActionException(it) }
+    }
+    override suspend fun cancelSync(sourceId: SourceId) {
+        calls += "cancel-sync"
     }
     override suspend fun browse(sourceId: SourceId, relativePath: String): List<SourceBrowseItem> {
         calls += "browse"

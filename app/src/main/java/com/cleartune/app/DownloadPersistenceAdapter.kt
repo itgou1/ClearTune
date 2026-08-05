@@ -67,17 +67,23 @@ class RoomDownloadPersistenceAdapter(
     override suspend fun insert(summary: DownloadSummary) {
         database.withTransaction {
             check(database.downloadDao().download(summary.id.value) == null) { "Download already exists" }
-            val sourceId = requireNotNull(activeRemoteSourceId(summary.trackId)) {
+            val remote = requireNotNull(resolveRemote(summary.trackId)) {
                 "Track has no active remote source"
             }
-            database.downloadDao().upsert(summary.toEntity(sourceId = sourceId))
+            val paths = paths(remote)
+            database.downloadDao().upsert(
+                summary.toEntity(sourceId = remote.source.id.value).copy(
+                    partialPath = paths.partialFile.absolutePath,
+                    finalPath = paths.finalFile.absolutePath,
+                ),
+            )
         }
     }
 
     override suspend fun replace(summary: DownloadSummary) {
         database.withTransaction {
             val existing = requireNotNull(database.downloadDao().download(summary.id.value)) { "Download not found" }
-            val sourceId = existing.sourceId ?: activeRemoteSourceId(summary.trackId)
+            val sourceId = existing.sourceId ?: resolveRemote(summary.trackId)?.source?.id?.value
             database.downloadDao().upsert(summary.toEntity(existing, sourceId))
         }
     }
@@ -98,7 +104,7 @@ class RoomDownloadPersistenceAdapter(
         val url = resolved.location.uri.toHttpUrlOrNull()
             ?.takeIf { WebDavUrlPolicy.isInBaseSubtree(base, it) }
             ?: return null
-        val paths = paths(resolved)
+        val paths = ensurePaths(resolved)
         val alias = resolved.source.credentialAlias
         val credential = if (alias == null) null else credentialStore.get(alias)
         return DownloadWork(
@@ -111,6 +117,19 @@ class RoomDownloadPersistenceAdapter(
                 DownloadCredentials(it.username, it.password, protectionBase = base)
             },
         )
+    }
+
+    override suspend fun reconcileMissingWork(downloadId: DownloadId): Boolean = database.withTransaction {
+        val current = database.downloadDao().download(downloadId.value) ?: return@withTransaction false
+        if (current.state != DownloadState.QUEUED.name) return@withTransaction false
+        database.downloadDao().upsert(
+            current.copy(
+                state = DownloadState.FAILED.name,
+                errorMessage = "work_missing",
+                updatedAtEpochMs = clock(),
+            ),
+        )
+        true
     }
 
     override suspend fun markRunning(downloadId: DownloadId) = update(downloadId) { current ->
@@ -180,7 +199,7 @@ class RoomDownloadPersistenceAdapter(
                 state = DownloadState.COMPLETED.name,
                 bytesDownloaded = bytes,
                 totalBytes = bytes,
-                partialPath = null,
+                partialPath = resolved.download.partialPath,
                 finalPath = finalFile.absolutePath,
                 errorMessage = null,
                 updatedAtEpochMs = clock(),
@@ -222,12 +241,19 @@ class RoomDownloadPersistenceAdapter(
     }
 
     override fun paths(id: DownloadId): DownloadPaths? = runBlocking(Dispatchers.IO) {
-        resolve(id)?.let(::paths)
+        val download = database.downloadDao().download(id.value) ?: return@runBlocking null
+        persistedPaths(download)?.let { return@runBlocking it }
+        resolve(id)?.let { ensurePaths(it) }
     }
 
     private suspend fun resolve(downloadId: DownloadId): ResolvedDownload? {
         val download = database.downloadDao().download(downloadId.value) ?: return null
-        val track = database.libraryReadDao().track(download.trackId) ?: return null
+        val remote = resolveRemote(TrackId(download.trackId)) ?: return null
+        return ResolvedDownload(download, remote.trackId, remote.title, remote.location, remote.source)
+    }
+
+    private suspend fun resolveRemote(trackId: TrackId): RemoteDownloadTarget? {
+        val track = database.libraryReadDao().track(trackId.value) ?: return null
         val location = database.libraryReadDao().playableLocations(track.id)
             .firstOrNull { it.type == LocationType.REMOTE_URL.name }
             ?: return null
@@ -244,13 +270,42 @@ class RoomDownloadPersistenceAdapter(
                     lastSyncedAtEpochMs = entity.lastSyncedAtEpochMs,
                 )
             } ?: return null
-        return ResolvedDownload(download, track.id, track.title, location, source)
+        return RemoteDownloadTarget(track.id, track.title, location, source)
     }
 
     private fun paths(resolved: ResolvedDownload): DownloadPaths {
-        val suggestedName = resolved.location.uri.toHttpUrlOrNull()?.pathSegments?.lastOrNull(String::isNotBlank)
-            ?: resolved.title
-        return filePolicy.paths(resolved.source.id.value, resolved.trackId, suggestedName)
+        return paths(RemoteDownloadTarget(resolved.trackId, resolved.title, resolved.location, resolved.source))
+    }
+
+    private fun paths(remote: RemoteDownloadTarget): DownloadPaths {
+        val suggestedName = remote.location.uri.toHttpUrlOrNull()?.pathSegments?.lastOrNull(String::isNotBlank)
+            ?: remote.title
+        return filePolicy.paths(remote.source.id.value, remote.trackId, suggestedName)
+    }
+
+    private suspend fun ensurePaths(resolved: ResolvedDownload): DownloadPaths {
+        persistedPaths(resolved.download)?.let { return it }
+        val generated = paths(resolved)
+        database.downloadDao().upsert(
+            resolved.download.copy(
+                partialPath = generated.partialFile.absolutePath,
+                finalPath = generated.finalFile.absolutePath,
+                updatedAtEpochMs = clock(),
+            ),
+        )
+        return generated
+    }
+
+    private fun persistedPaths(download: DownloadEntity): DownloadPaths? {
+        val partial = download.partialPath?.takeIf(String::isNotBlank)?.let(::File) ?: return null
+        val final = download.finalPath?.takeIf(String::isNotBlank)?.let(::File) ?: return null
+        val canonicalRoot = downloadRoot.canonicalFile.toPath()
+        val canonicalPartial = partial.canonicalFile
+        val canonicalFinal = final.canonicalFile
+        if (!canonicalPartial.toPath().startsWith(canonicalRoot) ||
+            !canonicalFinal.toPath().startsWith(canonicalRoot)
+        ) return null
+        return DownloadPaths(canonicalPartial, canonicalFinal)
     }
 
     private suspend fun update(downloadId: DownloadId, transform: (DownloadEntity) -> DownloadEntity) {
@@ -273,15 +328,6 @@ class RoomDownloadPersistenceAdapter(
         true
     }
 
-    private suspend fun activeRemoteSourceId(trackId: TrackId): String? {
-        database.libraryReadDao().playableLocations(trackId.value).forEach { location ->
-            if (location.type == LocationType.REMOTE_URL.name &&
-                database.sourceDao().source(location.sourceId) != null
-            ) return location.sourceId
-        }
-        return null
-    }
-
     private fun DownloadSummary.toEntity(
         existing: DownloadEntity? = null,
         sourceId: String? = existing?.sourceId,
@@ -293,7 +339,7 @@ class RoomDownloadPersistenceAdapter(
         totalBytes = totalBytes,
         etag = existing?.etag,
         partialPath = existing?.partialPath,
-        finalPath = finalPath,
+        finalPath = finalPath ?: existing?.finalPath,
         errorMessage = errorMessage,
         updatedAtEpochMs = clock(),
         sourceId = sourceId,
@@ -313,6 +359,13 @@ class RoomDownloadPersistenceAdapter(
 
     private data class ResolvedDownload(
         val download: DownloadEntity,
+        val trackId: String,
+        val title: String,
+        val location: TrackLocationEntity,
+        val source: com.cleartune.core.model.MusicSource,
+    )
+
+    private data class RemoteDownloadTarget(
         val trackId: String,
         val title: String,
         val location: TrackLocationEntity,

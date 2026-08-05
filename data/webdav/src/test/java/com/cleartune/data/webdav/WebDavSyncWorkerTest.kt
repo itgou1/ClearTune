@@ -90,15 +90,23 @@ class WebDavSyncWorkerTest {
     fun `durable runner resumes checkpoint and clears it only after success`() = runTest {
         val checkpoint = WebDavSyncCheckpoint(source.id, listOf("https://music.example/dav/"))
         val port = FakeSyncPort(source, checkpoint)
-        val runner = DurableWebDavSyncRunner(port) { _, loaded, save ->
-            assertSame(checkpoint, loaded)
-            save(requireNotNull(loaded).copy(pendingDirectories = emptyList()))
-            WebDavSyncReport(0, 1, emptyList())
-        }
+        val runner = DurableWebDavSyncRunner(
+            port = port,
+            operation = WebDavSyncOperation { _, loaded, save ->
+                assertSame(checkpoint, loaded)
+                save(requireNotNull(loaded).copy(pendingDirectories = emptyList()))
+                WebDavSyncReport(0, 1, emptyList())
+            },
+            clock = { 123L },
+        )
 
         assertEquals(WebDavWorkerOutcome.COMPLETED, runner.run(source.id))
         assertEquals(1, port.saved.size)
         assertEquals(1, port.clearCount)
+        assertEquals(WebDavSyncPhase.RUNNING, port.sessions.first().phase)
+        assertEquals(WebDavSyncPhase.COMPLETED, port.sessions.last().phase)
+        assertEquals(1, port.sessions.last().visitedDirectories)
+        assertEquals(123L, port.syncedAtEpochMs)
     }
 
     @Test
@@ -115,6 +123,10 @@ class WebDavSyncWorkerTest {
 
         assertEquals(WebDavWorkerOutcome.RETRY, retry.run(source.id))
         assertEquals(WebDavWorkerOutcome.FAILED, fail.run(source.id))
+        assertEquals(WebDavSyncPhase.RETRYING, transient.sessions.last().phase)
+        assertEquals("Temporary sync failure", transient.sessions.last().errorMessage)
+        assertEquals(WebDavSyncPhase.FAILED, permanent.sessions.last().phase)
+        assertEquals("Sync failed", permanent.sessions.last().errorMessage)
     }
 
     @Test
@@ -162,11 +174,18 @@ class WebDavSyncWorkerTest {
         assertEquals(2, attempts)
     }
 
-    @Test(expected = CancellationException::class)
+    @Test
     fun `durable runner rethrows cancellation`() = runTest {
-        DurableWebDavSyncRunner(FakeSyncPort(source, null)) { _, _, _ ->
-            throw CancellationException("stop")
-        }.run(source.id)
+        val port = FakeSyncPort(source, null)
+        try {
+            DurableWebDavSyncRunner(port) { _, _, _ ->
+                throw CancellationException("stop")
+            }.run(source.id)
+            error("Expected cancellation")
+        } catch (_: CancellationException) {
+            assertEquals(WebDavSyncPhase.CANCELED, port.sessions.last().phase)
+            assertEquals("Sync canceled", port.sessions.last().errorMessage)
+        }
     }
 }
 
@@ -196,6 +215,8 @@ private class FakeSyncPort(
     val saved = mutableListOf<WebDavSyncCheckpoint>()
     var clearCount = 0
     var retireCount = 0
+    val sessions = mutableListOf<WebDavSyncSession>()
+    var syncedAtEpochMs: Long? = null
     override suspend fun loadSource(sourceId: SourceId): MusicSource? = source
     override suspend fun loadCheckpoint(sourceId: SourceId): WebDavSyncCheckpoint? = checkpoint
     override suspend fun saveCheckpoint(checkpoint: WebDavSyncCheckpoint): MutationDisposition {
@@ -216,4 +237,11 @@ private class FakeSyncPort(
         sourceId: SourceId,
         sourceKey: String,
     ) = MutationDisposition.APPLIED
+    override suspend fun recordSyncSession(session: WebDavSyncSession) {
+        sessions += session
+    }
+    override suspend fun markSourceSynced(sourceId: SourceId, syncedAtEpochMs: Long): MutationDisposition {
+        this.syncedAtEpochMs = syncedAtEpochMs
+        return MutationDisposition.APPLIED
+    }
 }

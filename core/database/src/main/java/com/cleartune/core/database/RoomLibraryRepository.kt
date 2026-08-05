@@ -182,6 +182,8 @@ class RoomLibraryRepository(
                     available = location.available,
                     sizeBytes = location.sizeBytes,
                     etag = location.etag,
+                    relativeFolder = location.relativeFolder,
+                    modifiedEpochMs = location.modifiedEpochSeconds * 1_000,
                 )
             },
         )
