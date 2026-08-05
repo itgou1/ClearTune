@@ -28,4 +28,7 @@ interface SourceDao {
 
     @Query("UPDATE music_sources SET credentialAlias = NULL WHERE id = :sourceId AND removed = 1")
     suspend fun clearTombstoneCredential(sourceId: String): Int
+
+    @Query("UPDATE music_sources SET lastSyncedAtEpochMs = :syncedAtEpochMs WHERE id = :sourceId AND removed = 0")
+    suspend fun updateLastSynced(sourceId: String, syncedAtEpochMs: Long): Int
 }

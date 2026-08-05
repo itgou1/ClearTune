@@ -16,6 +16,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -220,9 +221,11 @@ fun WebDavSourceForm(
 @Composable
 fun SourceDetailScreen(
     source: SourceUiItem,
+    syncStatus: SourceSyncStatus?,
     onEdit: () -> Unit,
     onBrowse: () -> Unit,
     onSync: suspend () -> SourceResult<Unit>,
+    onCancelSync: suspend () -> SourceResult<Unit>,
     onDelete: suspend (deleteOfflineCopies: Boolean) -> SourceResult<Unit>,
 ) {
     var error by remember { mutableStateOf<String?>(null) }
@@ -236,10 +239,27 @@ fun SourceDetailScreen(
         Text(source.name, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
         Text(source.location)
         Text(source.status)
+        syncStatus?.let { status ->
+            Text("${status.discoveredTracks} tracks · ${status.visitedDirectories} folders · ${status.failureCount} failures")
+            if (status.active) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            status.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(onClick = onBrowse, modifier = Modifier.fillMaxWidth()) { Text("Browse") }
-        Button(onClick = { scope.launch { error = onSync().failure?.message } }, modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = { scope.launch { error = onSync().failure?.message } },
+            enabled = syncStatus?.active != true,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             Text("Sync now")
+        }
+        if (syncStatus?.active == true) {
+            TextButton(
+                onClick = { scope.launch { error = onCancelSync().failure?.message } },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Cancel sync") }
         }
         TextButton(onClick = onEdit, modifier = Modifier.fillMaxWidth()) { Text("Edit") }
         TextButton(
@@ -277,6 +297,49 @@ fun SourceDetailScreen(
                 }
             },
             dismissButton = { TextButton(onClick = { chooseOfflinePolicy = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+fun LocalSourceDetailScreen(
+    source: SourceUiItem,
+    state: LocalSourceDetailState,
+    onRequestAccess: () -> Unit,
+    onScan: () -> Unit,
+    onOpenAppSettings: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(source.name, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text("Music stored on this device")
+        Text(source.status)
+        if (state.scanning) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Text("Scanning ${state.processed} of ${state.total}")
+        }
+        state.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        when (state.access) {
+            LocalMediaAccess.GRANTED -> Button(
+                onClick = onScan,
+                enabled = !state.scanning,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Scan local music") }
+            LocalMediaAccess.NEEDS_PERMISSION -> Button(
+                onClick = onRequestAccess,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Allow music access") }
+            LocalMediaAccess.PERMANENTLY_DENIED -> Button(
+                onClick = onOpenAppSettings,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Open app settings") }
+        }
+        Text(
+            "Local music is managed through Android media access. WebDAV credentials, browse, edit and delete actions do not apply.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

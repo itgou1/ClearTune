@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import com.cleartune.core.contracts.CredentialStore
 import com.cleartune.core.contracts.SourceRepository
 import com.cleartune.core.database.ClearTuneDatabase
+import com.cleartune.core.database.entity.SyncSessionEntity
 import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.MusicSource
 import com.cleartune.core.model.MutationDisposition
@@ -20,15 +21,21 @@ import com.cleartune.data.webdav.WebDavSourceDraft
 import com.cleartune.data.webdav.WebDavSourceManager
 import com.cleartune.data.webdav.WebDavSyncCheckpoint
 import com.cleartune.data.webdav.WebDavSyncPort
+import com.cleartune.data.webdav.WebDavSyncSession
 import com.cleartune.data.webdav.WorkManagerWebDavSyncScheduler
 import com.cleartune.feature.sources.SourceActionException
 import com.cleartune.feature.sources.SourceActionPort
 import com.cleartune.feature.sources.SourceBrowseItem
 import com.cleartune.feature.sources.SourceDraft
+import com.cleartune.feature.sources.SourceSyncPhase
+import com.cleartune.feature.sources.SourceSyncStatus
+import com.cleartune.feature.sources.SourceSyncStatusPort
 import java.util.Collections
 import java.util.IdentityHashMap
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
@@ -148,7 +155,7 @@ class RoomWebDavPersistenceAdapter(
 
     override suspend fun remoteFingerprint(sourceId: SourceId, sourceKey: String): RemoteFingerprint? =
         database.libraryWriteDao().locationIncludingUnavailable(sourceId.value, sourceKey)
-            ?.let { RemoteFingerprint(it.sizeBytes, it.etag, it.available) }
+            ?.let { RemoteFingerprint(it.sizeBytes, it.etag, it.available, it.modifiedEpochSeconds * 1_000) }
 
     override suspend fun markUpdateAvailable(sourceId: SourceId, sourceKey: String): MutationDisposition =
         database.withTransaction {
@@ -169,6 +176,46 @@ class RoomWebDavPersistenceAdapter(
                 )
             }
             MutationDisposition.APPLIED
+        }
+
+    override suspend fun recordSyncSession(session: WebDavSyncSession) {
+        database.libraryWriteDao().upsertSyncSession(
+            SyncSessionEntity(
+                id = session.id,
+                sourceId = session.sourceId.value,
+                startedAtEpochMs = session.startedAtEpochMs,
+                completedAtEpochMs = session.completedAtEpochMs,
+                phase = session.phase.name,
+                processed = session.discoveredTracks,
+                total = session.visitedDirectories,
+                warningCount = session.failureCount,
+                errorMessage = session.errorMessage,
+            ),
+        )
+    }
+
+    override suspend fun markSourceSynced(sourceId: SourceId, syncedAtEpochMs: Long): MutationDisposition =
+        if (database.sourceDao().updateLastSynced(sourceId.value, syncedAtEpochMs) == 0) {
+            MutationDisposition.SOURCE_RETIRED
+        } else {
+            MutationDisposition.APPLIED
+        }
+}
+
+class RoomSourceSyncStatusAdapter(
+    private val database: ClearTuneDatabase,
+) : SourceSyncStatusPort {
+    override fun observe(sourceId: SourceId): Flow<SourceSyncStatus?> =
+        database.libraryWriteDao().observeLatestSyncSession(sourceId.value).map { session ->
+            session?.let {
+                SourceSyncStatus(
+                    phase = runCatching { SourceSyncPhase.valueOf(it.phase) }.getOrDefault(SourceSyncPhase.FAILED),
+                    discoveredTracks = it.processed.coerceAtLeast(0),
+                    visitedDirectories = it.total.coerceAtLeast(0),
+                    failureCount = it.warningCount.coerceAtLeast(0),
+                    errorMessage = it.errorMessage,
+                )
+            }
         }
 }
 
@@ -228,6 +275,8 @@ class WebDavSourceActionAdapter(
     }
 
     override suspend fun sync(sourceId: SourceId) = classified { scheduler.enqueue(sourceId) }
+
+    override suspend fun cancelSync(sourceId: SourceId) = classified { scheduler.cancel(sourceId) }
 
     override suspend fun browse(sourceId: SourceId, relativePath: String): List<SourceBrowseItem> = classified {
         val source = requireNotNull(sources.getSource(sourceId)) { "Source not found" }

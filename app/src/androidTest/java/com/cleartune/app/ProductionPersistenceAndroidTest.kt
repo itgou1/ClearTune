@@ -15,6 +15,7 @@ import com.cleartune.core.database.model.LibraryIngestRecord
 import com.cleartune.core.model.CredentialAlias
 import com.cleartune.core.model.DownloadId
 import com.cleartune.core.model.DownloadState
+import com.cleartune.core.model.DownloadSummary
 import com.cleartune.core.model.LocationType
 import com.cleartune.core.model.QueueCommand
 import com.cleartune.core.model.QueueItemId
@@ -118,6 +119,56 @@ class ProductionPersistenceAndroidTest {
         assertEquals(DownloadState.CANCELED.name, database.downloadDao().download("download")?.state)
         assertNull(database.libraryWriteDao().locationIncludingUnavailable(OfflineDownloadSource.ID.value, "download:download"))
         assertFalse(finalFile.exists())
+    }
+
+    @Test
+    fun queuedDownloadPersistsAuthoritativeContainedPathsAfterRemoteSourceDisappears() = runBlocking {
+        database.libraryWriteDao().upsertSource(
+            MusicSourceEntity("source", "Remote", "WEBDAV", "https://music.example/dav/", false, null, true, null),
+        )
+        database.libraryWriteDao().upsertTrack(TrackEntity("track", "Song", 1_000, null, null, 1))
+        database.libraryWriteDao().upsertLocation(
+            TrackLocationEntity(
+                "remote", "track", "source", "album/song.flac", LocationType.REMOTE_URL.name,
+                "https://music.example/dav/album/song.flac", true, 4, "etag", "album", "song.flac", 1,
+            ),
+        )
+        val adapter = RoomDownloadPersistenceAdapter(database, NoCredentialStore, root, clock = { 2 })
+        val id = DownloadId("download")
+
+        adapter.insert(DownloadSummary(id, TrackId("track"), DownloadState.QUEUED))
+        val persisted = requireNotNull(database.downloadDao().download(id.value))
+        assertTrue(requireNotNull(persisted.partialPath).startsWith(root.canonicalPath))
+        assertTrue(requireNotNull(persisted.finalPath).startsWith(root.canonicalPath))
+
+        database.libraryWriteDao().markLocationUnavailable("remote")
+        database.sourceDao().softDelete("source")
+
+        val paths = requireNotNull(adapter.paths(id))
+        assertEquals(File(requireNotNull(persisted.partialPath)).canonicalFile, paths.partialFile.canonicalFile)
+        assertEquals(File(requireNotNull(persisted.finalPath)).canonicalFile, paths.finalFile.canonicalFile)
+    }
+
+    @Test
+    fun missingRemoteWorkFailsOnlyQueuedRecordAndNeverOverwritesConcurrentCancel() = runBlocking {
+        database.libraryWriteDao().upsertSource(
+            MusicSourceEntity("source", "Remote", "WEBDAV", "https://music.example/dav/", false, null, true, null),
+        )
+        database.libraryWriteDao().upsertTrack(TrackEntity("track", "Song", 1_000, null, null, 1))
+        database.downloadDao().upsert(
+            DownloadEntity(
+                "download", "track", DownloadState.QUEUED.name, 0, 4, "etag", null, null, null, 1,
+                sourceId = "source", workGeneration = 4,
+            ),
+        )
+        val adapter = RoomDownloadPersistenceAdapter(database, NoCredentialStore, root, clock = { 2 })
+
+        assertTrue(adapter.reconcileMissingWork(DownloadId("download")))
+        assertEquals(DownloadState.FAILED.name, database.downloadDao().download("download")?.state)
+
+        database.downloadDao().upsert(requireNotNull(database.downloadDao().download("download")).copy(state = DownloadState.CANCELED.name))
+        assertFalse(adapter.reconcileMissingWork(DownloadId("download")))
+        assertEquals(DownloadState.CANCELED.name, database.downloadDao().download("download")?.state)
     }
 
     @Test

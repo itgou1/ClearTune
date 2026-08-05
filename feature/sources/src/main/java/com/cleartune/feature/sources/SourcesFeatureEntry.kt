@@ -22,6 +22,11 @@ import kotlinx.coroutines.launch
 data class SourcesFeatureDependencies(
     val sourceRepository: SourceRepository,
     val controller: SourceController,
+    val syncStatus: SourceSyncStatusPort = SourceSyncStatusPort.None,
+    val localDetail: LocalSourceDetailState = LocalSourceDetailState(),
+    val onRequestLocalAccess: () -> Unit = {},
+    val onScanLocal: () -> Unit = {},
+    val onOpenAppSettings: () -> Unit = {},
 )
 
 object SourcesFeatureEntry {
@@ -45,17 +50,30 @@ object SourcesFeatureEntry {
             is SourceRoute.Root -> {
                 val source = sources.firstOrNull { it.id == parsed.sourceId }
                 if (source == null) LoadingSource()
-                else SourceDetailScreen(
-                    source = source.toUiItem(),
-                    onEdit = { onNavigate(SourceRoute.Edit(source.id).encoded()) },
-                    onBrowse = { onNavigate(SourceRoute.Browse(source.id, "").encoded()) },
-                    onSync = { dependencies.controller.requestSync(source.id) },
-                    onDelete = { deleteOfflineCopies ->
-                        dependencies.controller.delete(source.id, deleteOfflineCopies) {
-                            onNavigate(SourceRoute.List.encoded())
-                        }
-                    },
-                )
+                else if (source.type == com.cleartune.core.model.SourceType.LOCAL) {
+                    LocalSourceDetailScreen(
+                        source = source.toUiItem(),
+                        state = dependencies.localDetail,
+                        onRequestAccess = dependencies.onRequestLocalAccess,
+                        onScan = dependencies.onScanLocal,
+                        onOpenAppSettings = dependencies.onOpenAppSettings,
+                    )
+                } else {
+                    val status by dependencies.syncStatus.observe(source.id).collectAsState(initial = null)
+                    SourceDetailScreen(
+                        source = source.toUiItem(),
+                        syncStatus = status,
+                        onEdit = { onNavigate(SourceRoute.Edit(source.id).encoded()) },
+                        onBrowse = { onNavigate(SourceRoute.Browse(source.id, "").encoded()) },
+                        onSync = { dependencies.controller.requestSync(source.id) },
+                        onCancelSync = { dependencies.controller.cancelSync(source.id) },
+                        onDelete = { deleteOfflineCopies ->
+                            dependencies.controller.delete(source.id, deleteOfflineCopies) {
+                                onNavigate(SourceRoute.List.encoded())
+                            }
+                        },
+                    )
+                }
             }
             is SourceRoute.Browse -> SourceBrowseRoute(parsed, dependencies.controller, onNavigate)
             is SourceRoute.Invalid -> Text("Source route is unavailable")

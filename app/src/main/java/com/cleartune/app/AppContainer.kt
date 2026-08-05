@@ -94,6 +94,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
 
     val libraryRepository: LibraryRepository = roomLibraryRepository
     val sourceRepository: SourceRepository = roomLibraryRepository
+    val sourceSyncStatus = RoomSourceSyncStatusAdapter(database)
     val playlistRepository: PlaylistRepository = roomPlaylistRepository
     val playlistDetailsProvider: PlaylistDetailsProvider = RoomPlaylistDetailsAdapter(database, roomPlaylistRepository)
     val libraryBrowsePort: LibraryBrowsePort = RoomLibraryBrowseAdapter(roomLibraryRepository, roomLibraryRepository)

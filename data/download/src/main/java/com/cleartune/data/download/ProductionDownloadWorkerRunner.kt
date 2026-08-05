@@ -30,7 +30,10 @@ class ProductionDownloadWorkerRunner(
     private val transferFactory: (DownloadCredentials?) -> DownloadTransferExecutor,
 ) : DownloadWorkerRunner {
     override suspend fun run(downloadId: DownloadId): WorkerOutcome {
-        val work = persistence.loadWork(downloadId) ?: return WorkerOutcome.FAILED
+        val work = persistence.loadWork(downloadId) ?: run {
+            persistence.reconcileMissingWork(downloadId)
+            return WorkerOutcome.FAILED
+        }
         val credentials = work.credentials
         var generation: Long? = null
         return try {

@@ -3,6 +3,7 @@ package com.cleartune.feature.sources
 import com.cleartune.core.contracts.SourceRepository
 import com.cleartune.core.model.MusicSource
 import com.cleartune.core.model.SourceId
+import com.cleartune.core.model.SourceType
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -10,6 +11,8 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 sealed interface SourceRoute {
     data object List : SourceRoute
@@ -69,6 +72,32 @@ data class SourceDraft(
 data class SourceBrowseItem(val key: String, val name: String, val isDirectory: Boolean)
 data class SourceFailure(val code: String, val message: String, val retryable: Boolean)
 data class SourceResult<T>(val value: T? = null, val failure: SourceFailure? = null)
+enum class SourceSyncPhase { RUNNING, RETRYING, COMPLETED, FAILED, CANCELED }
+data class SourceSyncStatus(
+    val phase: SourceSyncPhase,
+    val discoveredTracks: Int,
+    val visitedDirectories: Int,
+    val failureCount: Int,
+    val errorMessage: String? = null,
+) {
+    val active: Boolean get() = phase == SourceSyncPhase.RUNNING || phase == SourceSyncPhase.RETRYING
+}
+fun interface SourceSyncStatusPort {
+    fun observe(sourceId: SourceId): Flow<SourceSyncStatus?>
+
+    companion object {
+        val None = SourceSyncStatusPort { flowOf(null) }
+    }
+}
+
+enum class LocalMediaAccess { GRANTED, NEEDS_PERMISSION, PERMANENTLY_DENIED }
+data class LocalSourceDetailState(
+    val access: LocalMediaAccess = LocalMediaAccess.NEEDS_PERMISSION,
+    val scanning: Boolean = false,
+    val processed: Int = 0,
+    val total: Int = 0,
+    val errorMessage: String? = null,
+)
 data class TestedRootState(val browsePath: String = "", val selectedRootPath: String? = null)
 class TestedSourceDraft internal constructor(internal var draft: SourceDraft) : AutoCloseable {
     internal var browsePath: String = ""
@@ -86,6 +115,7 @@ interface SourceActionPort {
     suspend fun save(draft: SourceDraft): MusicSource
     suspend fun delete(sourceId: SourceId, deleteOfflineCopies: Boolean)
     suspend fun sync(sourceId: SourceId)
+    suspend fun cancelSync(sourceId: SourceId) = Unit
     suspend fun browse(sourceId: SourceId, relativePath: String): List<SourceBrowseItem>
 }
 
@@ -176,21 +206,29 @@ class SourceController(
         deleteOfflineCopies: Boolean = false,
         onSuccess: () -> Unit = {},
     ): SourceResult<Unit> {
+        webDavSource(sourceId)?.let { return SourceResult(failure = it) }
         val result = action { actions.delete(sourceId, deleteOfflineCopies) }
         if (result.failure == null) onSuccess()
         return result
     }
 
-    suspend fun requestSync(sourceId: SourceId): SourceResult<Unit> = action {
-        requireNotNull(sources.getSource(sourceId)) { "Source not found" }
-        actions.sync(sourceId)
+    suspend fun requestSync(sourceId: SourceId): SourceResult<Unit> {
+        webDavSource(sourceId)?.let { return SourceResult(failure = it) }
+        return action { actions.sync(sourceId) }
     }
 
-    suspend fun browse(sourceId: SourceId, relativePath: String): SourceResult<List<SourceBrowseItem>> = action {
-        requireNotNull(sources.getSource(sourceId)) { "Source not found" }
-        val normalized = relativePath.trim('/')
-        require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
-        actions.browse(sourceId, normalized)
+    suspend fun cancelSync(sourceId: SourceId): SourceResult<Unit> {
+        webDavSource(sourceId)?.let { return SourceResult(failure = it) }
+        return action { actions.cancelSync(sourceId) }
+    }
+
+    suspend fun browse(sourceId: SourceId, relativePath: String): SourceResult<List<SourceBrowseItem>> {
+        webDavSource(sourceId)?.let { return SourceResult(failure = it) }
+        return action {
+            val normalized = relativePath.trim('/')
+            require(normalized.split('/').none { it == "." || it == ".." }) { "Invalid browse path" }
+            actions.browse(sourceId, normalized)
+        }
     }
 
     suspend fun syncAndBrowse(sourceId: SourceId, relativePath: String): SourceResult<List<SourceBrowseItem>> {
@@ -248,6 +286,14 @@ class SourceController(
 
     private fun isValidReceipt(tested: TestedSourceDraft): Boolean =
         synchronized(receiptLock) { tested in receipts }
+
+    private suspend fun webDavSource(sourceId: SourceId): SourceFailure? {
+        val source = sources.getSource(sourceId)
+            ?: return SourceFailure("source_not_found", "Source not found", false)
+        return if (source.type == SourceType.WEBDAV) null else {
+            SourceFailure("wrong_source_type", "This action is only available for WebDAV sources", false)
+        }
+    }
 
     private companion object {
         const val STALE_TEST_CODE = "stale_test"

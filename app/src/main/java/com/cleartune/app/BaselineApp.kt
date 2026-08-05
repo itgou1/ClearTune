@@ -58,6 +58,8 @@ import com.cleartune.feature.settings.SettingsFeatureEntry
 import com.cleartune.feature.settings.isReducedMotionEnabled
 import com.cleartune.feature.sources.SourceRoute
 import com.cleartune.feature.sources.SourcesFeatureDependencies
+import com.cleartune.feature.sources.LocalMediaAccess
+import com.cleartune.feature.sources.LocalSourceDetailState
 import com.cleartune.feature.sources.SourcesFeatureEntry
 import com.cleartune.playback.PlaybackQueueStateWriter
 import java.net.URLDecoder
@@ -187,8 +189,32 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
             container.playlistRepository,
         )
     }
-    val sourceDependencies = remember(container) {
-        SourcesFeatureDependencies(container.sourceRepository, container.sourceController)
+    val sourceDependencies = remember(container, localAccess, scan) {
+        SourcesFeatureDependencies(
+            sourceRepository = container.sourceRepository,
+            controller = container.sourceController,
+            syncStatus = container.sourceSyncStatus,
+            localDetail = LocalSourceDetailState(
+                access = when (localAccess) {
+                    LocalAccessUiState.GRANTED -> LocalMediaAccess.GRANTED
+                    LocalAccessUiState.DENIED_PERMANENTLY -> LocalMediaAccess.PERMANENTLY_DENIED
+                    else -> LocalMediaAccess.NEEDS_PERMISSION
+                },
+                scanning = scan.phase == com.cleartune.data.local.LocalScanPhase.READING ||
+                    scan.phase == com.cleartune.data.local.LocalScanPhase.APPLYING,
+                processed = scan.processed,
+                total = scan.total,
+                errorMessage = scan.errorMessage,
+            ),
+            onRequestLocalAccess = { permissionLauncher.launch(permission) },
+            onScanLocal = container::enqueueLocalScan,
+            onOpenAppSettings = {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            },
+        )
     }
     val queueTitles = container.trackTitleFlow
     val playerDependencies = remember(container) {

@@ -48,11 +48,14 @@ data class TrackLocation(
     val available: Boolean = true,
     val sizeBytes: Long? = null,
     val etag: String? = null,
+    val relativeFolder: String = "",
+    val modifiedEpochMs: Long? = null,
 ) {
     init {
         require(sourceKey.isNotBlank())
         require(uri.isNotBlank())
         require(sizeBytes == null || sizeBytes >= 0)
+        require(modifiedEpochMs == null || modifiedEpochMs >= 0)
     }
 }
 

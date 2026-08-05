@@ -260,6 +260,9 @@ abstract class LibraryWriteDao {
     @Query("SELECT * FROM sync_sessions ORDER BY completedAtEpochMs DESC LIMIT 1")
     abstract suspend fun latestSyncSession(): SyncSessionEntity?
 
+    @Query("SELECT * FROM sync_sessions WHERE sourceId = :sourceId ORDER BY startedAtEpochMs DESC LIMIT 1")
+    abstract fun observeLatestSyncSession(sourceId: String): Flow<SyncSessionEntity?>
+
     @Query("DELETE FROM track_artists WHERE trackId = :trackId")
     abstract suspend fun deleteTrackArtists(trackId: String)
 
@@ -461,9 +464,9 @@ abstract class LibraryWriteDao {
                             available = location.available,
                             sizeBytes = location.sizeBytes,
                             etag = location.etag,
-                            relativeFolder = "",
-                            displayName = location.uri.substringAfterLast('/'),
-                            modifiedEpochSeconds = 0,
+                            relativeFolder = location.relativeFolder,
+                            displayName = location.sourceKey.substringAfterLast('/'),
+                            modifiedEpochSeconds = location.modifiedEpochMs?.div(1_000) ?: 0,
                         ),
                     )
                 }
