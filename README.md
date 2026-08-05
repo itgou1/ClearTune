@@ -58,6 +58,12 @@ Windows：
 
 macOS/Linux：
 
+首次在 macOS/Linux 使用仓库前，请先为 Wrapper 添加可执行权限：
+
+```bash
+chmod +x gradlew
+```
+
 ```bash
 ./gradlew :app:assembleDebug
 ```
