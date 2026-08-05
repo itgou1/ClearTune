@@ -70,6 +70,8 @@ data class FolderRow(
     val relativeFolder: String,
     val trackCount: Int,
     val sourceName: String,
+    val sourceId: String? = null,
+    val sourceType: String? = null,
 )
 
 data class MediaCatalogRow(

@@ -63,6 +63,8 @@ interface LibraryBrowseStore {
     fun observeArtists(): Flow<List<ArtistRow>>
     fun observeFolders(): Flow<List<FolderRow>>
     fun observeFolderTracks(relativeFolder: String): Flow<List<TrackSummary>>
+    fun observeFolderTracks(sourceId: SourceId?, relativeFolder: String): Flow<List<TrackSummary>> =
+        observeFolderTracks(relativeFolder)
     fun observeArtistTracks(artistId: ArtistId): Flow<List<TrackSummary>>
     fun observeArtistAlbums(artistId: ArtistId): Flow<List<AlbumRow>>
 }
@@ -251,6 +253,14 @@ class RoomLibraryRepository(
         rows.filter { row -> row.belongsToFolder(relativeFolder) }
             .map(LibraryTrackRow::toTrackSummary)
     }
+    override fun observeFolderTracks(sourceId: SourceId?, relativeFolder: String): Flow<List<TrackSummary>> =
+        if (sourceId == null) observeFolderTracks(relativeFolder) else combine(
+            readDao.observeFolderTrackIds(sourceId.value, relativeFolder),
+            readDao.observeTrackRows(),
+        ) { trackIds, rows ->
+            val included = trackIds.toHashSet()
+            rows.filter { it.trackId in included }.map(LibraryTrackRow::toTrackSummary)
+        }
     override fun observeArtistTracks(artistId: ArtistId): Flow<List<TrackSummary>> = readDao.observeTrackRows().map { rows ->
         rows.filter { it.hasArtist(artistId) }.map(LibraryTrackRow::toTrackSummary)
     }

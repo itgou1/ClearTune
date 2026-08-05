@@ -46,7 +46,11 @@ class LibraryBrowseStateTest {
             state.artistDetail(artist).first(),
         )
         assertEquals(
-            LibraryFolderBrowseState(listOf(LibraryFolderUi("Music/Live", 1)), "Music/Live", listOf(folderTrack)),
+            LibraryFolderBrowseState(
+                listOf(LibraryFolderUi("Music/Live", 1)),
+                LibraryFolderUi("Music/Live", 1),
+                listOf(folderTrack),
+            ),
             state.folder("Music/Live").first(),
         )
     }

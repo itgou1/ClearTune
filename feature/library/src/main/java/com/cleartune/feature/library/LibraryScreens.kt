@@ -59,9 +59,11 @@ import com.cleartune.core.model.Artist
 import com.cleartune.core.model.PlaybackCommand
 import com.cleartune.core.model.SearchResults
 import com.cleartune.core.model.PlaylistSummary
-import com.cleartune.core.model.SongQuery
 import com.cleartune.core.model.SongSort
+import com.cleartune.core.model.SourceId
 import com.cleartune.core.model.TrackSummary
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 @Composable
@@ -161,20 +163,46 @@ fun LibraryHomeScreen(
 @Composable
 fun SongsScreen(
     dependencies: LibraryFeatureDependencies,
+    uiInputs: LibraryFeatureUiInputs,
     onBack: () -> Unit,
     onTrackMore: ((TrackSummary) -> Unit)? = null,
 ) {
     var sort by rememberSaveable { mutableStateOf(SongSort.TITLE) }
     var ascending by rememberSaveable { mutableStateOf(true) }
     var downloadedOnly by rememberSaveable { mutableStateOf(false) }
+    var selectedSourceId by rememberSaveable { mutableStateOf<String?>(null) }
     var selecting by rememberSaveable { mutableStateOf(false) }
     var selectedIds by rememberSaveable { mutableStateOf(setOf<String>()) }
-    val songs by remember(sort, ascending, downloadedOnly) {
-        dependencies.libraryRepository.observeSongs(
-            SongQuery(sort = sort, ascending = ascending, downloadedOnly = downloadedOnly),
+    var choosingPlaylist by rememberSaveable { mutableStateOf(false) }
+    var newPlaylistName by rememberSaveable { mutableStateOf("") }
+    var batchMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    val sources by remember(dependencies.sourceRepository) {
+        dependencies.sourceRepository?.observeSources() ?: flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+    val sourceFilters = remember(sources) { librarySourceFilters(sources) }
+    val songs by remember(sort, ascending, downloadedOnly, selectedSourceId) {
+        observeLibrarySongs(
+            repository = dependencies.libraryRepository,
+            sort = sort,
+            ascending = ascending,
+            sourceId = selectedSourceId?.let(::SourceId),
+            downloadedOnly = downloadedOnly,
         )
+    }.collectAsState(initial = emptyList())
+    val selectedTracks = songs.filter { it.id.value in selectedIds }
+    val selectedTrackIds = selectedTracks.map(TrackSummary::id)
+    val actionStates by remember(selectedTrackIds, uiInputs.observeTrackAction) {
+        if (selectedTrackIds.isEmpty()) flowOf(emptyMap()) else combine(
+            selectedTrackIds.map(uiInputs.observeTrackAction),
+        ) { states -> selectedTrackIds.zip(states).toMap() }
+    }.collectAsState(initial = emptyMap())
+    val canDownloadSelected = selectedTrackIds.any { trackId ->
+        actionStates[trackId]?.let { it.canDownload && !it.isDownloaded } == true
     }
-        .collectAsState(initial = emptyList())
+    val playlists by dependencies.playlistRepository.observePlaylists().collectAsState(initial = emptyList())
+    val batchActions = remember(dependencies.playlistRepository, dependencies.downloadTrack) {
+        LibraryBatchActions(dependencies.playlistRepository, dependencies.downloadTrack)
+    }
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
         SecondaryHeader("歌曲", onBack) {
@@ -193,24 +221,88 @@ fun SongsScreen(
                 scope.launch { dependencies.playCollection(songs.shuffled(), 0) }
             }) { Text("Shuffle") }
             TextButton(onClick = { downloadedOnly = !downloadedOnly }) {
-                Text(if (downloadedOnly) "Downloaded" else "All sources")
+                Text(if (downloadedOnly) "Downloaded" else "All tracks")
             }
             TextButton(onClick = { ascending = !ascending }) { Text(if (ascending) "A–Z" else "Z–A") }
             TextButton(onClick = {
-                if (selecting) selectedIds = emptySet()
+                if (selecting) {
+                    selectedIds = emptySet()
+                    choosingPlaylist = false
+                    batchMessage = null
+                }
                 selecting = !selecting
             }) { Text(if (selecting) "Done" else "Select") }
+        }
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            items(sourceFilters, key = { it.sourceId?.value ?: "all" }) { filter ->
+                TextButton(onClick = { selectedSourceId = filter.sourceId?.value }) {
+                    Text(if (selectedSourceId == filter.sourceId?.value) "✓ ${filter.label}" else filter.label)
+                }
+            }
         }
         if (selecting && selectedIds.isNotEmpty()) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 TextButton(onClick = {
-                    val selected = songs.filter { it.id.value in selectedIds }
-                    scope.launch { dependencies.playCollection(selected, 0) }
+                    scope.launch { dependencies.playCollection(selectedTracks, 0) }
                 }) { Text("Play selected") }
                 TextButton(onClick = {
-                    val selected = songs.filter { it.id.value in selectedIds }
-                    scope.launch { dependencies.addCollection(selected) }
+                    scope.launch { dependencies.addCollection(selectedTracks) }
                 }) { Text("Queue selected") }
+                TextButton(onClick = { choosingPlaylist = !choosingPlaylist }) { Text("Add to playlist") }
+                TextButton(enabled = canDownloadSelected, onClick = {
+                    scope.launch {
+                        val result = batchActions.download(selectedTrackIds)
+                        batchMessage = result.toUiMessage()
+                    }
+                }) { Text("Download") }
+            }
+            if (choosingPlaylist) {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) {
+                    items(selectablePlaylists(playlists), key = { it.id.value }) { playlist ->
+                        TextButton(onClick = {
+                            scope.launch {
+                                val result = batchActions.addToPlaylist(playlist.id, selectedTrackIds)
+                                batchMessage = "Added ${result.addedTrackIds.size} tracks to ${playlist.name}"
+                                choosingPlaylist = false
+                            }
+                        }) { Text(playlist.name) }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = newPlaylistName,
+                        onValueChange = { newPlaylistName = it },
+                        label = { Text("New playlist") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(enabled = newPlaylistName.isNotBlank(), onClick = {
+                        scope.launch {
+                            val name = newPlaylistName.trim()
+                            val result = batchActions.createPlaylistAndAdd(name, selectedTrackIds)
+                            batchMessage = "Added ${result.addedTrackIds.size} tracks to $name"
+                            newPlaylistName = ""
+                            choosingPlaylist = false
+                        }
+                    }) { Text("Create") }
+                }
+            }
+            batchMessage?.let { message ->
+                Text(
+                    message,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                )
             }
         }
         Text(
@@ -257,18 +349,22 @@ fun ArtistsScreen(artists: List<Artist>, onBack: () -> Unit, onOpenArtist: (Arti
 fun FoldersScreen(
     dependencies: LibraryFeatureDependencies,
     folders: List<LibraryFolderUi>,
-    selectedFolder: String?,
+    selectedFolder: LibraryFolderUi?,
     folderTracks: List<TrackSummary>,
     onBack: () -> Unit,
     onOpenFolder: (String) -> Unit,
     onTrackMore: ((TrackSummary) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
+    val batchActions = remember(dependencies.playlistRepository, dependencies.downloadTrack) {
+        LibraryBatchActions(dependencies.playlistRepository, dependencies.downloadTrack)
+    }
+    var downloadMessage by remember(selectedFolder?.routeKey) { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize()) {
-        SecondaryHeader(selectedFolder?.substringAfterLast('/') ?: "文件夹", onBack)
+        SecondaryHeader(selectedFolder?.path?.substringAfterLast('/') ?: "文件夹", onBack)
         if (selectedFolder != null) {
             Text(
-                "$selectedFolder · ${folderTracks.size} 首",
+                "${selectedFolder.path} · ${folderTracks.size} 首",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
@@ -280,6 +376,21 @@ fun FoldersScreen(
                 TextButton(enabled = folderTracks.isNotEmpty(), onClick = {
                     scope.launch { dependencies.playCollection(folderTracks.shuffled(), 0) }
                 }) { Text("Shuffle") }
+                if (selectedFolder.canDownloadFolder) {
+                    TextButton(enabled = folderTracks.isNotEmpty(), onClick = {
+                        scope.launch {
+                            val result = batchActions.downloadFolder(selectedFolder, folderTracks.map(TrackSummary::id))
+                            downloadMessage = (result as? LibraryFolderDownloadResult.Dispatched)?.result?.toUiMessage()
+                        }
+                    }) { Text("Download folder") }
+                }
+            }
+            downloadMessage?.let { message ->
+                Text(
+                    message,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                )
             }
             if (folderTracks.isEmpty()) EmptyListMessage("这个文件夹中没有音乐") else LazyColumn {
                 items(folderTracks, key = { it.id.value }) { track ->
@@ -291,12 +402,12 @@ fun FoldersScreen(
                 }
             }
         } else if (folders.isEmpty()) EmptyListMessage("扫描音乐后，文件夹会显示在这里") else LazyColumn {
-            items(folders, key = LibraryFolderUi::path) { folder ->
+            items(folders, key = LibraryFolderUi::routeKey) { folder ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onOpenFolder(folder.path) }
+                        .clickable { onOpenFolder(folder.routeKey) }
                         .padding(horizontal = 20.dp, vertical = 14.dp),
                 ) {
                     Text("⌑", style = MaterialTheme.typography.headlineSmall)
@@ -704,6 +815,9 @@ private suspend fun LibraryFeatureDependencies.addCollection(tracks: List<TrackS
     val queue = queueRepository ?: return
     LibraryPlaybackActions(queue, playbackGateway, onQueueChanged).addAll(tracks.map(TrackSummary::id))
 }
+
+private fun LibraryBatchDownloadResult.toUiMessage(): String =
+    "Downloads: $enqueuedCount started, $skippedCount skipped, $failedCount failed"
 
 private fun Set<String>.toggle(value: String): Set<String> = if (value in this) this - value else this + value
 

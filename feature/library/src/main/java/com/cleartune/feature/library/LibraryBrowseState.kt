@@ -17,6 +17,7 @@ interface LibraryBrowsePort {
     fun observeArtistTracks(artistId: ArtistId): Flow<List<TrackSummary>>
     fun observeArtistAlbums(artistId: ArtistId): Flow<List<Album>>
     fun observeFolderTracks(path: String): Flow<List<TrackSummary>>
+    fun observeFolderTracks(folder: LibraryFolderUi): Flow<List<TrackSummary>> = observeFolderTracks(folder.path)
 }
 
 data class LibraryAlbumDetailState(
@@ -32,7 +33,7 @@ data class LibraryArtistDetailState(
 
 data class LibraryFolderBrowseState(
     val folders: List<LibraryFolderUi>,
-    val selectedFolder: String?,
+    val selectedFolder: LibraryFolderUi?,
     val tracks: List<TrackSummary>,
 )
 
@@ -61,10 +62,23 @@ class LibraryBrowseState(
         }
     }
 
-    fun folder(selectedFolder: String?): Flow<LibraryFolderBrowseState> {
-        val tracks = selectedFolder?.let(port::observeFolderTracks) ?: flowOf(emptyList())
+    fun folder(selectedFolderKey: String?): Flow<LibraryFolderBrowseState> {
+        val selectedReference = selectedFolderKey?.toFolderReference()
+        val tracks = selectedReference?.let(port::observeFolderTracks) ?: flowOf(emptyList())
         return combine(folders, tracks) { availableFolders, folderTracks ->
+            val selectedFolder = selectedFolderKey?.let { key ->
+                availableFolders.firstOrNull { it.routeKey == key }
+            }
             LibraryFolderBrowseState(availableFolders, selectedFolder, folderTracks)
         }
     }
+}
+
+private fun String.toFolderReference(): LibraryFolderUi {
+    val separator = indexOf('\u001f')
+    return if (separator < 0) LibraryFolderUi(this, 0) else LibraryFolderUi(
+        path = substring(separator + 1),
+        trackCount = 0,
+        sourceId = com.cleartune.core.model.SourceId(substring(0, separator)),
+    )
 }

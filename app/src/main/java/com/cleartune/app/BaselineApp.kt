@@ -210,6 +210,8 @@ fun ClearTuneApp(container: AppContainer, startDestination: String = AppRoutes.L
             container.playlistRepository,
             container.queueRepository,
             container.playbackGateway::syncQueue,
+            container.sourceRepository,
+            container::downloadTrack,
         )
     }
     val sourceDependencies = remember(container, localAccess, scan) {

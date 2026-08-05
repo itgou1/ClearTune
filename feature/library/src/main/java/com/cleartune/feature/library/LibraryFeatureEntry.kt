@@ -8,9 +8,11 @@ import com.cleartune.core.contracts.LibraryRepository
 import com.cleartune.core.contracts.PlaybackGateway
 import com.cleartune.core.contracts.PlaylistRepository
 import com.cleartune.core.contracts.QueueRepository
+import com.cleartune.core.contracts.SourceRepository
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.cleartune.core.model.LibraryHome
+import com.cleartune.core.model.TrackId
 
 data class LibraryFeatureDependencies(
     val libraryRepository: LibraryRepository,
@@ -19,6 +21,10 @@ data class LibraryFeatureDependencies(
     val playlistRepository: PlaylistRepository,
     val queueRepository: QueueRepository? = null,
     val onQueueChanged: suspend () -> Unit = {},
+    val sourceRepository: SourceRepository? = null,
+    val downloadTrack: suspend (TrackId) -> LibraryDownloadOutcome = {
+        LibraryDownloadOutcome.Unavailable("Download unavailable")
+    },
 )
 
 object LibraryFeatureEntry {
@@ -60,7 +66,7 @@ object LibraryFeatureEntry {
         }
         when (route) {
             LibraryRoutes.root -> Content(dependencies, onNavigate, uiInputs)
-            LibraryRoutes.songs -> SongsScreen(dependencies, onBack, onTrackMore)
+            LibraryRoutes.songs -> SongsScreen(dependencies, uiInputs, onBack, onTrackMore)
             LibraryRoutes.albums -> {
                 val albums by browseState.albums.collectAsState(initial = emptyList())
                 AlbumsScreen(albums, onBack, uiInputs.onOpenAlbum)
@@ -100,7 +106,7 @@ object LibraryFeatureEntry {
                     browseState.folder(uiInputs.selectedFolder)
                 }
                 val folderState by folderFlow.collectAsState(
-                    initial = LibraryFolderBrowseState(emptyList(), uiInputs.selectedFolder, emptyList()),
+                    initial = LibraryFolderBrowseState(emptyList(), null, emptyList()),
                 )
                 FoldersScreen(
                     dependencies = dependencies,

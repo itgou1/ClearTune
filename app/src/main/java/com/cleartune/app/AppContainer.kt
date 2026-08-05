@@ -62,6 +62,7 @@ import com.cleartune.data.webdav.WebDavSyncWorkerHost
 import com.cleartune.data.webdav.WorkManagerWebDavSyncScheduler
 import com.cleartune.feature.downloads.DownloadTitleResolver
 import com.cleartune.feature.library.LibraryBrowsePort
+import com.cleartune.feature.library.LibraryDownloadOutcome
 import com.cleartune.feature.playlists.PlaylistDetailsProvider
 import com.cleartune.feature.settings.SettingsProductController
 import com.cleartune.feature.sources.SourceController
@@ -373,6 +374,26 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
             )
             TrackDownloadActionResult.Done
         }.getOrElse { TrackDownloadActionResult.Failed("Download action could not be completed") }
+    }
+
+    suspend fun downloadTrack(trackId: TrackId): LibraryDownloadOutcome {
+        val existing = downloadRepository.observeDownloads().first().firstOrNull { it.trackId == trackId }
+        if (existing?.state == DownloadState.COMPLETED) return LibraryDownloadOutcome.AlreadyDownloaded
+        val capability = TrackDownloadCapability.from(roomLibraryRepository.getPlayableTrack(trackId))
+        if (capability is TrackDownloadCapability.Unavailable) {
+            return LibraryDownloadOutcome.Unavailable(capability.reason)
+        }
+        return runCatching {
+            when (existing?.state) {
+                null, DownloadState.CANCELED -> downloadRepository.dispatch(DownloadCommand.Enqueue(trackId))
+                DownloadState.FAILED, DownloadState.UPDATE_AVAILABLE ->
+                    downloadRepository.dispatch(DownloadCommand.Retry(existing.id))
+                DownloadState.PAUSED -> downloadRepository.dispatch(DownloadCommand.Resume(existing.id))
+                DownloadState.QUEUED, DownloadState.WAITING_FOR_WIFI, DownloadState.RUNNING -> Unit
+                DownloadState.COMPLETED -> Unit
+            }
+            LibraryDownloadOutcome.Enqueued
+        }.getOrElse { LibraryDownloadOutcome.Failed("Download action could not be completed") }
     }
 
     internal fun smokeSnapshot() = AppContainerSmokeSnapshot(

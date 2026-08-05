@@ -28,6 +28,8 @@ import com.cleartune.core.model.RepeatMode
 import com.cleartune.core.model.SettingsCommand
 import com.cleartune.core.model.TrackId
 import com.cleartune.core.model.TrackSummary
+import com.cleartune.core.model.SourceId
+import com.cleartune.core.model.SourceType
 import com.cleartune.data.webdav.EncryptedCredentialStore
 import com.cleartune.feature.library.LibraryBrowsePort
 import com.cleartune.feature.library.LibraryFolderUi
@@ -79,10 +81,18 @@ class RoomLibraryBrowseAdapter(
     ) { albums, artists -> albums.takeIf { artists.any { it.id == artistId } }.orEmpty() }
 
     override fun observeFolderTracks(path: String): Flow<List<TrackSummary>> = store.observeFolderTracks(path)
+    override fun observeFolderTracks(folder: LibraryFolderUi): Flow<List<TrackSummary>> =
+        store.observeFolderTracks(folder.sourceId, folder.path)
 }
 
 internal fun FolderRow.toLibraryFolderUi(): LibraryFolderUi =
-    LibraryFolderUi(relativeFolder, trackCount, sourceName)
+    LibraryFolderUi(
+        path = relativeFolder,
+        trackCount = trackCount,
+        sourceName = sourceName,
+        sourceId = sourceId?.let(::SourceId),
+        sourceType = sourceType?.let { runCatching { SourceType.valueOf(it) }.getOrNull() },
+    )
 
 class RoomPlaylistDetailsAdapter(
     private val database: ClearTuneDatabase,

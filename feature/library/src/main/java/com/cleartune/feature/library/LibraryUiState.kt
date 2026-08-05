@@ -5,6 +5,8 @@ import com.cleartune.core.model.Album
 import com.cleartune.core.model.Artist
 import com.cleartune.core.model.TrackSummary
 import com.cleartune.core.model.PlaylistSummary
+import com.cleartune.core.model.SourceId
+import com.cleartune.core.model.SourceType
 import com.cleartune.core.model.TrackId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -99,7 +101,12 @@ data class LibraryFolderUi(
     val path: String,
     val trackCount: Int,
     val sourceName: String = "本地音乐",
-)
+    val sourceId: SourceId? = null,
+    val sourceType: SourceType? = null,
+) {
+    val canDownloadFolder: Boolean get() = sourceType == SourceType.WEBDAV
+    val routeKey: String get() = sourceId?.let { "${it.value}\u001f$path" } ?: path
+}
 
 data class LibraryFeatureUiInputs(
     val localAccess: LocalAccessUiState = LocalAccessUiState.NOT_REQUESTED,
