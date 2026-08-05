@@ -3,6 +3,7 @@ package com.cleartune.core.database.dao
 import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Upsert
+import androidx.room.Transaction
 import com.cleartune.core.database.entity.AppSettingsEntity
 import com.cleartune.core.database.entity.DownloadEntity
 import com.cleartune.core.database.entity.PlaybackHistoryEntity
@@ -84,10 +85,24 @@ interface PlaybackDao {
     @Query("SELECT * FROM playback_history ORDER BY playedAtEpochMs DESC LIMIT :limit")
     fun observeRecentHistory(limit: Int): Flow<List<PlaybackHistoryEntity>>
 
+    @Query("SELECT * FROM playback_history WHERE id = :id LIMIT 1")
+    suspend fun history(id: Long): PlaybackHistoryEntity?
+
     @Upsert suspend fun upsertQueue(queue: PlaybackQueueEntity)
     @Upsert suspend fun upsertQueueItems(items: List<PlaybackQueueItemEntity>)
     @Upsert suspend fun upsertPlaybackState(state: PlaybackStateEntity)
     @Upsert suspend fun upsertHistory(history: PlaybackHistoryEntity)
+
+    @Transaction
+    suspend fun recordHistorySession(history: PlaybackHistoryEntity) {
+        val existing = history(history.id)
+        upsertHistory(
+            history.copy(
+                playedAtEpochMs = existing?.playedAtEpochMs ?: history.playedAtEpochMs,
+                completed = existing?.completed == true || history.completed,
+            ),
+        )
+    }
     @Query("DELETE FROM playback_queue_items WHERE queueId = :queueId") suspend fun clearQueueItems(queueId: String = DEFAULT_QUEUE_ID): Int
 
     companion object { const val DEFAULT_QUEUE_ID = "default" }

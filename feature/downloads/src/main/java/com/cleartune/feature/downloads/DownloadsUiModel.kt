@@ -25,6 +25,7 @@ fun DownloadSummary.toUiItem(titleResolver: DownloadTitleResolver): DownloadUiIt
         ?.let { (bytesDownloaded.toDouble() / it).toFloat().coerceIn(0f, 1f) }
     val status = when (state) {
         DownloadState.QUEUED -> "等待下载"
+        DownloadState.WAITING_FOR_WIFI -> "等待 Wi-Fi"
         DownloadState.RUNNING -> "正在下载"
         DownloadState.PAUSED -> "已暂停"
         DownloadState.COMPLETED -> "已完成"
@@ -40,7 +41,7 @@ fun DownloadSummary.toUiItem(titleResolver: DownloadTitleResolver): DownloadUiIt
 fun groupDownloads(downloads: List<DownloadSummary>, titleResolver: DownloadTitleResolver): List<DownloadUiGroup> {
     val items = downloads.map { it.toUiItem(titleResolver) }
     val definitions = listOf(
-        "进行中" to setOf(DownloadState.QUEUED, DownloadState.RUNNING),
+        "进行中" to setOf(DownloadState.QUEUED, DownloadState.WAITING_FOR_WIFI, DownloadState.RUNNING),
         "需要处理" to setOf(DownloadState.PAUSED, DownloadState.FAILED, DownloadState.UPDATE_AVAILABLE, DownloadState.CANCELED),
         "已完成" to setOf(DownloadState.COMPLETED),
     )

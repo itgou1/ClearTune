@@ -34,6 +34,7 @@ import com.cleartune.data.download.DownloadCoordinator
 import com.cleartune.data.download.DownloadTransfer
 import com.cleartune.data.download.DownloadWorkerHost
 import com.cleartune.data.download.DownloadWorkerRunner
+import com.cleartune.data.download.DownloadNetworkPolicyProvider
 import com.cleartune.data.download.ProductionDownloadWorkerRunner
 import com.cleartune.data.download.WorkManagerDownloadScheduler
 import com.cleartune.data.download.asExecutor
@@ -78,6 +79,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -148,7 +151,13 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
 
     private val downloadRoot = File(appContext.noBackupFilesDir, "offline_downloads")
     private val downloadPersistence = RoomDownloadPersistenceAdapter(database, credentialStore, downloadRoot)
-    private val downloadScheduler = WorkManagerDownloadScheduler(appContext, downloadRoot, downloadPersistence)
+    private val productPreferences = appContext.getSharedPreferences("cleartune_product_settings", Context.MODE_PRIVATE)
+    private val downloadScheduler = WorkManagerDownloadScheduler(
+        appContext,
+        downloadRoot,
+        downloadPersistence,
+        DownloadNetworkPolicyProvider { productPreferences.getBoolean("wifi_only_downloads", true) },
+    )
     private val sourceRemovalCoordinator = RoomWebDavSourceRemovalCoordinator(
         database = database,
         downloadRoot = downloadRoot,
@@ -223,9 +232,21 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
         scanLibrary = { localScanScheduler.enqueueManualRefresh() },
         cleanUpCache = { clearContainedCache(streamingCacheRoot) },
         cacheRoot = streamingCacheRoot,
+        rebuildDownloadConstraints = { wifiOnly ->
+            downloadPersistence.observe().first()
+                .filter { it.state in setOf(DownloadState.QUEUED, DownloadState.WAITING_FOR_WIFI, DownloadState.RUNNING) }
+                .forEach { download ->
+                    downloadPersistence.replace(
+                        download.copy(
+                            state = if (wifiOnly) DownloadState.WAITING_FOR_WIFI else DownloadState.QUEUED,
+                        ),
+                    )
+                    downloadScheduler.enqueue(download.id)
+                }
+        },
     )
-    val playbackRuntimeSettingsProvider = PlaybackRuntimeSettingsProvider {
-        settingsProductController.snapshot().let { settings ->
+    val playbackRuntimeSettingsProvider = object : PlaybackRuntimeSettingsProvider {
+        override fun snapshot(): PlaybackRuntimeSettings = settingsProductController.snapshot().let { settings ->
             PlaybackRuntimeSettings(
                 restoreQueue = settings.restoreQueue,
                 pauseOnHeadphoneDisconnect = settings.pauseOnHeadphoneDisconnect,
@@ -235,6 +256,16 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
                 cacheLimitBytes = settings.cacheLimitMb.toLong() * 1024L * 1024L,
             )
         }
+        override val updates = settingsProductController.productSettings.map { settings ->
+            PlaybackRuntimeSettings(
+                restoreQueue = settings.restoreQueue,
+                pauseOnHeadphoneDisconnect = settings.pauseOnHeadphoneDisconnect,
+                streamingCacheEnabled = settings.offlineCacheEnabled,
+                backgroundPlayback = settings.backgroundPlayback,
+                dynamicBackground = settings.dynamicBackground,
+                cacheLimitBytes = settings.cacheLimitMb.toLong() * 1024L * 1024L,
+            )
+        }.distinctUntilChanged()
     }
 
     val librarySessionCatalog: LibrarySessionCatalog = RoomLibrarySessionCatalog(database)
@@ -252,6 +283,7 @@ class AppContainer(context: Context) : DownloadWorkerHost, WebDavSyncWorkerHost 
             uriReadable = ::uriReadable,
             networkAvailable = ::networkAvailable,
         ),
+        historyRecorder = roomLibraryRepository,
     )
 
     val playbackCredentialResolver = PlaybackCredentialResolver { rawSourceId ->

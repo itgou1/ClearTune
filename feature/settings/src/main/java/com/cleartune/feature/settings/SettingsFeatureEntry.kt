@@ -109,6 +109,10 @@ object SettingsFeatureEntry {
                 ToggleRow("Cache streamed music", product.offlineCacheEnabled) {
                     dispatch(SettingsProductCommand.SetOfflineCacheEnabled(it))
                 }
+                HorizontalDivider()
+                ToggleRow("Download on Wi-Fi only", product.wifiOnlyDownloads) {
+                    dispatch(SettingsProductCommand.SetWifiOnlyDownloads(it))
+                }
                 NavigationRow("Cache limit", "${product.cacheLimitMb} MB") {
                     val next = if (product.cacheLimitMb >= 2_048) 256 else product.cacheLimitMb * 2
                     dispatch(SettingsProductCommand.SetCacheLimitMb(next))

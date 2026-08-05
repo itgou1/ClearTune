@@ -110,7 +110,7 @@ private fun DownloadRow(item: DownloadUiItem, onCommand: (DownloadCommand) -> Un
 @Composable
 private fun DownloadActions(item: DownloadUiItem, onCommand: (DownloadCommand) -> Unit) {
     when (item.state) {
-        DownloadState.QUEUED, DownloadState.RUNNING -> {
+        DownloadState.QUEUED, DownloadState.WAITING_FOR_WIFI, DownloadState.RUNNING -> {
             TextButton(onClick = { onCommand(DownloadCommand.Pause(item.id)) }) { Text("暂停") }
             TextButton(onClick = { onCommand(DownloadCommand.Cancel(item.id)) }) { Text("取消") }
         }

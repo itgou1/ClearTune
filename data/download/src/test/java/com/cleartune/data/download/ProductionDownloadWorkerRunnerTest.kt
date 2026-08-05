@@ -12,6 +12,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
+import androidx.work.NetworkType
 import kotlinx.coroutines.test.runTest
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
@@ -91,6 +92,27 @@ class ProductionDownloadWorkerRunnerTest {
         assertEquals(ExistingWorkPolicy.REPLACE, gateway.enqueuedPolicy)
         gateway.enqueueFailure = IllegalStateException("rejected")
         assertTrue(runCatching { scheduler.enqueue(id) }.isFailure)
+    }
+
+    @Test
+    fun `download requests follow live wifi policy and replacements rebuild constraints`() = runTest {
+        val root = Files.createTempDirectory("download-policy-").toFile()
+        val gateway = FakeDownloadWorkGateway()
+        var wifiOnly = true
+        val scheduler = WorkManagerDownloadScheduler(
+            root,
+            DownloadFileLocator { null },
+            gateway,
+            DownloadNetworkPolicyProvider { wifiOnly },
+        )
+
+        scheduler.enqueue(id)
+        assertEquals(NetworkType.UNMETERED, gateway.requests.single().workSpec.constraints.requiredNetworkType)
+
+        wifiOnly = false
+        scheduler.enqueue(id)
+        assertEquals(NetworkType.CONNECTED, gateway.requests.last().workSpec.constraints.requiredNetworkType)
+        assertEquals(listOf(ExistingWorkPolicy.REPLACE, ExistingWorkPolicy.REPLACE), gateway.policies)
     }
 
     @Test
@@ -266,6 +288,8 @@ private class FakeDownloadWorkGateway : DownloadWorkManagerGateway {
     var enqueuedName: String? = null
     var enqueuedPolicy: ExistingWorkPolicy? = null
     var enqueueFailure: Exception? = null
+    val requests = mutableListOf<OneTimeWorkRequest>()
+    val policies = mutableListOf<ExistingWorkPolicy>()
     override suspend fun enqueueUnique(
         name: String,
         policy: ExistingWorkPolicy,
@@ -274,6 +298,8 @@ private class FakeDownloadWorkGateway : DownloadWorkManagerGateway {
         enqueueFailure?.let { throw it }
         enqueuedName = name
         enqueuedPolicy = policy
+        requests += request
+        policies += policy
     }
 
     override suspend fun cancelUnique(name: String) = Unit

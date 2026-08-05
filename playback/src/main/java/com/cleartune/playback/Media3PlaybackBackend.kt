@@ -297,6 +297,27 @@ class Media3PlaybackBackend(context: Context) : PlaybackBackend, ObservablePlayb
         }
     }
 
+    override suspend fun clearFutureQueue(preserveOccurrenceId: String?) {
+        withController { controller ->
+            val currentIndex = controller.currentMediaItemIndex
+            val current = controller.currentMediaItem
+            if (currentIndex < 0 || current == null) {
+                controller.clearMediaItems()
+                occurrenceTrackIds = emptyMap()
+                PrivateMediaSourceRegistry.clear()
+                return@withController
+            }
+            val currentOccurrence = current.mediaId
+            val currentOpaqueUri = current.localConfiguration?.uri?.toString()
+            if (controller.mediaItemCount > currentIndex + 1) {
+                controller.removeMediaItems(currentIndex + 1, controller.mediaItemCount)
+            }
+            if (currentIndex > 0) controller.removeMediaItems(0, currentIndex)
+            occurrenceTrackIds = occurrenceTrackIds.filterKeys { it == currentOccurrence }
+            PrivateMediaSourceRegistry.retainOnly(currentOpaqueUri)
+        }
+    }
+
     override suspend fun play() = withController { it.play() }
     override suspend fun pause() = withController { it.pause() }
     override suspend fun next() = withController { it.seekToNextMediaItem() }

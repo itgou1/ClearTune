@@ -246,6 +246,32 @@ class RoomLibraryTransactionTest {
     }
 
     @Test
+    fun recent_playback_history_projects_available_tracks_in_history_order() = runBlocking {
+        repository.applyLocalSnapshot(
+            SOURCE,
+            "Local music",
+            listOf(
+                record(title = "Older"),
+                record(title = "Newest").copy(
+                    sourceKey = "mediastore:2",
+                    uri = "content://media/external/audio/media/2",
+                    displayName = "Newest.mp3",
+                ),
+            ),
+            100,
+        )
+        val tracks = repository.observeSongs().first().associateBy { it.title }
+        database.playbackDao().upsertHistory(
+            PlaybackHistoryEntity(trackId = tracks.getValue("Older").id.value, playedAtEpochMs = 100, completed = false),
+        )
+        database.playbackDao().upsertHistory(
+            PlaybackHistoryEntity(trackId = tracks.getValue("Newest").id.value, playedAtEpochMs = 200, completed = true),
+        )
+
+        assertEquals(listOf("Newest", "Older"), repository.observeLibraryHome().first().recentPlayed.map { it.title })
+    }
+
+    @Test
     fun favorites_have_fixed_identity_idempotent_order_and_survive_unavailable_locations() = runBlocking {
         repository.applyLocalSnapshot(SOURCE, "Local music", listOf(record(), record().copy(sourceKey = "second", uri = "content://audio/2", displayName = "second.mp3", title = "Second")), 100)
         val tracks = repository.observeSongs().first()
