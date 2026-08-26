@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class LibraryUiState(
@@ -67,6 +68,7 @@ data class FolderUiState(
     val songs: List<Song> = emptyList(),
     val loading: Boolean = false,
     val errorMessage: String? = null,
+    val physicalBrowseUnsupported: Boolean = false,
 )
 
 @OptIn(FlowPreview::class)
@@ -138,14 +140,26 @@ class MusicViewModel @Inject constructor(
     fun refresh() {
         viewModelScope.launch {
             refreshing.value = true
+            _folderState.update {
+                it.copy(loading = true, errorMessage = null, physicalBrowseUnsupported = false)
+            }
             libraryError.value = repository.refreshLibrary()?.userMessage
             when (val result = repository.genres()) {
                 is RemoteResult.Success -> _genres.value = result.value
                 is RemoteResult.Failure -> Unit
             }
             when (val result = repository.musicFolders()) {
-                is RemoteResult.Success -> _folderState.value = _folderState.value.copy(roots = result.value)
-                is RemoteResult.Failure -> Unit
+                is RemoteResult.Success -> _folderState.update {
+                    it.copy(
+                        roots = result.value,
+                        loading = false,
+                        errorMessage = null,
+                        physicalBrowseUnsupported = false,
+                    )
+                }
+                is RemoteResult.Failure -> _folderState.update {
+                    it.copy(loading = false, errorMessage = result.error.userMessage)
+                }
             }
             refreshing.value = false
         }
@@ -166,7 +180,13 @@ class MusicViewModel @Inject constructor(
     fun folderBack() {
         val path = _folderState.value.path
         if (path.size <= 1) {
-            _folderState.value = _folderState.value.copy(path = emptyList(), folders = emptyList(), songs = emptyList())
+            _folderState.value = _folderState.value.copy(
+                path = emptyList(),
+                folders = emptyList(),
+                songs = emptyList(),
+                errorMessage = null,
+                physicalBrowseUnsupported = false,
+            )
         } else {
             val previous = path[path.lastIndex - 1]
             loadDirectory(previous, path.dropLast(1))
@@ -174,19 +194,30 @@ class MusicViewModel @Inject constructor(
     }
 
     private fun loadDirectory(folder: MusicFolder, path: List<MusicFolder>) {
-        _folderState.value = _folderState.value.copy(loading = true, errorMessage = null)
+        _folderState.value = _folderState.value.copy(
+            path = path,
+            folders = emptyList(),
+            songs = emptyList(),
+            loading = true,
+            errorMessage = null,
+            physicalBrowseUnsupported = false,
+        )
         viewModelScope.launch {
+            val isMusicFolderRoot = path.size == 1 && _folderState.value.roots.any { it.id == folder.id }
             _folderState.value = when (val result = repository.musicDirectory(folder.id)) {
                 is RemoteResult.Success -> _folderState.value.copy(
                     path = path,
                     folders = result.value.folders,
                     songs = result.value.songs,
                     loading = false,
+                    physicalBrowseUnsupported = isMusicFolderRoot &&
+                        result.value.folders.isEmpty() && result.value.songs.isEmpty(),
                 )
                 is RemoteResult.Failure -> _folderState.value.copy(
                     path = path,
                     loading = false,
-                    errorMessage = result.error.userMessage,
+                    errorMessage = result.error.userMessage.takeUnless { isMusicFolderRoot },
+                    physicalBrowseUnsupported = isMusicFolderRoot,
                 )
             }
         }
@@ -263,9 +294,11 @@ class MusicViewModel @Inject constructor(
         }
     }
 
-    fun removePlaylistSong(id: String, index: Int) {
+    fun removePlaylistSongs(id: String, indexes: List<Int>) {
+        if (indexes.isEmpty()) return
         viewModelScope.launch {
-            _actionMessage.value = repository.removePlaylistSong(id, index)?.userMessage ?: "已从歌单移除"
+            _actionMessage.value = repository.removePlaylistSongs(id, indexes)?.userMessage
+                ?: "已从歌单移除 ${indexes.distinct().size} 首歌曲"
         }
     }
 
@@ -283,14 +316,18 @@ class MusicViewModel @Inject constructor(
         _detailState.value = DetailUiState(isLoading = true)
         detailJob?.cancel()
         detailJob = viewModelScope.launch {
-            val error = repository.loadAlbum(id)
+            launch {
+                val error = repository.loadAlbum(id)
+                _detailState.update { it.copy(isLoading = false, errorMessage = error?.userMessage) }
+            }
             combine(repository.album(id), repository.albumSongs(id)) { album, songs -> album to songs }
                 .collect { (album, songs) ->
-                    _detailState.value = DetailUiState(
+                    _detailState.update { current -> DetailUiState(
+                        isLoading = album == null && current.errorMessage == null,
                         album = album,
                         songs = songs,
-                        errorMessage = error?.userMessage,
-                    )
+                        errorMessage = current.errorMessage,
+                    ) }
                 }
         }
     }
@@ -299,15 +336,19 @@ class MusicViewModel @Inject constructor(
         _detailState.value = DetailUiState(isLoading = true)
         detailJob?.cancel()
         detailJob = viewModelScope.launch {
-            val error = repository.loadArtist(id)
+            launch {
+                val error = repository.loadArtist(id)
+                _detailState.update { it.copy(isLoading = false, errorMessage = error?.userMessage) }
+            }
             combine(repository.artist(id), repository.artistSongs(id)) { artist, songs -> artist to songs }
                 .collect { (artist, songs) ->
-                _detailState.value = DetailUiState(
-                    artist = artist,
-                    songs = songs,
-                    errorMessage = error?.userMessage,
-                )
-            }
+                    _detailState.update { current -> DetailUiState(
+                        isLoading = artist == null && current.errorMessage == null,
+                        artist = artist,
+                        songs = songs,
+                        errorMessage = current.errorMessage,
+                    ) }
+                }
         }
     }
 
@@ -315,14 +356,18 @@ class MusicViewModel @Inject constructor(
         _detailState.value = DetailUiState(isLoading = true)
         detailJob?.cancel()
         detailJob = viewModelScope.launch {
-            val error = repository.loadPlaylist(id)
+            launch {
+                val error = repository.loadPlaylist(id)
+                _detailState.update { it.copy(isLoading = false, errorMessage = error?.userMessage) }
+            }
             combine(repository.playlist(id), repository.playlistSongs(id)) { playlist, songs -> playlist to songs }
                 .collect { (playlist, songs) ->
-                    _detailState.value = DetailUiState(
+                    _detailState.update { current -> DetailUiState(
+                        isLoading = playlist == null && current.errorMessage == null,
                         playlist = playlist,
                         songs = songs,
-                        errorMessage = error?.userMessage,
-                    )
+                        errorMessage = current.errorMessage,
+                    ) }
                 }
         }
     }

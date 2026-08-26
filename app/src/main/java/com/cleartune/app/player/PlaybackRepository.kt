@@ -12,6 +12,7 @@ import com.cleartune.core.database.toModel
 import com.cleartune.core.database.toEntity
 import com.cleartune.core.datastore.CredentialsStore
 import com.cleartune.core.datastore.AppPreferences
+import com.cleartune.core.datastore.MobileAudioQuality
 import com.cleartune.core.model.PlayEventType
 import com.cleartune.core.model.Song
 import com.cleartune.core.network.LibraryRemoteDataSource
@@ -56,6 +57,7 @@ class PlaybackRepository @Inject constructor(
             )
             ?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
         val settings = preferences.settings.first()
+        val serverProfile = credentialsStore.profile.first()
         val streams = mutableMapOf<String, String>()
         songs.forEach { song ->
             val download = database.downloadDao().forSong(song.id)
@@ -74,10 +76,19 @@ class PlaybackRepository @Inject constructor(
                         ),
                     )
                 }
+                val mobileQuality = settings.mobileAudioQuality
                 streams[song.id] = remote.streamUrl(
                     id = song.id,
-                    maxBitRate = if (cellular) settings.mobileBitRate else null,
-                    format = if (cellular) "mp3" else null,
+                    maxBitRate = if (cellular) mobileQuality.maxBitRate else null,
+                    format = if (
+                        cellular &&
+                        mobileQuality == MobileAudioQuality.ORIGINAL &&
+                        serverProfile.supportsRawStreaming()
+                    ) {
+                        "raw"
+                    } else {
+                        null
+                    },
                 )
             }
         }
@@ -187,5 +198,12 @@ class PlaybackRepository @Inject constructor(
     private suspend fun remote(): LibraryRemoteDataSource? {
         val credentials = credentialsStore.credentials.first() ?: return null
         return runCatching { LibraryRemoteDataSource(apiFactory.authorized(credentials)) }.getOrNull()
+    }
+
+    private fun com.cleartune.core.model.ServerProfile?.supportsRawStreaming(): Boolean {
+        val parts = this?.apiVersion.orEmpty().split('.')
+        val major = parts.getOrNull(0)?.toIntOrNull() ?: return false
+        val minor = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        return major > 1 || (major == 1 && minor >= 9)
     }
 }

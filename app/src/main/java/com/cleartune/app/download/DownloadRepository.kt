@@ -2,6 +2,8 @@ package com.cleartune.app.download
 
 import android.content.Context
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.NetworkType
@@ -21,6 +23,12 @@ import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
+
+data class DownloadEnqueueResult(
+    val queuedCount: Int,
+    val alreadyDownloadedCount: Int,
+    val waitingForWifi: Boolean,
+)
 
 @Singleton
 class DownloadRepository @Inject constructor(
@@ -45,11 +53,17 @@ class DownloadRepository @Inject constructor(
         }
     }
 
-    suspend fun enqueue(songs: List<Song>) {
+    suspend fun enqueue(songs: List<Song>): DownloadEnqueueResult {
         val settings = preferences.settings.first()
+        var queuedCount = 0
+        var alreadyDownloadedCount = 0
+        val waitingForWifi = settings.wifiOnlyDownloads && !hasUnmeteredNetwork()
         songs.forEach { song ->
             val existing = dao.forSong(song.id)
-            if (existing?.state == DownloadState.COMPLETED.name && valid(existing.localUri)) return@forEach
+            if (existing?.state == DownloadState.COMPLETED.name && valid(existing.localUri)) {
+                alreadyDownloadedCount += 1
+                return@forEach
+            }
             existing?.requestId?.toUuid()?.let(workManager::cancelWorkById)
             val requestId = UUID.randomUUID()
             dao.upsert(
@@ -60,7 +74,7 @@ class DownloadRepository @Inject constructor(
                     bytesDownloaded = existing?.bytesDownloaded ?: 0,
                     totalBytes = existing?.totalBytes,
                     localUri = null,
-                    failureReason = null,
+                    failureReason = if (waitingForWifi) "等待 Wi-Fi 连接" else null,
                     updatedAt = System.currentTimeMillis(),
                 ),
             )
@@ -76,7 +90,13 @@ class DownloadRepository @Inject constructor(
                 )
                 .build()
             workManager.enqueue(request)
+            queuedCount += 1
         }
+        return DownloadEnqueueResult(
+            queuedCount = queuedCount,
+            alreadyDownloadedCount = alreadyDownloadedCount,
+            waitingForWifi = waitingForWifi && queuedCount > 0,
+        )
     }
 
     suspend fun pause(item: DownloadItem) {
@@ -105,6 +125,12 @@ class DownloadRepository @Inject constructor(
 
     private fun valid(uri: String?): Boolean = uri?.let(Uri::parse)?.path?.let(::File)
         ?.let { it.exists() && it.length() > 0 } == true
+
+    private fun hasUnmeteredNetwork(): Boolean {
+        val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }
 
     private fun String.toUuid(): UUID? = runCatching { UUID.fromString(this) }.getOrNull()
 }

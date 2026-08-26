@@ -28,9 +28,16 @@ class DownloadWorker(
         val requestId = id.toString()
         val database = DatabaseFactory.create(applicationContext)
         val downloadDao = database.downloadDao()
-        val song = database.mediaDao().song(songId) ?: return@withContext Result.failure()
-        val credentials = CredentialsStore(applicationContext).credentials.first()
-            ?: return@withContext Result.failure()
+        val song = database.mediaDao().song(songId) ?: run {
+            update(downloadDao, requestId, songId, DownloadState.FAILED, 0, null, "歌曲信息不存在")
+            database.close()
+            return@withContext Result.failure()
+        }
+        val credentials = CredentialsStore(applicationContext).credentials.first() ?: run {
+            update(downloadDao, requestId, songId, DownloadState.FAILED, 0, song.sizeBytes, "请重新连接音乐服务器")
+            database.close()
+            return@withContext Result.failure()
+        }
         val folder = File(applicationContext.filesDir, "offline_music").apply { mkdirs() }
         val safeId = songId.replace(Regex("[^A-Za-z0-9._-]"), "_")
         val suffix = song.suffix?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "audio"
@@ -54,14 +61,29 @@ class DownloadWorker(
             update(downloadDao, requestId, songId, DownloadState.DOWNLOADING, temporary.length(), null)
             val remote = OpenSubsonicApiFactory().authorized(credentials)
             val existing = temporary.length()
-            connection = (URL(remote.streamUrl(songId)).openConnection() as HttpURLConnection).apply {
+            connection = (URL(remote.downloadUrl(songId)).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 instanceFollowRedirects = true
                 if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
                 connect()
             }
-            val append = existing > 0 && connection.responseCode == HttpURLConnection.HTTP_PARTIAL
+            val responseCode = connection.responseCode
+            if (responseCode !in 200..299) {
+                throw DownloadServerException(
+                    when (responseCode) {
+                        HttpURLConnection.HTTP_UNAUTHORIZED, HttpURLConnection.HTTP_FORBIDDEN ->
+                            "服务器未授权下载"
+                        HttpURLConnection.HTTP_NOT_FOUND -> "服务器中没有找到这首歌曲"
+                        else -> "服务器返回错误（$responseCode）"
+                    },
+                )
+            }
+            val responseType = connection.contentType.orEmpty().lowercase()
+            if (responseType.contains("xml") || responseType.contains("json")) {
+                throw DownloadServerException("服务器返回的不是音频文件")
+            }
+            val append = existing > 0 && responseCode == HttpURLConnection.HTTP_PARTIAL
             val initial = if (append) existing else 0L
             val total = connection.contentLengthLong.takeIf { it > 0 }?.plus(initial)
             connection.inputStream.use { input ->
@@ -109,7 +131,9 @@ class DownloadWorker(
                 if (retry) DownloadState.QUEUED else if (isStopped) DownloadState.PAUSED else DownloadState.FAILED,
                 temporary.length(),
                 null,
-                if (retry || isStopped) null else "下载中断，请重试",
+                if (retry || isStopped) null else {
+                    (error as? DownloadServerException)?.message ?: "下载中断，请重试"
+                },
             )
             if (retry) Result.retry() else Result.failure()
         } finally {
@@ -147,3 +171,5 @@ class DownloadWorker(
         private const val MIN_FREE_BYTES = 10 * 1_024 * 1_024L
     }
 }
+
+private class DownloadServerException(message: String) : Exception(message)

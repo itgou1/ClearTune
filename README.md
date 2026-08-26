@@ -6,16 +6,29 @@ ClearTune 是一款面向 Navidrome / OpenSubsonic 的原生 Android 音乐客�
 
 当前版本：`1.0.0-rc1`
 
+<p align="center">
+  <img src="screenshots/now-playing.png" alt="ClearTune 正在播放页面" width="360">
+</p>
+
 ## 功能
 
 - 首页推荐：最近加入、换个口味、常听精选与发现音乐
-- 音乐库：专辑、艺术家、歌曲浏览与全库搜索
-- Navidrome 同步：我喜欢的音乐、歌单及播放记录
-- 播放器：播放队列、顺序/随机/单曲循环、歌词与歌曲详情
-- 离线能力：下载任务、暂停/继续、离线播放与缓存管理
-- 音频体验：面向普通用户的均衡器预设、自定义调节与 ReplayGain 音量平衡
-- 外观：Material 3、浅色/深色/跟随系统主题与沉浸式系统栏
+- 音乐库：专辑、艺术家、歌曲与文件夹浏览、全库搜索及格式标识
+- 歌曲与歌单：喜欢、下一首播放、添加到歌单、批量移除歌单歌曲及 Navidrome 双向同步
+- 播放器：常驻迷你播放器、播放队列拖动排序、顺序/随机/循环模式、同步歌词与歌曲详情
+- 离线能力：原始文件下载、暂停/继续、重复任务识别、Wi-Fi 等待提示、离线播放与缓存管理
+- 音频体验：移动网络 128/192/320 kbps 或原始音质、均衡器预设、自定义调节与 ReplayGain 音量平衡
+- 外观：Material 3、页面动效、专辑封面占位图、浅色/深色/跟随系统主题与沉浸式系统栏
 - 更新：可选的 GitHub Releases 新版本检查
+
+## 本次更新
+
+- 扩充歌曲快捷操作，新增“下一首播放”、添加到歌单、下载、喜欢与详情入口。
+- 播放队列改为长按拖动排序，并保留无障碍上移/下移操作；歌词视图与播放进度拖动也得到优化。
+- 歌单支持多选并一次移除多首歌曲，专辑、艺术家和歌单详情页的加载状态更加稳定。
+- 离线下载改用 OpenSubsonic 原始文件接口，增加续传校验、服务器错误提示、重复下载识别和 Wi-Fi 等待反馈。
+- 移动网络新增原始音质选项，同时兼容 128、192 和 320 kbps 转码设置。
+- 改进数字型音乐文件夹 ID、部分服务器不提供物理目录时的提示，以及艺术家同步和歌曲匹配的兼容性。
 
 ## 技术架构
 
@@ -25,8 +38,6 @@ ClearTune 是一款面向 Navidrome / OpenSubsonic 的原生 Android 音乐客�
 - Room、DataStore、WorkManager
 - Hilt、Coroutines、Flow
 - Navidrome / OpenSubsonic API
-
-ClearTune 是独立实现的 Android 项目。Tempo 曾用于功能体验、协议行为和兼容性验证，但本项目不是 Tempo 的代码分支，也未复制其业务源码。
 
 ## 构建要求
 
@@ -111,4 +122,3 @@ ClearTune 源代码采用 [GNU General Public License v3.0](LICENSE) 发布。�
 
 - [Navidrome](https://www.navidrome.org/)
 - [OpenSubsonic API](https://opensubsonic.netlify.app/)
-- [Tempo](https://github.com/CappielloAntonio/tempo)

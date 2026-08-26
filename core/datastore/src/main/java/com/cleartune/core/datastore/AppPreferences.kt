@@ -11,6 +11,23 @@ import kotlinx.coroutines.flow.map
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+enum class MobileAudioQuality(val maxBitRate: Int?) {
+    RATE_128(128),
+    RATE_192(192),
+    RATE_320(320),
+    ORIGINAL(null),
+    ;
+
+    companion object {
+        fun fromLegacyBitRate(value: Int?): MobileAudioQuality = when (value) {
+            128 -> RATE_128
+            320 -> RATE_320
+            0 -> ORIGINAL
+            else -> RATE_192
+        }
+    }
+}
+
 enum class EqualizerPreset {
     BALANCED,
     CLEAR_VOCAL,
@@ -49,7 +66,7 @@ data class AppSettings(
     val volumeNormalizationEnabled: Boolean = true,
     val equalizer: EqualizerSettings = EqualizerSettings(),
     val wifiOnlyDownloads: Boolean = true,
-    val mobileBitRate: Int = 192,
+    val mobileAudioQuality: MobileAudioQuality = MobileAudioQuality.RATE_192,
     val checkUpdates: Boolean = true,
     val recentSearches: List<String> = emptyList(),
 )
@@ -74,7 +91,9 @@ class AppPreferences(private val context: Context) {
                     ?: DEFAULT_EQUALIZER_LEVELS_DB,
             ),
             wifiOnlyDownloads = preferences[WIFI_ONLY] ?: true,
-            mobileBitRate = preferences[MOBILE_BIT_RATE] ?: 192,
+            mobileAudioQuality = preferences[MOBILE_AUDIO_QUALITY]
+                ?.let { runCatching { MobileAudioQuality.valueOf(it) }.getOrNull() }
+                ?: MobileAudioQuality.fromLegacyBitRate(preferences[MOBILE_BIT_RATE]),
             checkUpdates = preferences[CHECK_UPDATES] ?: true,
             recentSearches = preferences[RECENT_SEARCHES]
                 ?.split(SEARCH_SEPARATOR)
@@ -93,7 +112,10 @@ class AppPreferences(private val context: Context) {
         it[EQUALIZER_CUSTOM_LEVELS] = value.sanitizedEqualizerLevels().joinToString(EQUALIZER_SEPARATOR)
     }
     suspend fun setWifiOnlyDownloads(value: Boolean) = edit { it[WIFI_ONLY] = value }
-    suspend fun setMobileBitRate(value: Int) = edit { it[MOBILE_BIT_RATE] = value }
+    suspend fun setMobileAudioQuality(value: MobileAudioQuality) = edit {
+        it[MOBILE_AUDIO_QUALITY] = value.name
+        it.remove(MOBILE_BIT_RATE)
+    }
     suspend fun setCheckUpdates(value: Boolean) = edit { it[CHECK_UPDATES] = value }
 
     suspend fun addRecentSearch(query: String) = edit { preferences ->
@@ -131,6 +153,7 @@ class AppPreferences(private val context: Context) {
         val EQUALIZER_CUSTOM_LEVELS = stringPreferencesKey("equalizer_custom_levels")
         val WIFI_ONLY = booleanPreferencesKey("wifi_only_downloads")
         val MOBILE_BIT_RATE = intPreferencesKey("mobile_bit_rate")
+        val MOBILE_AUDIO_QUALITY = stringPreferencesKey("mobile_audio_quality")
         val CHECK_UPDATES = booleanPreferencesKey("check_updates")
         val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         const val SEARCH_SEPARATOR = "\u001F"

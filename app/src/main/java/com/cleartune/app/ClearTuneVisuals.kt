@@ -1,6 +1,8 @@
 package com.cleartune.app
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -30,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.clip
@@ -102,6 +106,63 @@ internal fun ClearTuneIconTile(
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(22.dp))
+        }
+    }
+}
+
+@Composable
+internal fun ClearTuneArtworkPlaceholder(
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = MaterialTheme.colorScheme.secondary
+    val onContainer = MaterialTheme.colorScheme.onPrimaryContainer
+    val centerSurface = MaterialTheme.colorScheme.surface.copy(alpha = 0.42f)
+
+    Box(
+        modifier = modifier.background(clearTuneGradient()),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val edge = size.minDimension
+            drawCircle(
+                color = secondary.copy(alpha = 0.13f),
+                radius = edge * 0.48f,
+                center = androidx.compose.ui.geometry.Offset(size.width * 0.08f, size.height * 0.10f),
+            )
+            drawCircle(
+                color = primary.copy(alpha = 0.13f),
+                radius = edge * 0.46f,
+                center = androidx.compose.ui.geometry.Offset(size.width * 0.94f, size.height * 0.92f),
+            )
+
+            val recordRadius = edge * 0.31f
+            val ringWidth = (edge * 0.008f).coerceAtLeast(1f)
+            drawCircle(onContainer.copy(alpha = 0.10f), recordRadius)
+            listOf(0.55f, 0.72f, 0.88f).forEach { scale ->
+                drawCircle(
+                    color = onContainer.copy(alpha = 0.16f),
+                    radius = recordRadius * scale,
+                    style = Stroke(width = ringWidth),
+                )
+            }
+        }
+        Surface(
+            modifier = Modifier.fillMaxSize(0.46f),
+            shape = CircleShape,
+            color = centerSurface,
+            contentColor = primary,
+            border = BorderStroke(1.dp, onContainer.copy(alpha = 0.12f)),
+            tonalElevation = 2.dp,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(0.48f),
+                )
+            }
         }
     }
 }

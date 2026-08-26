@@ -89,7 +89,15 @@ internal fun DownloadsScreen(
                             )
                         }
                         item.failureReason?.let {
-                            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                it,
+                                color = if (item.state == DownloadState.FAILED) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             when (item.state) {

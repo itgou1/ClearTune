@@ -114,6 +114,49 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    fun playNext(song: Song) {
+        viewModelScope.launch {
+            val snapshot = state.value
+            val existingIndex = snapshot.queue.indexOfFirst { it.id == song.id }
+            if (existingIndex == snapshot.currentIndex && existingIndex >= 0) {
+                _message.value = "《${song.title}》正在播放"
+                return@launch
+            }
+            if (existingIndex == snapshot.currentIndex + 1) {
+                _message.value = "《${song.title}》已经是下一首"
+                return@launch
+            }
+            if (existingIndex >= 0) {
+                val targetIndex = if (existingIndex < snapshot.currentIndex) {
+                    snapshot.currentIndex
+                } else {
+                    (snapshot.currentIndex + 1).coerceAtMost(snapshot.queue.lastIndex)
+                }
+                connection.move(existingIndex, targetIndex)
+                _message.value = "《${song.title}》将在下一首播放"
+                return@launch
+            }
+            val urls = repository.urls(listOf(song))
+            val streamUrl = urls?.streams?.get(song.id)
+            if (urls == null || streamUrl == null) {
+                _message.value = "无法获取播放地址，请重新登录"
+                return@launch
+            }
+            if (state.value.queue.isEmpty()) {
+                connection.setQueue(
+                    songs = listOf(song),
+                    startIndex = 0,
+                    streamUrls = urls.streams,
+                    artworkUrls = urls.artwork,
+                )
+                _message.value = "已开始播放《${song.title}》"
+            } else {
+                connection.playNext(song, streamUrl, urls.artwork[song.id])
+                _message.value = "《${song.title}》将在下一首播放"
+            }
+        }
+    }
+
     fun togglePlayPause() = connection.togglePlayPause()
     fun next() = connection.next()
     fun previous() = connection.previous()

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.cleartune.core.datastore.AppPreferences
 import com.cleartune.core.datastore.AppSettings
 import com.cleartune.core.datastore.EqualizerPreset
+import com.cleartune.core.datastore.MobileAudioQuality
 import com.cleartune.core.datastore.ThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -69,7 +70,9 @@ class SettingsViewModel @Inject constructor(
         preferences.setEqualizerCustomLevels(value)
     }
     fun setWifiOnly(value: Boolean) = viewModelScope.launch { preferences.setWifiOnlyDownloads(value) }
-    fun setMobileBitRate(value: Int) = viewModelScope.launch { preferences.setMobileBitRate(value) }
+    fun setMobileAudioQuality(value: MobileAudioQuality) = viewModelScope.launch {
+        preferences.setMobileAudioQuality(value)
+    }
     fun setCheckUpdates(value: Boolean) = viewModelScope.launch { preferences.setCheckUpdates(value) }
 
     fun checkUpdate() {

@@ -6,6 +6,7 @@ import androidx.core.net.toUri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cleartune.app.settings.SettingsViewModel
 import com.cleartune.core.datastore.ThemeMode
+import com.cleartune.core.datastore.MobileAudioQuality
 import com.cleartune.core.model.ServerProfile
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -167,12 +169,20 @@ internal fun FullSettingsScreen(
                     modifier = Modifier.padding(start = 56.dp),
                 )
                 Text(stringResource(R.string.mobile_audio_quality))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(128, 192, 320).forEach { rate ->
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    MobileAudioQuality.entries.forEach { quality ->
                         FilterChip(
-                            selected = settings.mobileBitRate == rate,
-                            onClick = { viewModel.setMobileBitRate(rate) },
-                            label = { Text("$rate kbps") },
+                            selected = settings.mobileAudioQuality == quality,
+                            onClick = { viewModel.setMobileAudioQuality(quality) },
+                            label = {
+                                Text(
+                                    quality.maxBitRate?.let { "$it kbps" }
+                                        ?: stringResource(R.string.original_audio_quality),
+                                )
+                            },
                         )
                     }
                 }

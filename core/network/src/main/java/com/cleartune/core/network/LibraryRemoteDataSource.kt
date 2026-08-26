@@ -103,7 +103,7 @@ class LibraryRemoteDataSource(
 
     suspend fun musicFolders() = execute { api.getMusicFolders(authQuery()) }
         .map { response ->
-            response.musicFolders?.musicFolder.orEmpty().map { MusicFolder(it.id, it.name) }
+            response.musicFolders?.musicFolder.orEmpty().map { MusicFolder(it.id.toString(), it.name) }
         }
 
     suspend fun musicDirectory(id: String) = execute { api.getMusicDirectory(id, authQuery()) }

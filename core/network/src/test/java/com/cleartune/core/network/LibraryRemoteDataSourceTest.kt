@@ -11,6 +11,59 @@ import org.junit.Test
 
 class LibraryRemoteDataSourceTest {
     @Test
+    fun mapsNumericMusicFolderIdsUsedBySubsonicServers() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress(0), 0).apply {
+            createContext("/rest/getMusicFolders.view") { exchange ->
+                exchange.respond(
+                    """{"subsonic-response":{"status":"ok","version":"1.16.1","musicFolders":{"musicFolder":[{"id":1,"name":"music"}]}}}""",
+                )
+            }
+            start()
+        }
+        try {
+            val remote = LibraryRemoteDataSource(
+                OpenSubsonicApiFactory().authorized(
+                    ServerCredentials("http://127.0.0.1:${server.address.port}", "user", "password", true),
+                ),
+            )
+
+            val result = remote.musicFolders() as RemoteResult.Success
+
+            assertEquals("1", result.value.single().id)
+            assertEquals("music", result.value.single().name)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun sendsAllSelectedPlaylistIndexesInOneUpdate() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress(0), 0).apply {
+            createContext("/rest/updatePlaylist.view") { exchange ->
+                val query = exchange.requestURI.query
+                assertTrue("playlistId=playlist-1" in query)
+                assertTrue("songIndexToRemove=5" in query)
+                assertTrue("songIndexToRemove=2" in query)
+                exchange.respond(
+                    """{"subsonic-response":{"status":"ok","version":"1.16.1"}}""",
+                )
+            }
+            start()
+        }
+        try {
+            val remote = LibraryRemoteDataSource(
+                OpenSubsonicApiFactory().authorized(
+                    ServerCredentials("http://127.0.0.1:${server.address.port}", "user", "password", true),
+                ),
+            )
+
+            assertTrue(remote.removePlaylistSongs("playlist-1", listOf(5, 2)) is RemoteResult.Success)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun mapsSynchronizedLyrics() = runBlocking {
         val server = HttpServer.create(InetSocketAddress(0), 0).apply {
             createContext("/rest/getLyricsBySongId.view") { exchange ->
@@ -55,6 +108,24 @@ class LibraryRemoteDataSourceTest {
         assertTrue(url.startsWith("https://music.example.com/rest/stream.view?"))
         assertTrue("id=song+1" in url)
         assertTrue("maxBitRate=192" in url && "format=mp3" in url)
+        assertTrue("p=" !in url && "secret" !in url)
+        assertTrue("t=" in url && "s=" in url)
+    }
+
+    @Test
+    fun downloadUrlUsesOriginalMediaEndpointAndTokenAuthentication() {
+        val authorized = OpenSubsonicApiFactory().authorized(
+            ServerCredentials(
+                baseUrl = "https://music.example.com",
+                username = "alice",
+                password = "secret",
+            ),
+        )
+
+        val url = authorized.downloadUrl("song 1")
+
+        assertTrue(url.startsWith("https://music.example.com/rest/download.view?"))
+        assertTrue("id=song+1" in url)
         assertTrue("p=" !in url && "secret" !in url)
         assertTrue("t=" in url && "s=" in url)
     }

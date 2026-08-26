@@ -1,7 +1,11 @@
 package com.cleartune.app
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,8 +32,6 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
@@ -60,21 +62,34 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
 import com.cleartune.app.library.MusicViewModel
 import com.cleartune.app.library.LyricsUiState
 import com.cleartune.app.player.PlayerViewModel
 import com.cleartune.core.model.PlaybackMode
 import com.cleartune.core.player.PlaybackStatus
 import com.cleartune.core.player.PlayerUiState
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun MiniPlayer(
@@ -85,7 +100,7 @@ internal fun MiniPlayer(
     onQueue: () -> Unit,
 ) {
     val song = state.currentSong ?: return
-    Surface(tonalElevation = 3.dp, shadowElevation = 6.dp) {
+    Surface(tonalElevation = 0.dp, shadowElevation = 0.dp) {
         val durationMs = state.durationMs.takeIf { it > 0 } ?: song.durationSeconds * 1_000
         val progress = if (durationMs > 0) {
             state.positionMs.toFloat() / durationMs
@@ -166,10 +181,14 @@ internal fun NowPlayingScreen(
             ) { Text(stringResource(R.string.empty_queue)) }
             return@Scaffold
         }
-        var seekPosition by remember(song.id, state.positionMs) {
+        var seekPosition by remember(song.id) {
             mutableFloatStateOf(state.positionMs.toFloat())
         }
+        var isSeeking by remember(song.id) { mutableStateOf(false) }
         val durationMs = state.durationMs.takeIf { it > 0 } ?: song.durationSeconds * 1_000
+        LaunchedEffect(song.id, state.positionMs) {
+            if (!isSeeking) seekPosition = state.positionMs.toFloat()
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -181,8 +200,10 @@ internal fun NowPlayingScreen(
         ) {
             Box(
                 modifier = Modifier
-                    .size(292.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .fillMaxWidth()
+                    .height(if (showLyrics) 380.dp else 292.dp)
+                    .animateContentSize(animationSpec = ClearTuneMotion.standard())
+                    .then(if (showLyrics) Modifier else Modifier.clip(RoundedCornerShape(16.dp)))
                     .clickable { showLyrics = !showLyrics },
             ) {
                 if (showLyrics) {
@@ -192,7 +213,14 @@ internal fun NowPlayingScreen(
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
-                    CoverArt(song.coverArtId, song.title, musicViewModel, Modifier.fillMaxSize())
+                    CoverArt(
+                        song.coverArtId,
+                        song.title,
+                        musicViewModel,
+                        Modifier
+                            .size(292.dp)
+                            .align(Alignment.Center),
+                    )
                 }
             }
             Spacer(Modifier.height(20.dp))
@@ -227,8 +255,14 @@ internal fun NowPlayingScreen(
             Spacer(Modifier.height(16.dp))
             Slider(
                 value = seekPosition.coerceIn(0f, durationMs.coerceAtLeast(1).toFloat()),
-                onValueChange = { seekPosition = it },
-                onValueChangeFinished = { playerViewModel.seekTo(seekPosition.toLong()) },
+                onValueChange = {
+                    isSeeking = true
+                    seekPosition = it
+                },
+                onValueChangeFinished = {
+                    playerViewModel.seekTo(seekPosition.toLong())
+                    isSeeking = false
+                },
                 valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -331,11 +365,7 @@ private fun LyricsArtwork(
             listState.animateScrollToItem(activeIndex, scrollOffset = -120)
         }
     }
-    Surface(
-        modifier = modifier,
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-    ) {
+    Box(modifier = modifier) {
         when {
             lyricsState.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -346,21 +376,23 @@ private fun LyricsArtwork(
             else -> LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(24.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 40.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 itemsIndexed(lines) { index, line ->
                     Text(
                         text = line.text,
+                        modifier = Modifier.fillMaxWidth(),
                         style = if (index == activeIndex) {
-                            MaterialTheme.typography.titleLarge
+                            MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
                         } else {
-                            MaterialTheme.typography.bodyLarge
+                            MaterialTheme.typography.titleMedium
                         },
+                        textAlign = TextAlign.Center,
                         color = if (index == activeIndex) {
                             MaterialTheme.colorScheme.primary
                         } else {
-                            MaterialTheme.colorScheme.onSecondaryContainer
+                            MaterialTheme.colorScheme.onSurfaceVariant
                         },
                     )
                 }
@@ -431,6 +463,15 @@ internal fun QueueScreen(
     playerViewModel: PlayerViewModel,
     onBack: () -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val latestQueue by rememberUpdatedState(state.queue)
+    var draggedItemIndex by remember { mutableStateOf<Int?>(null) }
+    var draggedItemOffset by remember { mutableFloatStateOf(0f) }
+    val moveUpLabel = stringResource(R.string.move_up)
+    val moveDownLabel = stringResource(R.string.move_down)
+
     Scaffold(
         topBar = {
             ClearTuneTopAppBar(
@@ -453,46 +494,144 @@ internal fun QueueScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) { Text(stringResource(R.string.empty_queue)) }
         } else {
-            LazyColumn(modifier = Modifier.padding(padding)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.padding(padding),
+            ) {
                 itemsIndexed(state.queue, key = { _, song -> song.id }) { index, song ->
-                    Row(
+                    val isDragging = draggedItemIndex == index
+                    val draggedScale by animateFloatAsState(
+                        targetValue = if (isDragging) 1.015f else 1f,
+                        animationSpec = ClearTuneMotion.quick(),
+                        label = "queueItemScale",
+                    )
+                    Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { playerViewModel.play(state.queue, index) }
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (index == state.currentIndex) {
-                            Icon(
-                                Icons.Rounded.Equalizer,
-                                contentDescription = stringResource(R.string.now_playing),
-                                modifier = Modifier.size(32.dp),
-                                tint = MaterialTheme.colorScheme.primary,
+                            .zIndex(if (isDragging) 1f else 0f)
+                            .graphicsLayer {
+                                translationY = if (isDragging) draggedItemOffset else 0f
+                                scaleX = draggedScale
+                                scaleY = draggedScale
+                            }
+                            .then(
+                                if (isDragging) Modifier.shadow(8.dp, RoundedCornerShape(16.dp)) else Modifier,
                             )
+                            .semantics {
+                                customActions = buildList {
+                                    if (index > 0) {
+                                        add(CustomAccessibilityAction(moveUpLabel) {
+                                            playerViewModel.move(index, index - 1)
+                                            true
+                                        })
+                                    }
+                                    if (index < state.queue.lastIndex) {
+                                        add(CustomAccessibilityAction(moveDownLabel) {
+                                            playerViewModel.move(index, index + 1)
+                                            true
+                                        })
+                                    }
+                                }
+                            }
+                            .pointerInput(song.id) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        val currentIndex = latestQueue.indexOfFirst { it.id == song.id }
+                                        if (currentIndex >= 0) {
+                                            draggedItemIndex = currentIndex
+                                            draggedItemOffset = 0f
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        draggedItemIndex = null
+                                        draggedItemOffset = 0f
+                                    },
+                                    onDragEnd = {
+                                        draggedItemIndex = null
+                                        draggedItemOffset = 0f
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        val currentIndex = draggedItemIndex ?: return@detectDragGesturesAfterLongPress
+                                        draggedItemOffset += dragAmount.y
+
+                                        val layoutInfo = listState.layoutInfo
+                                        val draggedInfo = layoutInfo.visibleItemsInfo
+                                            .firstOrNull { it.index == currentIndex }
+                                            ?: return@detectDragGesturesAfterLongPress
+                                        val draggedTop = draggedInfo.offset + draggedItemOffset
+                                        val draggedBottom = draggedTop + draggedInfo.size
+                                        val draggedCenter = (draggedTop + draggedBottom) / 2f
+                                        val targetInfo = layoutInfo.visibleItemsInfo.firstOrNull { itemInfo ->
+                                            itemInfo.index != currentIndex &&
+                                                draggedCenter >= itemInfo.offset &&
+                                                draggedCenter <= itemInfo.offset + itemInfo.size
+                                        }
+
+                                        if (targetInfo != null) {
+                                            draggedItemOffset += draggedInfo.offset - targetInfo.offset
+                                            playerViewModel.move(currentIndex, targetInfo.index)
+                                            draggedItemIndex = targetInfo.index
+                                        }
+
+                                        val scrollAmount = when {
+                                            draggedTop < layoutInfo.viewportStartOffset -> -18f
+                                            draggedBottom > layoutInfo.viewportEndOffset -> 18f
+                                            else -> 0f
+                                        }
+                                        if (scrollAmount != 0f) {
+                                            scope.launch { listState.scrollBy(scrollAmount) }
+                                        }
+                                    },
+                                )
+                            },
+                        color = if (isDragging) {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
                         } else {
-                            Text("${index + 1}", modifier = Modifier.size(32.dp))
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(song.artistName, style = MaterialTheme.typography.bodySmall)
-                        }
-                        IconButton(
-                            onClick = { playerViewModel.move(index, index - 1) },
-                            enabled = index > 0,
+                            MaterialTheme.colorScheme.surface
+                        },
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { playerViewModel.play(state.queue, index) }
+                                .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(Icons.Rounded.KeyboardArrowUp, contentDescription = stringResource(R.string.move_up))
-                        }
-                        IconButton(
-                            onClick = { playerViewModel.move(index, index + 1) },
-                            enabled = index < state.queue.lastIndex,
-                        ) {
-                            Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = stringResource(R.string.move_down))
-                        }
-                        IconButton(onClick = { playerViewModel.remove(index) }) {
-                            Icon(Icons.Rounded.Delete, contentDescription = stringResource(R.string.remove_action))
+                            if (index == state.currentIndex) {
+                                Icon(
+                                    Icons.Rounded.Equalizer,
+                                    contentDescription = stringResource(R.string.now_playing),
+                                    modifier = Modifier.size(32.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            } else {
+                                Text("${index + 1}", modifier = Modifier.size(32.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    song.artistName,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            IconButton(
+                                onClick = { playerViewModel.remove(index) },
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Delete,
+                                    contentDescription = stringResource(R.string.remove_action),
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
                         }
                     }
-                    HorizontalDivider()
+                    if (!isDragging) HorizontalDivider()
                 }
             }
         }

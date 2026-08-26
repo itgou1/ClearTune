@@ -6,16 +6,29 @@ ClearTune is a native Android music client for Navidrome and OpenSubsonic server
 
 Current version: `1.0.0-rc1`
 
+<p align="center">
+  <img src="screenshots/now-playing.png" alt="ClearTune Now Playing screen" width="360">
+</p>
+
 ## Features
 
 - Home recommendations: recently added, rediscovery, frequent picks, and music discovery
-- Music library: browse albums, artists, and songs, with library-wide search
-- Navidrome synchronization: favorites, playlists, and playback activity
-- Player: queue management, sequential/shuffle/single-repeat modes, lyrics, and track details
-- Offline support: download tasks, pause/resume, offline playback, and cache management
-- Audio controls: approachable equalizer presets, custom adjustment, and ReplayGain volume normalization
-- Appearance: Material 3, light/dark/system themes, and edge-to-edge system bars
+- Music library: browse albums, artists, songs, and folders, with library-wide search and format badges
+- Songs and playlists: favorites, Play Next, add to playlist, bulk playlist removal, and two-way Navidrome sync
+- Player: persistent mini player, drag-to-reorder queue, sequential/shuffle/repeat modes, synchronized lyrics, and track details
+- Offline support: original-file downloads, pause/resume, duplicate detection, Wi-Fi waiting feedback, offline playback, and cache management
+- Audio controls: 128/192/320 kbps or original quality on mobile data, equalizer presets, custom adjustment, and ReplayGain normalization
+- Appearance: Material 3, screen transitions, artwork placeholders, light/dark/system themes, and edge-to-edge system bars
 - Updates: optional checks against GitHub Releases
+
+## Recent changes
+
+- Expanded track actions with Play Next, add to playlist, download, favorite, and details shortcuts.
+- Replaced queue move buttons with long-press drag reordering while retaining accessible move actions; lyrics and seek interactions were also refined.
+- Added multi-select removal for playlist tracks and made album, artist, and playlist detail loading more resilient.
+- Switched offline downloads to the OpenSubsonic original-file endpoint, with resume validation, clearer server errors, duplicate detection, and Wi-Fi waiting feedback.
+- Added an original-quality mobile-data option alongside 128, 192, and 320 kbps transcoding choices.
+- Improved compatibility with numeric music-folder IDs, servers without physical-folder browsing, artist synchronization, and artist-track matching.
 
 ## Architecture
 
@@ -25,8 +38,6 @@ Current version: `1.0.0-rc1`
 - Room, DataStore, and WorkManager
 - Hilt, Coroutines, and Flow
 - Navidrome / OpenSubsonic API
-
-ClearTune is an independently implemented Android project. Tempo was used for product evaluation, protocol behavior, and compatibility testing, but ClearTune is not a Tempo code fork and does not copy its application source code.
 
 ## Requirements
 
@@ -111,4 +122,3 @@ ClearTune source code is released under the [GNU General Public License v3.0](LI
 
 - [Navidrome](https://www.navidrome.org/)
 - [OpenSubsonic API](https://opensubsonic.netlify.app/)
-- [Tempo](https://github.com/CappielloAntonio/tempo)

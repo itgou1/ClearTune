@@ -36,7 +36,19 @@ interface MediaDao {
     @Query("SELECT * FROM songs WHERE albumId = :albumId ORDER BY discNumber, trackNumber, title")
     fun observeSongsForAlbum(albumId: String): Flow<List<SongEntity>>
 
-    @Query("SELECT * FROM songs WHERE artistId = :artistId ORDER BY playCount DESC, discNumber, trackNumber, title")
+    @Query(
+        """
+        SELECT * FROM songs
+        WHERE artistId = :artistId
+           OR (
+               artistId IS NULL
+               AND artistName COLLATE NOCASE = (
+                   SELECT name FROM artists WHERE id = :artistId LIMIT 1
+               )
+           )
+        ORDER BY playCount DESC, discNumber, trackNumber, title
+        """,
+    )
     fun observeSongsForArtist(artistId: String): Flow<List<SongEntity>>
 
     @Query("SELECT * FROM songs WHERE id = :id LIMIT 1")
@@ -72,6 +84,15 @@ interface MediaDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertArtists(items: List<ArtistEntity>)
+
+    @Query("DELETE FROM artists")
+    suspend fun clearArtists()
+
+    @Transaction
+    suspend fun replaceArtists(items: List<ArtistEntity>) {
+        clearArtists()
+        upsertArtists(items)
+    }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSongs(items: List<SongEntity>)

@@ -55,7 +55,7 @@ class MusicRepository @Inject constructor(
             is RemoteResult.Failure -> errors += result.error
         }
         when (val result = artistsRequest.await()) {
-            is RemoteResult.Success -> mediaDao.upsertArtists(result.value.map { it.toEntity() })
+            is RemoteResult.Success -> mediaDao.replaceArtists(result.value.map { it.toEntity() })
             is RemoteResult.Failure -> errors += result.error
         }
         when (val result = playlistsRequest.await()) {
@@ -149,9 +149,10 @@ class MusicRepository @Inject constructor(
         }
     }
 
-    suspend fun removePlaylistSong(id: String, index: Int): ClearTuneError? {
+    suspend fun removePlaylistSongs(id: String, indexes: List<Int>): ClearTuneError? {
+        if (indexes.isEmpty()) return null
         val remote = remote() ?: return ClearTuneError.Authentication()
-        return when (val result = remote.removePlaylistSongs(id, listOf(index))) {
+        return when (val result = remote.removePlaylistSongs(id, indexes.distinct().sortedDescending())) {
             is RemoteResult.Success -> loadPlaylist(id)
             is RemoteResult.Failure -> result.error
         }
@@ -173,7 +174,8 @@ class MusicRepository @Inject constructor(
     fun artist(id: String): Flow<Artist?> = mediaDao.observeArtist(id).map { it?.toModel() }
     fun playlist(id: String): Flow<Playlist?> = mediaDao.observePlaylist(id).map { it?.toModel() }
     fun albumSongs(id: String): Flow<List<Song>> = mediaDao.observeSongsForAlbum(id).map { list -> list.map { it.toModel() } }
-    fun artistSongs(id: String): Flow<List<Song>> = mediaDao.observeSongsForArtist(id).map { list -> list.map { it.toModel() } }
+    fun artistSongs(id: String): Flow<List<Song>> = mediaDao.observeSongsForArtist(id)
+        .map { list -> list.map { it.toModel() } }
     fun playlistSongs(id: String): Flow<List<Song>> = mediaDao.observePlaylistSongs(id).map { list -> list.map { it.toModel() } }
 
     suspend fun search(query: String): RemoteResult<SearchResults> {

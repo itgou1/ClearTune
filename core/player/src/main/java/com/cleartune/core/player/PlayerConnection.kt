@@ -154,6 +154,31 @@ class PlayerConnection(context: Context) {
     fun move(from: Int, to: Int) = controller?.moveMediaItem(from, to) ?: Unit
     fun clear() = controller?.clearMediaItems() ?: Unit
 
+    fun playNext(song: Song, streamUrl: String, artworkUrl: String? = null) {
+        val mediaController = controller ?: return
+        songMap = songMap + (song.id to song)
+        val replayGainQueue = ReplayGainMetadata.queueValues(listOf(song))
+        val item = MediaItem.Builder()
+            .setMediaId(song.id)
+            .setUri(streamUrl)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(song.title)
+                    .setArtist(song.artistName)
+                    .setAlbumTitle(song.albumName)
+                    .setArtworkUri(artworkUrl?.let(Uri::parse))
+                    .setExtras(ReplayGainMetadata.extras(song, replayGainQueue))
+                    .build(),
+            )
+            .build()
+        val insertAt = if (mediaController.currentMediaItemIndex in 0 until mediaController.mediaItemCount) {
+            mediaController.currentMediaItemIndex + 1
+        } else {
+            mediaController.mediaItemCount
+        }
+        mediaController.addMediaItem(insertAt, item)
+    }
+
     fun cycleMode(): PlaybackMode {
         mode = QueuePlanner.nextMode(mode)
         controller?.let { applyMode(it, mode) }

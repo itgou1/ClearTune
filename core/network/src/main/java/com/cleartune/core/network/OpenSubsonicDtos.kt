@@ -161,7 +161,7 @@ data class MusicFoldersDto(
 
 @Serializable
 data class MusicFolderDto(
-    val id: String,
+    val id: Long,
     val name: String,
 )
 

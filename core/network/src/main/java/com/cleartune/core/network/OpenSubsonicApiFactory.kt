@@ -69,6 +69,11 @@ class AuthorizedOpenSubsonicApi internal constructor(
         },
     )
 
+    fun downloadUrl(id: String): String = authenticatedUrl(
+        path = "rest/download.view",
+        parameters = mapOf("id" to id),
+    )
+
     fun authenticatedUrl(path: String, parameters: Map<String, String>): String {
         val query = (parameters + authQuery()).entries.joinToString("&") { (key, value) ->
             "$key=${encode(value)}"

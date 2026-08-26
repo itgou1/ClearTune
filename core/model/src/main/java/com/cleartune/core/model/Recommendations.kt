@@ -52,8 +52,8 @@ class RecommendationEngine {
             ),
             shelf(
                 "from-favorites",
-                "从收藏出发",
-                "与你收藏的艺术家或流派相关",
+                "从喜欢出发",
+                "与你喜欢的艺术家或流派相关",
                 songs.filter {
                     it.starredAt == null && (it.artistId in favoriteArtists || it.genre in favoriteGenres)
                 }.shuffled(random),
