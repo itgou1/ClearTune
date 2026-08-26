@@ -1,0 +1,179 @@
+package com.cleartune.app
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.GenericShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+
+@Composable
+internal fun clearTuneGradient(): Brush = Brush.linearGradient(
+    listOf(
+        MaterialTheme.colorScheme.primaryContainer,
+        MaterialTheme.colorScheme.secondaryContainer,
+    ),
+)
+
+@Composable
+internal fun ClearTuneGradientHeader(
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(clearTuneGradient(), MaterialTheme.shapes.large)
+            .padding(contentPadding),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        content = content,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ClearTuneTopAppBar(
+    title: String,
+    onBack: (() -> Unit)? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
+    TopAppBar(
+        title = { Text(title, fontWeight = FontWeight.SemiBold) },
+        modifier = Modifier.background(clearTuneGradient()),
+        navigationIcon = {
+            onBack?.let {
+                IconButton(onClick = it) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = stringResource(R.string.back),
+                    )
+                }
+            }
+        },
+        actions = actions,
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+    )
+}
+
+@Composable
+internal fun ClearTuneIconTile(
+    icon: ImageVector,
+    contentDescription: String? = null,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.size(42.dp),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f),
+        contentColor = MaterialTheme.colorScheme.primary,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(22.dp))
+        }
+    }
+}
+
+@Composable
+internal fun ClearTuneSectionCard(
+    title: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            androidx.compose.foundation.layout.Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                ClearTuneIconTile(icon)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    subtitle?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+internal fun ClearTuneAppMark(modifier: Modifier = Modifier) {
+    Image(
+        painter = painterResource(R.drawable.ic_launcher_owl),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = modifier.clip(OwlCutoutShape),
+    )
+}
+
+private val OwlCutoutShape = GenericShape { size, _ ->
+    val width = size.width
+    val height = size.height
+
+    // Headphone arch: the reversed inner oval makes the space under the band transparent.
+    addOval(Rect(width * 0.13f, height * 0.12f, width * 0.87f, height * 0.70f))
+    addOval(
+        Rect(width * 0.24f, height * 0.22f, width * 0.76f, height * 0.58f),
+        Path.Direction.Clockwise,
+    )
+
+    // Owl body, ear tufts and both headphone cups form one transparent-background mark.
+    addOval(Rect(width * 0.18f, height * 0.23f, width * 0.82f, height * 0.90f))
+    moveTo(width * 0.20f, height * 0.42f)
+    lineTo(width * 0.20f, height * 0.22f)
+    lineTo(width * 0.42f, height * 0.38f)
+    close()
+    moveTo(width * 0.80f, height * 0.42f)
+    lineTo(width * 0.80f, height * 0.22f)
+    lineTo(width * 0.58f, height * 0.38f)
+    close()
+    addOval(Rect(width * 0.09f, height * 0.39f, width * 0.27f, height * 0.69f))
+    addOval(Rect(width * 0.73f, height * 0.39f, width * 0.91f, height * 0.69f))
+}
