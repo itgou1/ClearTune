@@ -24,6 +24,7 @@ google-services.json
 service-account*.json
 *.pem
 *.p12
+/.release/
 
 # Internal planning and deployment records are not part of the public source release.
 /docs/
