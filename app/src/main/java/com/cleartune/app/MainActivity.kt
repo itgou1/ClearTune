@@ -20,10 +20,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -35,6 +37,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
@@ -102,6 +108,7 @@ class MainActivity : ComponentActivity() {
                         )
                         is AuthUiState.Connected -> ConnectedScreen(
                             profile = current.profile,
+                            restoredOffline = current.restoredOffline,
                             musicViewModel = musicViewModel,
                             playerViewModel = playerViewModel,
                             downloadViewModel = downloadViewModel,
@@ -112,6 +119,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStop() {
+        playerViewModel.persistNow()
+        super.onStop()
     }
 }
 
@@ -139,6 +151,7 @@ private fun LoginScreen(
     var allowHttp by rememberSaveable(state.allowHttp) { mutableStateOf(state.allowHttp) }
     var showPassword by rememberSaveable { mutableStateOf(false) }
     var showHttpWarning by remember { mutableStateOf(false) }
+    var showDevelopmentOptions by rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -148,112 +161,132 @@ private fun LoginScreen(
             .padding(horizontal = 24.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.Center,
     ) {
-        ClearTuneGradientHeader {
-            ClearTuneAppMark(Modifier.size(72.dp))
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 1.dp,
+            ) {
+                ClearTuneAppMark(Modifier.padding(12.dp).size(72.dp))
+            }
+            Spacer(Modifier.height(24.dp))
             Text(
                 text = stringResource(R.string.connect_server),
                 style = MaterialTheme.typography.headlineMedium,
             )
+            Spacer(Modifier.height(6.dp))
             Text(
                 text = stringResource(R.string.connect_server_description),
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(32.dp))
-        OutlinedTextField(
-            value = address,
-            onValueChange = { address = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text(stringResource(R.string.server_address)) },
-            placeholder = { Text(stringResource(R.string.server_address_hint)) },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            singleLine = true,
-            enabled = !state.isConnecting,
-        )
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = username,
-            onValueChange = { username = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text(stringResource(R.string.username)) },
-            singleLine = true,
-            enabled = !state.isConnecting,
-        )
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text(stringResource(R.string.password)) },
-            visualTransformation = if (showPassword) {
-                VisualTransformation.None
-            } else {
-                PasswordVisualTransformation()
-            },
-            trailingIcon = {
-                TextButton(onClick = { showPassword = !showPassword }) {
+        Spacer(Modifier.height(28.dp))
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            tonalElevation = 1.dp,
+        ) {
+            Column(Modifier.padding(18.dp)) {
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = { address = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.server_address)) },
+                    placeholder = { Text(stringResource(R.string.server_address_hint)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    singleLine = true,
+                    enabled = !state.isConnecting,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.username)) },
+                    singleLine = true,
+                    enabled = !state.isConnecting,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.password)) },
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        TextButton(onClick = { showPassword = !showPassword }) {
+                            Text(stringResource(if (showPassword) R.string.hide_password else R.string.show_password))
+                        }
+                    },
+                    singleLine = true,
+                    enabled = !state.isConnecting,
+                )
+                state.errorMessage?.let { message ->
                     Text(
-                        if (showPassword) {
-                            stringResource(R.string.hide_password)
-                        } else {
-                            stringResource(R.string.show_password)
-                        },
+                        text = message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 10.dp),
                     )
                 }
-            },
-            singleLine = true,
-            enabled = !state.isConnecting,
-        )
+                Spacer(Modifier.height(18.dp))
+                Button(
+                    onClick = { onConnect(address, username, password, allowHttp) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isConnecting,
+                ) {
+                    if (state.isConnecting) {
+                        CircularProgressIndicator(modifier = Modifier.height(20.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.padding(horizontal = 4.dp))
+                        Text(stringResource(R.string.testing_connection))
+                    } else {
+                        Text(stringResource(R.string.test_connection))
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showDevelopmentOptions = !showDevelopmentOptions }
+                        .padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(stringResource(R.string.development_options), modifier = Modifier.weight(1f))
+                    Icon(
+                        if (showDevelopmentOptions) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = null,
+                    )
+                }
+                AnimatedVisibility(showDevelopmentOptions) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.allow_http),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Switch(
+                            checked = allowHttp,
+                            onCheckedChange = { enabled ->
+                                if (enabled) showHttpWarning = true else allowHttp = false
+                            },
+                            enabled = !state.isConnecting,
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(20.dp))
-        HorizontalDivider()
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(stringResource(R.string.development_options))
-                Text(
-                    text = stringResource(R.string.allow_http),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(
-                checked = allowHttp,
-                onCheckedChange = { enabled ->
-                    if (enabled) showHttpWarning = true else allowHttp = false
-                },
-                enabled = !state.isConnecting,
-            )
-        }
-        state.errorMessage?.let { message ->
-            Text(
-                text = message,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(vertical = 8.dp),
-            )
-        }
-        Button(
-            onClick = { onConnect(address, username, password, allowHttp) },
+        Text(
+            text = stringResource(R.string.login_privacy_note),
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isConnecting,
-        ) {
-            if (state.isConnecting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.height(20.dp),
-                    strokeWidth = 2.dp,
-                )
-                Spacer(Modifier.padding(horizontal = 4.dp))
-                Text(stringResource(R.string.testing_connection))
-            } else {
-                Text(stringResource(R.string.test_connection))
-            }
-        }
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 
     if (showHttpWarning) {
@@ -283,6 +316,7 @@ private fun LoginScreen(
 @Composable
 private fun ConnectedScreen(
     profile: ServerProfile,
+    restoredOffline: Boolean,
     musicViewModel: MusicViewModel,
     playerViewModel: PlayerViewModel,
     downloadViewModel: DownloadViewModel,
@@ -292,6 +326,7 @@ private fun ConnectedScreen(
     NotificationPermissionEffect()
     ClearTuneApp(
         profile,
+        restoredOffline,
         musicViewModel,
         playerViewModel,
         downloadViewModel,

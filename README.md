@@ -4,7 +4,7 @@
 
 ClearTune 是一款面向 Navidrome / OpenSubsonic 的原生 Android 音乐客户端，专注于清晰、轻量且适合日常使用的私人音乐体验。应用直接连接用户自己的音乐服务器，不提供 ClearTune 云账户，也不会内置任何服务器地址或登录凭据。
 
-当前版本：`1.0.0-rc1`
+当前版本：`1.0.0`
 
 <p align="center">
   <img src="screenshots/now-playing.png" alt="ClearTune 正在播放页面" width="360">
@@ -19,7 +19,7 @@ ClearTune 是一款面向 Navidrome / OpenSubsonic 的原生 Android 音乐客�
 - 离线能力：原始文件下载、暂停/继续、重复任务识别、Wi-Fi 等待提示、离线播放与缓存管理
 - 音频体验：移动网络 128/192/320 kbps 或原始音质、均衡器预设、自定义调节与 ReplayGain 音量平衡
 - 外观：Material 3、页面动效、专辑封面占位图、浅色/深色/跟随系统主题与沉浸式系统栏
-- 更新：可选的 GitHub Releases 新版本检查
+- 更新：可选的 GitHub Releases 新版本检查、24 小时自动检查节流与更新日志展示
 
 ## 本次更新
 
@@ -90,6 +90,37 @@ Windows 用户还可以启动可见的 Android 模拟器、构建、安装并打
 ```
 
 也可以直接双击 `start-android-test.bat`。脚本不会填写或保存音乐服务器的账号密码。
+
+### 正式版签名
+
+正式构建不会回退到调试证书，也不会生成未签名的发布包。构建前请通过 Gradle 属性或环境变量提供以下四项：
+
+- `CLEARTUNE_RELEASE_STORE_FILE`
+- `CLEARTUNE_RELEASE_STORE_PASSWORD`
+- `CLEARTUNE_RELEASE_KEY_ALIAS`
+- `CLEARTUNE_RELEASE_KEY_PASSWORD`
+
+密钥文件和密码不得提交到仓库。配置完成后运行 `./gradlew assembleRelease bundleRelease`。
+
+### GitHub Releases 自动发版
+
+仓库中的 `.github/workflows/release.yml` 会在推送 `v*` 标签后自动运行单元测试与 Lint，使用正式证书构建 APK/AAB，生成 `update.json` 和 SHA-256 校验文件，并创建 GitHub Release。
+
+请先在仓库的 **Settings → Secrets and variables → Actions** 中添加：
+
+- `CLEARTUNE_RELEASE_KEYSTORE_BASE64`：正式 keystore 文件的 Base64 内容
+- `CLEARTUNE_RELEASE_STORE_PASSWORD`
+- `CLEARTUNE_RELEASE_KEY_ALIAS`
+- `CLEARTUNE_RELEASE_KEY_PASSWORD`
+
+标签必须与 `app/build.gradle.kts` 中的 `versionName` 完全一致。例如发布 `1.0.0`：
+
+```bash
+git tag -a v1.0.0 -m "ClearTune 1.0.0"
+git push origin v1.0.0
+```
+
+APK/AAB 不应提交到 Git 历史；它们由工作流上传到 GitHub Releases。App 使用公开的 `releases/latest` 接口检查更新，以 `update.json` 中的 `versionCode` 为权威版本，并在清单缺失时兼容旧版语义化标签。
 
 ## 使用
 

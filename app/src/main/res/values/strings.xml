@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="offline_session_restored">当前处于离线模式，已加载本地音乐与播放缓存</string>
     <string name="app_name">ClearTune</string>
     <string name="app_name_zh">轻调</string>
     <string name="loading_session">正在连接音乐服务器…</string>
     <string name="connect_server">连接音乐服务器</string>
     <string name="connect_server_description">连接你的 Navidrome，随时播放私人音乐库</string>
+    <string name="login_privacy_note">你的账号信息仅保存在此设备</string>
     <string name="server_address">服务器地址</string>
     <string name="server_address_hint">https://music.example.com</string>
     <string name="username">用户名</string>
@@ -27,8 +29,20 @@
     <string name="nav_my">我的</string>
     <string name="home_greeting">你好，%1$s</string>
     <string name="refresh">刷新</string>
+    <string name="all">全部</string>
     <string name="discover_music">发现音乐</string>
     <string name="discover_music_subtitle">从你的曲库中发现下一首喜欢的歌</string>
+    <string name="discover_page_subtitle">按心情慢慢挑选</string>
+    <string name="go_discover">去发现</string>
+    <string name="now_playing_compact">正在播放 · %1$s</string>
+    <string name="search_recommended">为你推荐</string>
+    <string name="genre_pop">流行</string>
+    <string name="genre_rock">摇滚</string>
+    <string name="genre_jazz">爵士</string>
+    <string name="genre_classical">古典</string>
+    <string name="view_all">查看全部</string>
+    <string name="recommendation_song_count">%1$d 首推荐歌曲</string>
+    <string name="recommendation_updated">刚刚更新</string>
     <string name="shuffle_all">随机播放全部</string>
     <string name="recently_added">最近添加</string>
     <string name="recently_added_subtitle">刚刚来到你音乐库的专辑</string>
@@ -75,6 +89,7 @@
     <string name="play_all">播放全部</string>
     <string name="download_action">下载</string>
     <string name="song_count">%1$d 首歌曲</string>
+    <string name="library_songs_hint">按歌曲浏览你的完整音乐收藏</string>
     <string name="album_count">%1$d 张专辑</string>
     <string name="back">返回</string>
     <string name="settings">设置</string>
@@ -124,13 +139,17 @@
     <string name="like_song">喜欢</string>
     <string name="unlike_song">取消喜欢</string>
     <string name="more_actions">更多操作</string>
+    <string name="playback_mode">播放模式</string>
     <string name="add_to_playlist">添加到歌单</string>
     <string name="download_current_song">下载当前歌曲</string>
     <string name="equalizer">均衡器</string>
     <string name="eq_is_on">均衡器已开启</string>
     <string name="eq_is_off">均衡器未开启</string>
+    <string name="eq_turn_on">开启</string>
+    <string name="eq_turn_off">关闭</string>
     <string name="eq_choose_effect">选择听感</string>
     <string name="eq_choose_effect_description">不用理解频段，一键切换适合当前场景的声音</string>
+    <string name="eq_tap_preset_to_enable">点选任一听感即可开启</string>
     <string name="eq_balanced">平衡</string>
     <string name="eq_balanced_description">保持音乐原本的层次</string>
     <string name="eq_clear_vocal">清晰人声</string>
@@ -149,6 +168,7 @@
     <string name="eq_auto_headroom">自动防失真</string>
     <string name="eq_auto_headroom_description">提升频段时自动预留音量空间，减少爆音与削波</string>
     <string name="eq_auto_headroom_active">随均衡器自动启用，无需额外设置</string>
+    <string name="eq_auto_headroom_inactive">开启均衡器后自动生效</string>
     <string name="song_details">歌曲详情</string>
     <string name="song_detail_artist">艺术家：%1$s</string>
     <string name="song_detail_album">专辑：%1$s</string>
@@ -185,6 +205,8 @@
     <string name="volume_normalization_auto_mode">自动（推荐）· 歌单按单曲，连续专辑按专辑</string>
     <string name="settings_download_cache">下载与缓存</string>
     <string name="wifi_only_downloads">仅使用 Wi-Fi 下载</string>
+    <string name="playback_cache">播放缓存</string>
+    <string name="playback_cache_description">已使用 %1$s · 自动淘汰旧缓存</string>
     <string name="mobile_audio_quality">移动网络音质</string>
     <string name="original_audio_quality">原始音质</string>
     <string name="network_quality_explanation">Wi-Fi 默认播放原始格式；移动网络可限制码率，也可选择原始音质（不转码，流量较高）。</string>
@@ -196,7 +218,18 @@
     <string name="current_version">当前版本 %1$s</string>
     <string name="checking_updates">正在检查…</string>
     <string name="check_updates">检查新版本</string>
-    <string name="go_to_download">前往下载</string>
+    <string name="go_to_download">查看更新内容</string>
+    <string name="update_available">发现新版本 %1$s</string>
+    <string name="update_available_action">查看</string>
+    <string name="update_details_title">ClearTune %1$s</string>
+    <string name="update_file_size">APK 大小：%1$s</string>
+    <string name="update_release_notes">更新内容</string>
+    <string name="update_no_release_notes">本次发布暂未填写更新说明。</string>
+    <string name="update_download_explanation">将前往官方 GitHub Release 页面，由你确认并下载更新。</string>
+    <string name="open_release_page">打开 GitHub</string>
+    <string name="ignore_this_version">忽略此版本</string>
+    <string name="update_version_ignored">已忽略</string>
+    <string name="later_action">稍后</string>
     <string name="privacy_notice">隐私说明</string>
     <string name="privacy_body">ClearTune 只连接你配置的 Navidrome。密码使用 Android Keystore 加密保存；播放、喜欢和下载数据保存在设备与 Navidrome 中。V1 不接入广告、统计 SDK 或大模型服务。更新检查只访问公开的 GitHub Releases 接口。</string>
     <string name="open_source_licenses">开源许可</string>

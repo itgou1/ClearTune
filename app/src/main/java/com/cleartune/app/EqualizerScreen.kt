@@ -1,6 +1,7 @@
 package com.cleartune.app
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -17,19 +19,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Speaker
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -89,11 +93,22 @@ internal fun EqualizerScreen(
                 title = stringResource(R.string.equalizer),
                 onBack = onBack,
                 actions = {
-                    Switch(
-                        checked = equalizer.enabled,
-                        onCheckedChange = viewModel::setEqualizerEnabled,
+                    FilledTonalButton(
+                        onClick = { viewModel.setEqualizerEnabled(!equalizer.enabled) },
                         modifier = Modifier.padding(end = 12.dp),
-                    )
+                    ) {
+                        Icon(
+                            Icons.Rounded.PowerSettingsNew,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.size(6.dp))
+                        Text(
+                            stringResource(
+                                if (equalizer.enabled) R.string.eq_turn_off else R.string.eq_turn_on,
+                            ),
+                        )
+                    }
                 },
             )
         },
@@ -106,40 +121,48 @@ internal fun EqualizerScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
-                ClearTuneGradientHeader {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        ClearTuneIconTile(Icons.Rounded.GraphicEq)
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 12.dp),
-                        ) {
-                            Text(
-                                text = stringResource(
-                                    if (equalizer.enabled) R.string.eq_is_on else R.string.eq_is_off,
-                                ),
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                text = stringResource(equalizer.preset.presentation().title),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            ClearTuneIconTile(Icons.Rounded.GraphicEq)
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp),
+                            ) {
+                                Text(
+                                    text = stringResource(equalizer.preset.presentation().title),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text = stringResource(
+                                        if (equalizer.enabled) R.string.eq_is_on else R.string.eq_is_off,
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
+                        FrequencyCurve(
+                            levelsDb = displayedLevels,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(116.dp)
+                                .padding(top = 8.dp),
+                        )
                     }
-                    FrequencyCurve(
-                        levelsDb = displayedLevels,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(116.dp)
-                            .padding(top = 8.dp),
-                    )
                 }
             }
 
             item {
                 Column(
-                    modifier = Modifier.alpha(if (equalizer.enabled) 1f else 0.56f),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
@@ -152,18 +175,28 @@ internal fun EqualizerScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (!equalizer.enabled) {
+                        Text(
+                            stringResource(R.string.eq_tap_preset_to_enable),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                     presetPresentations.chunked(2).forEach { pair ->
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(86.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             pair.forEach { item ->
                                 PresetCard(
                                     presentation = item,
                                     selected = equalizer.preset == item.preset,
-                                    enabled = equalizer.enabled,
-                                    onClick = { viewModel.setEqualizerPreset(item.preset) },
-                                    modifier = Modifier.weight(1f),
+                                    onClick = { viewModel.selectEqualizerPreset(item.preset) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight(),
                                 )
                             }
                         }
@@ -203,7 +236,13 @@ internal fun EqualizerScreen(
                     icon = Icons.Rounded.Security,
                 ) {
                     Text(
-                        text = stringResource(R.string.eq_auto_headroom_active),
+                        text = stringResource(
+                            if (equalizer.enabled) {
+                                R.string.eq_auto_headroom_active
+                            } else {
+                                R.string.eq_auto_headroom_inactive
+                            },
+                        ),
                         color = if (equalizer.enabled) {
                             MaterialTheme.colorScheme.primary
                         } else {
@@ -221,12 +260,12 @@ internal fun EqualizerScreen(
 private fun PresetCard(
     presentation: PresetPresentation,
     selected: Boolean,
-    enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
-        modifier = modifier.clickable(enabled = enabled, onClick = onClick),
+        modifier = modifier.clickable(onClick = onClick),
+        border = if (selected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
         colors = CardDefaults.cardColors(
             containerColor = if (selected) {
                 MaterialTheme.colorScheme.primaryContainer
@@ -264,6 +303,14 @@ private fun PresetCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
+                )
+            }
+            if (selected) {
+                Icon(
+                    Icons.Rounded.CheckCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }

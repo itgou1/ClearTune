@@ -3,6 +3,7 @@ package com.cleartune.app.auth
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cleartune.core.model.ConnectionResult
+import com.cleartune.core.model.ClearTuneError
 import com.cleartune.core.model.ServerCredentials
 import com.cleartune.core.model.ServerProfile
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -23,7 +24,10 @@ sealed interface AuthUiState {
         val errorMessage: String? = null,
     ) : AuthUiState
 
-    data class Connected(val profile: ServerProfile) : AuthUiState
+    data class Connected(
+        val profile: ServerProfile,
+        val restoredOffline: Boolean = false,
+    ) : AuthUiState
 }
 
 @HiltViewModel
@@ -82,17 +86,31 @@ class AuthViewModel @Inject constructor(
 
     private fun restore() {
         viewModelScope.launch {
-            val (credentials, result) = repository.restore()
-            _state.value = when (result) {
+            val restored = repository.restore()
+            val credentials = restored.credentials
+            _state.value = when (val result = restored.connectionResult) {
                 is ConnectionResult.Success -> AuthUiState.Connected(result.profile)
-                is ConnectionResult.Failure -> AuthUiState.Login(
-                    address = credentials?.baseUrl.orEmpty(),
-                    username = credentials?.username.orEmpty(),
-                    allowHttp = credentials?.allowInsecureHttp ?: false,
-                    errorMessage = result.error.userMessage,
-                )
+                is ConnectionResult.Failure -> {
+                    val canUseOfflineSession = result.error.allowsOfflineRestore()
+                    if (canUseOfflineSession && restored.cachedProfile != null) {
+                        AuthUiState.Connected(
+                            profile = restored.cachedProfile,
+                            restoredOffline = true,
+                        )
+                    } else {
+                        AuthUiState.Login(
+                            address = credentials?.baseUrl.orEmpty(),
+                            username = credentials?.username.orEmpty(),
+                            allowHttp = credentials?.allowInsecureHttp ?: false,
+                            errorMessage = result.error.userMessage,
+                        )
+                    }
+                }
                 null -> AuthUiState.Login()
             }
         }
     }
 }
+
+internal fun ClearTuneError.allowsOfflineRestore(): Boolean =
+    this is ClearTuneError.Timeout || this is ClearTuneError.Unreachable

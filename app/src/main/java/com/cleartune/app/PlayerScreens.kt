@@ -1,12 +1,28 @@
 package com.cleartune.app
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,7 +31,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -32,6 +50,8 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
@@ -49,9 +69,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -68,10 +91,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
@@ -81,6 +107,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import com.cleartune.app.library.MusicViewModel
@@ -90,6 +120,21 @@ import com.cleartune.core.model.PlaybackMode
 import com.cleartune.core.player.PlaybackStatus
 import com.cleartune.core.player.PlayerUiState
 import kotlinx.coroutines.launch
+import kotlin.math.PI
+import kotlin.math.sin
+
+private data class PlayerHeroState(
+    val songId: String,
+    val title: String,
+    val coverArtId: String?,
+    val lyricsVisible: Boolean,
+)
+
+private data class PlayerMetadataState(
+    val songId: String,
+    val title: String,
+    val artist: String?,
+)
 
 @Composable
 internal fun MiniPlayer(
@@ -97,7 +142,6 @@ internal fun MiniPlayer(
     musicViewModel: MusicViewModel,
     onOpen: () -> Unit,
     onToggle: () -> Unit,
-    onQueue: () -> Unit,
 ) {
     val song = state.currentSong ?: return
     Surface(tonalElevation = 0.dp, shadowElevation = 0.dp) {
@@ -107,7 +151,12 @@ internal fun MiniPlayer(
         } else {
             0f
         }
-        Column(modifier = Modifier.background(clearTuneGradient())) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerLow),
+        ) {
             LinearProgressIndicator(
                 progress = { progress.coerceIn(0f, 1f) },
                 modifier = Modifier
@@ -118,20 +167,33 @@ internal fun MiniPlayer(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onOpen)
-                    .padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                    .padding(start = 8.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CoverArt(song.coverArtId, song.title, musicViewModel, Modifier.size(48.dp))
+                CoverArt(
+                    song.displayCoverArtId(),
+                    song.title,
+                    musicViewModel,
+                    Modifier.size(42.dp),
+                    fallbackSeed = song.id,
+                )
                 Spacer(Modifier.size(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
                     Text(
-                        song.artistName,
+                        stringResource(R.string.now_playing_compact, song.title),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Medium,
                     )
+                    song.displayArtistName()?.let {
+                        Text(
+                            it,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 ClearTuneTonalIconButton(onClick = onToggle) {
                     Icon(
@@ -140,9 +202,6 @@ internal fun MiniPlayer(
                             if (state.status == PlaybackStatus.PLAYING) R.string.pause_action else R.string.play_action,
                         ),
                     )
-                }
-                ClearTuneTonalIconButton(onClick = onQueue) {
-                    Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = stringResource(R.string.play_queue))
                 }
             }
         }
@@ -164,157 +223,252 @@ internal fun NowPlayingScreen(
     onDownload: (com.cleartune.core.model.Song) -> Unit,
 ) {
     val song = state.currentSong
+    val displayCoverArtId = song?.displayCoverArtId()
     var showLyrics by remember(song?.id) { mutableStateOf(false) }
     var showDetails by remember(song?.id) { mutableStateOf(false) }
-    Scaffold(
-        topBar = {
-            ClearTuneTopAppBar(title = stringResource(R.string.now_playing), onBack = onBack)
-        },
-    ) { padding ->
+    var showMoreActions by remember(song?.id) { mutableStateOf(false) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(clearTuneGradient()),
+    ) {
+        AnimatedContent(
+            targetState = song?.id?.takeIf { displayCoverArtId == null },
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = {
+                fadeIn(tween(durationMillis = 900)) togetherWith
+                    fadeOut(tween(durationMillis = 700))
+            },
+            label = "playerBackdrop",
+        ) { ambientSeed ->
+            if (ambientSeed != null) {
+                AmbientPlayerBackdrop(
+                    seed = ambientSeed,
+                    isPlaying = state.status == PlaybackStatus.PLAYING,
+                )
+            }
+        }
         if (song == null) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
+                    .statusBarsPadding()
+                    .navigationBarsPadding(),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) { Text(stringResource(R.string.empty_queue)) }
-            return@Scaffold
-        }
-        var seekPosition by remember(song.id) {
-            mutableFloatStateOf(state.positionMs.toFloat())
-        }
-        var isSeeking by remember(song.id) { mutableStateOf(false) }
-        val durationMs = state.durationMs.takeIf { it > 0 } ?: song.durationSeconds * 1_000
-        LaunchedEffect(song.id, state.positionMs) {
-            if (!isSeeking) seekPosition = state.positionMs.toFloat()
-        }
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(clearTuneGradient())
-                .padding(padding)
-                .padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Box(
+        } else {
+            var seekPosition by remember(song.id) { mutableFloatStateOf(state.positionMs.toFloat()) }
+            var isSeeking by remember(song.id) { mutableStateOf(false) }
+            val seekInteractionSource = remember(song.id) { MutableInteractionSource() }
+            val durationMs = state.durationMs.takeIf { it > 0 } ?: song.durationSeconds * 1_000
+            LaunchedEffect(song.id, state.positionMs) {
+                if (!isSeeking) seekPosition = state.positionMs.toFloat()
+            }
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(if (showLyrics) 380.dp else 292.dp)
-                    .animateContentSize(animationSpec = ClearTuneMotion.standard())
-                    .then(if (showLyrics) Modifier else Modifier.clip(RoundedCornerShape(16.dp)))
-                    .clickable { showLyrics = !showLyrics },
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (showLyrics) {
-                    LyricsArtwork(
-                        lyricsState = lyricsState,
-                        positionMs = state.positionMs,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else {
-                    CoverArt(
-                        song.coverArtId,
-                        song.title,
-                        musicViewModel,
-                        Modifier
-                            .size(292.dp)
-                            .align(Alignment.Center),
-                    )
-                }
-            }
-            Spacer(Modifier.height(20.dp))
-            Box(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    song.title,
+                Row(
                     modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(horizontal = 52.dp),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                        .fillMaxWidth()
+                        .height(54.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
+                    }
+                    Text(
+                        stringResource(if (showLyrics) R.string.lyrics else R.string.now_playing),
+                        modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    IconButton(onClick = onQueue) {
+                        Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = stringResource(R.string.play_queue))
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .clickable { showLyrics = !showLyrics },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val heroState = PlayerHeroState(
+                        songId = song.id,
+                        title = song.title,
+                        coverArtId = displayCoverArtId,
+                        lyricsVisible = showLyrics,
+                    )
+                    AnimatedContent(
+                        targetState = heroState,
+                        modifier = Modifier.fillMaxSize(),
+                        transitionSpec = {
+                            val lyricsChanged = initialState.lyricsVisible != targetState.lyricsVisible
+                            if (lyricsChanged) {
+                                (fadeIn(ClearTuneMotion.standard()) + scaleIn(
+                                    initialScale = 0.985f,
+                                    animationSpec = ClearTuneMotion.standard(),
+                                )) togetherWith fadeOut(ClearTuneMotion.quick())
+                            } else {
+                                (fadeIn(tween(durationMillis = 720)) + scaleIn(
+                                    initialScale = 0.96f,
+                                    animationSpec = tween(durationMillis = 720),
+                                )) togetherWith (fadeOut(tween(durationMillis = 480)) + scaleOut(
+                                    targetScale = 1.025f,
+                                    animationSpec = tween(durationMillis = 480),
+                                ))
+                            }
+                        },
+                        contentAlignment = Alignment.Center,
+                        label = "artworkLyrics",
+                    ) { hero ->
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (hero.lyricsVisible) {
+                                LyricsArtwork(
+                                    lyricsState = lyricsState,
+                                    positionMs = state.positionMs,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else if (hero.coverArtId == null) {
+                                AmbientFallbackArtwork(
+                                    isPlaying = state.status == PlaybackStatus.PLAYING,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else {
+                                CoverArt(
+                                    hero.coverArtId,
+                                    hero.title,
+                                    musicViewModel,
+                                    Modifier
+                                        .fillMaxWidth(0.84f)
+                                        .aspectRatio(1f),
+                                    fallbackSeed = hero.songId,
+                                    requestSize = 768,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    AnimatedContent(
+                        targetState = PlayerMetadataState(song.id, song.title, song.displayArtistName()),
+                        modifier = Modifier.weight(1f),
+                        transitionSpec = {
+                            fadeIn(tween(durationMillis = 360, delayMillis = 110)) togetherWith
+                                fadeOut(tween(durationMillis = 180))
+                        },
+                        label = "playerMetadata",
+                    ) { metadata ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                metadata.title,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            metadata.artist?.let {
+                                Text(
+                                    it,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    IconButton(onClick = { onFavorite(song, !isFavorite) }) {
+                        Icon(
+                            if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = stringResource(if (isFavorite) R.string.unlike_song else R.string.like_song),
+                            tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Slider(
+                    value = seekPosition.coerceIn(0f, durationMs.coerceAtLeast(1).toFloat()),
+                    onValueChange = {
+                        isSeeking = true
+                        seekPosition = it
+                    },
+                    onValueChangeFinished = {
+                        playerViewModel.seekTo(seekPosition.toLong())
+                        isSeeking = false
+                    },
+                    valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
+                    modifier = Modifier.fillMaxWidth(),
+                    interactionSource = seekInteractionSource,
+                    thumb = {
+                        SliderDefaults.Thumb(
+                            interactionSource = seekInteractionSource,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    },
                 )
-                IconButton(
-                    onClick = { onFavorite(song, !isFavorite) },
-                    modifier = Modifier.align(Alignment.CenterEnd),
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(formatTime(seekPosition.toLong()), style = MaterialTheme.typography.labelMedium)
+                    Text(formatTime(durationMs), style = MaterialTheme.typography.labelMedium)
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                        contentDescription = stringResource(if (isFavorite) R.string.unlike_song else R.string.like_song),
-                        tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    IconButton(
+                        onClick = playerViewModel::previous,
+                        modifier = Modifier.size(56.dp),
+                    ) {
+                        Icon(Icons.Rounded.SkipPrevious, contentDescription = stringResource(R.string.previous_song))
+                    }
+                    FilledIconButton(onClick = playerViewModel::togglePlayPause, modifier = Modifier.size(70.dp)) {
+                        Icon(
+                            if (state.status == PlaybackStatus.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            contentDescription = stringResource(
+                                if (state.status == PlaybackStatus.PLAYING) R.string.pause_action else R.string.play_action,
+                            ),
+                            modifier = Modifier.size(36.dp),
+                        )
+                    }
+                    IconButton(
+                        onClick = playerViewModel::next,
+                        modifier = Modifier.size(56.dp),
+                    ) {
+                        Icon(Icons.Rounded.SkipNext, contentDescription = stringResource(R.string.next_song))
+                    }
                 }
-            }
-            Text(song.artistName, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                listOfNotNull(song.suffix?.uppercase(), song.bitRate?.let { "$it kbps" }).joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(16.dp))
-            Slider(
-                value = seekPosition.coerceIn(0f, durationMs.coerceAtLeast(1).toFloat()),
-                onValueChange = {
-                    isSeeking = true
-                    seekPosition = it
-                },
-                onValueChangeFinished = {
-                    playerViewModel.seekTo(seekPosition.toLong())
-                    isSeeking = false
-                },
-                valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(formatTime(seekPosition.toLong()))
-                Text(formatTime(durationMs))
-            }
-            Spacer(Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ClearTuneTonalIconButton(onClick = playerViewModel::previous) {
-                    Icon(Icons.Rounded.SkipPrevious, contentDescription = stringResource(R.string.previous_song))
-                }
-                FilledIconButton(
-                    onClick = playerViewModel::togglePlayPause,
-                    modifier = Modifier.size(72.dp),
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp, bottom = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        if (state.status == PlaybackStatus.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                        contentDescription = stringResource(
-                            if (state.status == PlaybackStatus.PLAYING) R.string.pause_action else R.string.play_action,
-                        ),
-                        modifier = Modifier.size(38.dp),
-                    )
-                }
-                ClearTuneTonalIconButton(onClick = playerViewModel::next) {
-                    Icon(Icons.Rounded.SkipNext, contentDescription = stringResource(R.string.next_song))
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ClearTuneTonalIconButton(onClick = playerViewModel::cycleMode) {
-                    Icon(state.mode.icon(), contentDescription = state.mode.label())
-                }
-                ClearTuneTonalIconButton(onClick = { onDownload(song) }) {
-                    Icon(Icons.Rounded.Download, contentDescription = stringResource(R.string.download_current_song))
-                }
-                ClearTuneTonalIconButton(onClick = onEqualizer) {
-                    Icon(Icons.Rounded.GraphicEq, contentDescription = stringResource(R.string.equalizer))
-                }
-                ClearTuneTonalIconButton(onClick = onQueue) {
-                    Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = stringResource(R.string.play_queue))
-                }
-                ClearTuneTonalIconButton(onClick = { showDetails = true }) {
-                    Icon(Icons.Rounded.Info, contentDescription = stringResource(R.string.song_details))
+                    PlayerSecondaryButton(
+                        selected = showLyrics,
+                        onClick = { showLyrics = !showLyrics },
+                    ) {
+                        Icon(Icons.Rounded.Lyrics, contentDescription = stringResource(R.string.lyrics))
+                    }
+                    PlayerSecondaryButton(onClick = onEqualizer) {
+                        Icon(Icons.Rounded.GraphicEq, contentDescription = stringResource(R.string.equalizer))
+                    }
+                    PlayerSecondaryButton(onClick = { showMoreActions = true }) {
+                        Icon(Icons.Rounded.MoreHoriz, contentDescription = stringResource(R.string.more_actions))
+                    }
                 }
             }
         }
@@ -326,8 +480,8 @@ internal fun NowPlayingScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(song.title, style = MaterialTheme.typography.titleMedium)
-                    Text(stringResource(R.string.song_detail_artist, song.artistName))
-                    Text(stringResource(R.string.song_detail_album, song.albumName))
+                    song.displayArtistName()?.let { Text(stringResource(R.string.song_detail_artist, it)) }
+                    song.displayAlbumName()?.let { Text(stringResource(R.string.song_detail_album, it)) }
                     Text(stringResource(R.string.song_detail_duration, formatTime(song.durationSeconds * 1_000)))
                     Text(
                         stringResource(
@@ -347,6 +501,281 @@ internal fun NowPlayingScreen(
             },
         )
     }
+    if (showMoreActions && song != null) {
+        ModalBottomSheet(onDismissRequest = { showMoreActions = false }) {
+            Text(
+                text = stringResource(R.string.more_actions),
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.playback_mode)) },
+                supportingContent = { Text(state.mode.label()) },
+                leadingContent = { Icon(state.mode.icon(), contentDescription = null) },
+                modifier = Modifier.clickable {
+                    playerViewModel.cycleMode()
+                    showMoreActions = false
+                },
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.download_current_song)) },
+                leadingContent = { Icon(Icons.Rounded.Download, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDownload(song)
+                    showMoreActions = false
+                },
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.song_details)) },
+                leadingContent = { Icon(Icons.Rounded.Info, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    showMoreActions = false
+                    showDetails = true
+                },
+            )
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun PlayerSecondaryButton(
+    selected: Boolean = false,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    FilledTonalIconButton(
+        onClick = onClick,
+        modifier = Modifier.size(52.dp),
+        colors = IconButtonDefaults.filledTonalIconButtonColors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.20f)
+            },
+            contentColor = if (selected) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+        ),
+        content = content,
+    )
+}
+
+@Composable
+private fun AmbientPlayerBackdrop(
+    seed: String,
+    isPlaying: Boolean,
+) {
+    val transition = rememberInfiniteTransition(label = "ambientBackdrop")
+    val motionStrength by animateFloatAsState(
+        targetValue = if (isPlaying) 1f else 0.28f,
+        animationSpec = tween(durationMillis = 1_200),
+        label = "ambientBackdropActivity",
+    )
+    val breathingScale by transition.animateFloat(
+        initialValue = 1.04f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 14_000),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ambientBackdropScale",
+    )
+    val driftX by transition.animateFloat(
+        initialValue = -18f,
+        targetValue = 18f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 18_000),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ambientBackdropDriftX",
+    )
+    val driftY by transition.animateFloat(
+        initialValue = 12f,
+        targetValue = -12f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 23_000),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ambientBackdropDriftY",
+    )
+    val glowProgress by transition.animateFloat(
+        initialValue = -1f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 16_000),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ambientGlowDrift",
+    )
+    val primaryGlow = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    val secondaryGlow = MaterialTheme.colorScheme.secondary.copy(alpha = 0.10f)
+    Image(
+        painter = painterResource(clearTuneFallbackCover(seed)),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                val scale = 1.04f + (breathingScale - 1.04f) * motionStrength
+                scaleX = scale
+                scaleY = scale
+                translationX = driftX * motionStrength
+                translationY = driftY * motionStrength
+                rotationZ = glowProgress * 0.8f * motionStrength
+                alpha = 0.68f
+            }
+            .blur(10.dp),
+    )
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val firstCenter = Offset(
+            x = size.width * (0.34f + glowProgress * 0.08f * motionStrength),
+            y = size.height * (0.38f - glowProgress * 0.05f * motionStrength),
+        )
+        val secondCenter = Offset(
+            x = size.width * (0.72f - glowProgress * 0.07f * motionStrength),
+            y = size.height * (0.66f + glowProgress * 0.04f * motionStrength),
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(primaryGlow, Color.Transparent),
+                center = firstCenter,
+                radius = size.minDimension * 0.48f,
+            ),
+            radius = size.minDimension * 0.48f,
+            center = firstCenter,
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(secondaryGlow, Color.Transparent),
+                center = secondCenter,
+                radius = size.minDimension * 0.40f,
+            ),
+            radius = size.minDimension * 0.40f,
+            center = secondCenter,
+        )
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.30f),
+                        MaterialTheme.colorScheme.background.copy(alpha = 0.20f),
+                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.62f),
+                    ),
+                ),
+            ),
+    )
+}
+
+@Composable
+private fun AmbientFallbackArtwork(
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val transition = rememberInfiniteTransition(label = "ambientArtwork")
+    val playbackActivity by animateFloatAsState(
+        targetValue = if (isPlaying) 1f else 0f,
+        animationSpec = tween(durationMillis = 720),
+        label = "ambientArtworkActivity",
+    )
+    val breathingScale by transition.animateFloat(
+        initialValue = 0.96f,
+        targetValue = 1.04f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 12_000),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ambientArtworkScale",
+    )
+    val haloScale by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.18f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2_800),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ambientHaloScale",
+    )
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .size(142.dp)
+                .graphicsLayer {
+                    val activeScale = 1f + (haloScale - 1f) * playbackActivity
+                    scaleX = activeScale
+                    scaleY = activeScale
+                    alpha = 0.08f + 0.10f * playbackActivity
+                }
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(MaterialTheme.colorScheme.surface),
+        )
+        Box(
+            modifier = Modifier
+                .size(112.dp)
+                .graphicsLayer {
+                    val scale = 1f + (breathingScale - 1f) * playbackActivity
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(
+                    MaterialTheme.colorScheme.surface.copy(alpha = 0.22f),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            AmbientWaveform(
+                isPlaying = isPlaying,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f),
+                modifier = Modifier.size(48.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AmbientWaveform(
+    isPlaying: Boolean,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val transition = rememberInfiniteTransition(label = "ambientWaveform")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1_900, easing = LinearEasing),
+        ),
+        label = "ambientWaveformPhase",
+    )
+    val activity by animateFloatAsState(
+        targetValue = if (isPlaying) 1f else 0f,
+        animationSpec = tween(durationMillis = 600),
+        label = "ambientWaveformActivity",
+    )
+    Canvas(modifier = modifier) {
+        val idleHeights = floatArrayOf(0.34f, 0.62f, 0.92f, 0.62f, 0.34f)
+        val barWidth = size.width * 0.09f
+        val gap = size.width * 0.09f
+        val contentWidth = barWidth * idleHeights.size + gap * (idleHeights.size - 1)
+        val startX = (size.width - contentWidth) / 2f
+        idleHeights.forEachIndexed { index, idleHeight ->
+            val wave = sin(phase + index * 0.92f) * 0.18f * activity
+            val height = size.height * (idleHeight + wave).coerceIn(0.22f, 1f)
+            val left = startX + index * (barWidth + gap)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(left, (size.height - height) / 2f),
+                size = androidx.compose.ui.geometry.Size(barWidth, height),
+                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+            )
+        }
+    }
 }
 
 @Composable
@@ -362,7 +791,7 @@ private fun LyricsArtwork(
     val listState = rememberLazyListState()
     LaunchedEffect(activeIndex) {
         if (activeIndex >= 0) {
-            listState.animateScrollToItem(activeIndex, scrollOffset = -120)
+            listState.animateScrollToItem(activeIndex, scrollOffset = -160)
         }
     }
     Box(modifier = modifier) {
@@ -376,17 +805,17 @@ private fun LyricsArtwork(
             else -> LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 40.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 itemsIndexed(lines) { index, line ->
                     Text(
                         text = line.text,
                         modifier = Modifier.fillMaxWidth(),
                         style = if (index == activeIndex) {
-                            MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
+                            MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold)
                         } else {
-                            MaterialTheme.typography.titleMedium
+                            MaterialTheme.typography.bodyLarge
                         },
                         textAlign = TextAlign.Center,
                         color = if (index == activeIndex) {
@@ -596,32 +1025,34 @@ internal fun QueueScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { playerViewModel.play(state.queue, index) }
-                                .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+                                .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             if (index == state.currentIndex) {
                                 Icon(
                                     Icons.Rounded.Equalizer,
                                     contentDescription = stringResource(R.string.now_playing),
-                                    modifier = Modifier.size(32.dp),
+                                    modifier = Modifier.size(28.dp),
                                     tint = MaterialTheme.colorScheme.primary,
                                 )
                             } else {
-                                Text("${index + 1}", modifier = Modifier.size(32.dp))
+                                Text("${index + 1}", modifier = Modifier.size(28.dp))
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(
-                                    song.artistName,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                song.displayArtistName()?.let {
+                                    Text(
+                                        it,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                             IconButton(
                                 onClick = { playerViewModel.remove(index) },
-                                modifier = Modifier.size(36.dp),
+                                modifier = Modifier.size(32.dp),
                             ) {
                                 Icon(
                                     Icons.Rounded.Delete,

@@ -5,6 +5,33 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+val releaseStoreFile = providers.gradleProperty("CLEARTUNE_RELEASE_STORE_FILE")
+    .orElse(providers.environmentVariable("CLEARTUNE_RELEASE_STORE_FILE"))
+val releaseStorePassword = providers.gradleProperty("CLEARTUNE_RELEASE_STORE_PASSWORD")
+    .orElse(providers.environmentVariable("CLEARTUNE_RELEASE_STORE_PASSWORD"))
+val releaseKeyAlias = providers.gradleProperty("CLEARTUNE_RELEASE_KEY_ALIAS")
+    .orElse(providers.environmentVariable("CLEARTUNE_RELEASE_KEY_ALIAS"))
+val releaseKeyPassword = providers.gradleProperty("CLEARTUNE_RELEASE_KEY_PASSWORD")
+    .orElse(providers.environmentVariable("CLEARTUNE_RELEASE_KEY_PASSWORD"))
+val releaseSigningValues = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+)
+val releaseSigningConfigured = releaseSigningValues.all { it.isPresent }
+val releaseBuildRequested = gradle.startParameter.taskNames.any { task ->
+    task.contains("release", ignoreCase = true)
+}
+
+if (releaseBuildRequested && !releaseSigningConfigured) {
+    error(
+        "Release signing is required. Set CLEARTUNE_RELEASE_STORE_FILE, " +
+            "CLEARTUNE_RELEASE_STORE_PASSWORD, CLEARTUNE_RELEASE_KEY_ALIAS and " +
+            "CLEARTUNE_RELEASE_KEY_PASSWORD as Gradle properties or environment variables.",
+    )
+}
+
 android {
     namespace = "com.cleartune.app"
     compileSdk = 37
@@ -13,17 +40,35 @@ android {
         applicationId = "com.cleartune.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0-rc1"
+        versionCode = 2
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+    }
+
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile.get())
+                storePassword = releaseStorePassword.get()
+                keyAlias = releaseKeyAlias.get()
+                keyPassword = releaseKeyPassword.get()
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -73,6 +118,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     debugImplementation(libs.androidx.compose.ui.tooling)

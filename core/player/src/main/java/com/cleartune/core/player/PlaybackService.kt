@@ -7,9 +7,16 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.cleartune.core.datastore.AppPreferences
+import com.cleartune.core.datastore.DEFAULT_PLAYBACK_CACHE_SIZE_MB
 import com.cleartune.core.datastore.EQUALIZER_FREQUENCIES_HZ
 import com.cleartune.core.datastore.EqualizerSettings
 import kotlinx.coroutines.CoroutineScope
@@ -17,13 +24,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import java.io.File
 import kotlin.math.abs
 import kotlin.math.ln
 
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class PlaybackService : MediaLibraryService() {
     private lateinit var player: ExoPlayer
     private lateinit var session: MediaLibraryService.MediaLibrarySession
     private val playbackScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val cacheScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var playbackCache: SimpleCache? = null
+    private var cacheEvictor: ResizableLeastRecentlyUsedCacheEvictor? = null
     private var volumeNormalizationEnabled = true
     private var equalizerSettings = EqualizerSettings()
     private var audioSessionId = C.AUDIO_SESSION_ID_UNSET
@@ -45,7 +59,32 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
-        player = ExoPlayer.Builder(this).build().apply {
+        val directDataSourceFactory = DefaultDataSource.Factory(this)
+        val playbackDataSourceFactory = runCatching<androidx.media3.datasource.DataSource.Factory> {
+            val evictor = ResizableLeastRecentlyUsedCacheEvictor(
+                DEFAULT_PLAYBACK_CACHE_SIZE_MB.toBytes(),
+            )
+            val cache = SimpleCache(
+                File(filesDir, PLAYBACK_CACHE_DIRECTORY_NAME),
+                evictor,
+                StandaloneDatabaseProvider(this),
+            )
+            cacheEvictor = evictor
+            playbackCache = cache
+            PlaybackDataSourceFactory(
+                cachedFactory = CacheDataSource.Factory()
+                    .setCache(cache)
+                    .setUpstreamDataSourceFactory(directDataSourceFactory)
+                    .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR),
+                directFactory = directDataSourceFactory,
+            )
+        }.onFailure {
+            Log.w(TAG, "Playback cache is unavailable; continuing without disk cache", it)
+        }.getOrDefault(directDataSourceFactory)
+
+        player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(playbackDataSourceFactory))
+            .build().apply {
             setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -61,13 +100,23 @@ class PlaybackService : MediaLibraryService() {
             player,
             object : MediaLibraryService.MediaLibrarySession.Callback {},
         ).build()
+        val settingsFlow = AppPreferences(this@PlaybackService).settings
         playbackScope.launch {
-            AppPreferences(this@PlaybackService).settings
+            settingsFlow
                 .collect { settings ->
                     volumeNormalizationEnabled = settings.volumeNormalizationEnabled
                     equalizerSettings = settings.equalizer
                     applyReplayGain()
                     applyEqualizer()
+                }
+        }
+        cacheScope.launch {
+            settingsFlow
+                .map { it.playbackCacheSizeMb }
+                .distinctUntilChanged()
+                .collect { sizeMb ->
+                    val cache = playbackCache ?: return@collect
+                    cacheEvictor?.resize(cache, sizeMb.toBytes())
                 }
         }
     }
@@ -78,10 +127,13 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         playbackScope.cancel()
+        cacheScope.cancel()
         releaseEqualizer()
         player.removeListener(playerListener)
         session.release()
         player.release()
+        runCatching { playbackCache?.release() }
+            .onFailure { Log.w(TAG, "Could not close playback cache cleanly", it) }
         super.onDestroy()
     }
 
@@ -157,6 +209,11 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private companion object {
-        const val TAG = "ClearTuneEqualizer"
+        const val TAG = "ClearTunePlayback"
+        const val BYTES_PER_MEGABYTE = 1_024L * 1_024L
+
+        fun Int.toBytes(): Long = toLong() * BYTES_PER_MEGABYTE
     }
 }
+
+const val PLAYBACK_CACHE_DIRECTORY_NAME = "playback_cache"

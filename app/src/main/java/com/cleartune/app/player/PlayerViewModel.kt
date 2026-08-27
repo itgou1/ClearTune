@@ -86,6 +86,20 @@ class PlayerViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            state.filter { snapshot -> snapshot.connected && snapshot.queue.isNotEmpty() }
+                .map { snapshot ->
+                    LocalPlaybackCheckpoint(
+                        songId = snapshot.currentSong?.id,
+                        currentIndex = snapshot.currentIndex,
+                        positionBucket = snapshot.positionMs / LOCAL_CHECKPOINT_INTERVAL_MS,
+                    )
+                }
+                .distinctUntilChanged()
+                .collect {
+                    if (restored) repository.persistQueue(state.value)
+                }
+        }
+        viewModelScope.launch {
             state.map { it.currentSong?.id }.distinctUntilChanged().collect { songId ->
                 submittedSongId = null
                 songId?.let { repository.recordStarted(it) }
@@ -165,6 +179,11 @@ class PlayerViewModel @Inject constructor(
     fun move(from: Int, to: Int) = connection.move(from, to)
     fun clearQueue() = connection.clear()
 
+    fun persistNow() {
+        if (!restored || state.value.queue.isEmpty()) return
+        viewModelScope.launch { repository.persistQueue(state.value) }
+    }
+
     fun cycleMode() {
         val mode = connection.cycleMode()
         viewModelScope.launch { preferences.setMode(mode) }
@@ -179,6 +198,14 @@ class PlayerViewModel @Inject constructor(
         connection.release()
     }
 }
+
+private data class LocalPlaybackCheckpoint(
+    val songId: String?,
+    val currentIndex: Int,
+    val positionBucket: Long,
+)
+
+private const val LOCAL_CHECKPOINT_INTERVAL_MS = 5_000L
 
 private fun PlaybackMode.chineseName(): String = when (this) {
     PlaybackMode.SEQUENTIAL -> "顺序播放"

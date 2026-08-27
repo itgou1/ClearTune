@@ -3,6 +3,7 @@ package com.cleartune.app
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,6 +13,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.OfflineBolt
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -21,7 +25,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,83 +53,86 @@ internal fun DownloadsScreen(
         },
     ) { padding ->
         if (downloads.isEmpty()) {
-            Column(
+            ClearTuneEmptyState(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(stringResource(R.string.no_downloads), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+                title = stringResource(R.string.downloads),
+                description = stringResource(R.string.no_downloads),
+                icon = Icons.Rounded.Download,
+            )
         } else {
-            LazyColumn(modifier = Modifier.padding(padding)) {
+            LazyColumn(
+                modifier = Modifier.padding(padding),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 items(downloads, key = DownloadItem::requestId) { item ->
-                    val song = songsById[item.songId]
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                    ) {
-                        Text(
-                            song?.title ?: item.songId,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            "${item.state.label()} · ${formatBytes(item.bytesDownloaded)}" +
-                                (item.totalBytes?.let { " / ${formatBytes(it)}" } ?: ""),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (item.state in setOf(DownloadState.QUEUED, DownloadState.DOWNLOADING)) {
-                            LinearProgressIndicator(
-                                progress = { item.progress.coerceIn(0f, 1f) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp),
-                            )
-                        }
-                        item.failureReason?.let {
+                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                        val song = songsById[item.songId]
+                        Column(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
                             Text(
-                                it,
-                                color = if (item.state == DownloadState.FAILED) {
-                                    MaterialTheme.colorScheme.error
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                style = MaterialTheme.typography.bodySmall,
+                                song?.title ?: item.songId,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.Medium,
                             )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            when (item.state) {
-                                DownloadState.QUEUED, DownloadState.DOWNLOADING -> {
-                                    TextButton(onClick = { viewModel.pause(item) }) {
-                                        Text(stringResource(R.string.download_pause))
-                                    }
-                                }
-                                DownloadState.PAUSED, DownloadState.FAILED -> {
-                                    song?.let {
-                                        TextButton(onClick = { viewModel.retry(item, it) }) {
-                                            Text(stringResource(R.string.download_continue))
-                                        }
-                                    }
-                                }
-                                DownloadState.COMPLETED -> {
-                                    song?.let {
-                                        TextButton(onClick = { onPlay(listOf(it), 0) }) {
-                                            Text(stringResource(R.string.play_action))
-                                        }
-                                    }
-                                }
+                            Text(
+                                "${item.state.label()} · ${formatBytes(item.bytesDownloaded)}" +
+                                    (item.totalBytes?.let { " / ${formatBytes(it)}" } ?: ""),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (item.state in setOf(DownloadState.QUEUED, DownloadState.DOWNLOADING)) {
+                                LinearProgressIndicator(
+                                    progress = { item.progress.coerceIn(0f, 1f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                )
                             }
-                            TextButton(onClick = { viewModel.delete(item) }) {
-                                Text(stringResource(R.string.delete_local_file))
+                            item.failureReason?.let {
+                                Text(
+                                    it,
+                                    color = if (item.state == DownloadState.FAILED) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                when (item.state) {
+                                    DownloadState.QUEUED, DownloadState.DOWNLOADING -> {
+                                        TextButton(onClick = { viewModel.pause(item) }) {
+                                            Text(stringResource(R.string.download_pause))
+                                        }
+                                    }
+                                    DownloadState.PAUSED, DownloadState.FAILED -> {
+                                        song?.let {
+                                            TextButton(onClick = { viewModel.retry(item, it) }) {
+                                                Text(stringResource(R.string.download_continue))
+                                            }
+                                        }
+                                    }
+                                    DownloadState.COMPLETED -> {
+                                        song?.let {
+                                            TextButton(onClick = { onPlay(listOf(it), 0) }) {
+                                                Text(stringResource(R.string.play_action))
+                                            }
+                                        }
+                                    }
+                                }
+                                TextButton(onClick = { viewModel.delete(item) }) {
+                                    Text(stringResource(R.string.delete_local_file))
+                                }
                             }
                         }
                     }
-                    HorizontalDivider()
                 }
             }
         }
@@ -152,15 +158,14 @@ internal fun OfflineMusicScreen(
         },
     ) { padding ->
         if (offlineSongs.isEmpty()) {
-            Column(
+            ClearTuneEmptyState(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(stringResource(R.string.no_offline_music), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+                title = stringResource(R.string.offline_music),
+                description = stringResource(R.string.no_offline_music),
+                icon = Icons.Rounded.OfflineBolt,
+            )
         } else {
             LazyColumn(modifier = Modifier.padding(padding)) {
                 items(offlineSongs, key = Song::id) { song ->

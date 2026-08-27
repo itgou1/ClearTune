@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 ClearTune is a native Android music client for Navidrome and OpenSubsonic servers. It focuses on a clear, lightweight, everyday listening experience for privately hosted music libraries. The app connects directly to a server chosen by the user; it does not provide a ClearTune cloud account or embed server addresses or credentials.
 
-Current version: `1.0.0-rc1`
+Current version: `1.0.0`
 
 <p align="center">
   <img src="screenshots/now-playing.png" alt="ClearTune Now Playing screen" width="360">
@@ -19,7 +19,7 @@ Current version: `1.0.0-rc1`
 - Offline support: original-file downloads, pause/resume, duplicate detection, Wi-Fi waiting feedback, offline playback, and cache management
 - Audio controls: 128/192/320 kbps or original quality on mobile data, equalizer presets, custom adjustment, and ReplayGain normalization
 - Appearance: Material 3, screen transitions, artwork placeholders, light/dark/system themes, and edge-to-edge system bars
-- Updates: optional checks against GitHub Releases
+- Updates: optional GitHub Releases checks, 24-hour automatic-check throttling, and release notes
 
 ## Recent changes
 
@@ -90,6 +90,37 @@ On Windows, the following command can start a visible Android emulator, build, i
 ```
 
 You can also double-click `start-android-test.bat`. The script never enters or stores music-server credentials.
+
+### Release signing
+
+Release builds never fall back to the debug certificate or produce an unsigned package. Provide these four Gradle properties or environment variables before building:
+
+- `CLEARTUNE_RELEASE_STORE_FILE`
+- `CLEARTUNE_RELEASE_STORE_PASSWORD`
+- `CLEARTUNE_RELEASE_KEY_ALIAS`
+- `CLEARTUNE_RELEASE_KEY_PASSWORD`
+
+Never commit the key or its passwords. Run `./gradlew assembleRelease bundleRelease` after configuring them.
+
+### Automated GitHub Releases
+
+`.github/workflows/release.yml` runs tests and Lint for every pushed `v*` tag, signs the APK/AAB with the production certificate, creates `update.json` and SHA-256 files, and publishes a GitHub Release.
+
+Configure these repository secrets under **Settings → Secrets and variables → Actions**:
+
+- `CLEARTUNE_RELEASE_KEYSTORE_BASE64`: Base64 content of the production keystore
+- `CLEARTUNE_RELEASE_STORE_PASSWORD`
+- `CLEARTUNE_RELEASE_KEY_ALIAS`
+- `CLEARTUNE_RELEASE_KEY_PASSWORD`
+
+The tag must exactly match `versionName` in `app/build.gradle.kts`. For example:
+
+```bash
+git tag -a v1.0.0 -m "ClearTune 1.0.0"
+git push origin v1.0.0
+```
+
+APK and AAB files stay out of Git history and are attached to GitHub Releases. The app checks the public `releases/latest` endpoint, treats `versionCode` in `update.json` as authoritative, and falls back to semantic tags for older releases without a manifest.
 
 ## Usage
 

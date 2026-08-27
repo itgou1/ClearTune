@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import com.cleartune.app.displayableArtworkId
 import com.cleartune.core.database.ClearTuneDatabase
 import com.cleartune.core.database.PendingMutationEntity
 import com.cleartune.core.database.PlayEventEntity
@@ -95,7 +96,7 @@ class PlaybackRepository @Inject constructor(
         return PlaybackUrls(
             streams = streams,
             artwork = songs.mapNotNull { song ->
-                song.coverArtId?.let { song.id to remote.coverArtUrl(it, 768) }
+                song.coverArtId.displayableArtworkId()?.let { song.id to remote.coverArtUrl(it, 768) }
             }.toMap(),
         )
     }

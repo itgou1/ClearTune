@@ -15,6 +15,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +38,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -79,6 +83,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -112,6 +117,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.text.KeyboardActions
@@ -124,6 +130,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -135,6 +142,7 @@ import androidx.navigation.NavType
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
+import coil3.request.crossfade
 import com.cleartune.app.library.DetailUiState
 import com.cleartune.app.library.LibraryUiState
 import com.cleartune.app.library.FolderUiState
@@ -159,6 +167,7 @@ private data class MainDestination(
 
 private val mainDestinations = listOf(
     MainDestination("home", R.string.nav_home, Icons.Rounded.Home),
+    MainDestination("search", R.string.nav_search, Icons.Rounded.Search),
     MainDestination("library", R.string.nav_library, Icons.Rounded.LibraryMusic),
     MainDestination("my", R.string.nav_my, Icons.Rounded.Person),
 )
@@ -166,6 +175,7 @@ private val mainDestinations = listOf(
 @Composable
 fun ClearTuneApp(
     profile: ServerProfile,
+    restoredOffline: Boolean,
     viewModel: MusicViewModel,
     playerViewModel: PlayerViewModel,
     downloadViewModel: DownloadViewModel,
@@ -184,12 +194,21 @@ fun ClearTuneApp(
     val playerState by playerViewModel.state.collectAsStateWithLifecycle()
     val playerMessage by playerViewModel.message.collectAsStateWithLifecycle()
     val downloads by downloadViewModel.downloads.collectAsStateWithLifecycle()
+    val updateState by settingsViewModel.updateState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
     val showNavigationBar = currentRoute in mainDestinations.map { it.route }
     val showMiniPlayer = playerState.currentSong != null && currentRoute != "now-playing"
     val viewDownloadsLabel = stringResource(R.string.view_downloads)
+    val viewUpdateLabel = stringResource(R.string.update_available_action)
+    val updateAvailableMessage = updateState.release
+        ?.takeIf { it.newer && !updateState.ignored }
+        ?.let { stringResource(R.string.update_available, it.version) }
+    val offlineSessionMessage = stringResource(R.string.offline_session_restored)
+    LaunchedEffect(restoredOffline) {
+        if (restoredOffline) snackbarHostState.showSnackbar(offlineSessionMessage)
+    }
     LaunchedEffect(playerMessage) {
         playerMessage?.let {
             snackbarHostState.showSnackbar(it)
@@ -200,6 +219,17 @@ fun ClearTuneApp(
         actionMessage?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.consumeActionMessage()
+        }
+    }
+    LaunchedEffect(updateAvailableMessage) {
+        updateAvailableMessage?.let { message ->
+            val result = snackbarHostState.showSnackbar(
+                message = message,
+                actionLabel = viewUpdateLabel,
+            )
+            if (result == SnackbarResult.ActionPerformed && currentRoute != "settings") {
+                navController.navigate("settings")
+            }
         }
     }
     LaunchedEffect(downloadViewModel) {
@@ -259,9 +289,6 @@ fun ClearTuneApp(
                                     musicViewModel = viewModel,
                                     onOpen = { navController.navigate("now-playing") },
                                     onToggle = playerViewModel::togglePlayPause,
-                                    onQueue = {
-                                        if (currentRoute != "queue") navController.navigate("queue")
-                                    },
                                 )
                             }
                         }
@@ -368,19 +395,15 @@ fun ClearTuneApp(
                     recommendations = recommendations,
                     onDiscovery = { navController.navigate("discovery") },
                     onRefreshRecommendations = viewModel::refreshRecommendations,
-                    onShuffleAll = {
-                        val shuffled = libraryState.songs.shuffled()
-                        if (shuffled.isNotEmpty()) playerViewModel.play(shuffled, 0)
-                    },
                 )
             }
             composable("search") {
                 SearchScreen(
                     state = searchState,
                     recentSearches = recentSearches,
+                    genres = genres,
                     playlists = libraryState.playlists,
                     viewModel = viewModel,
-                    onBack = navController::popBackStack,
                     onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
                     onArtist = { navController.navigate("artist/${Uri.encode(it)}") },
                     onPlay = playerViewModel::play,
@@ -398,7 +421,6 @@ fun ClearTuneApp(
                     onPlay = playerViewModel::play,
                     onPlayNext = playerViewModel::playNext,
                     onDownload = { downloadViewModel.download(listOf(it)) },
-                    onSearch = { navController.navigate("search") },
                 )
             }
             composable("my") {
@@ -489,12 +511,28 @@ fun ClearTuneApp(
                     profile = profile,
                     viewModel = settingsViewModel,
                     onBack = navController::popBackStack,
+                    onEqualizer = { navController.navigate("equalizer") },
                     onLogout = onLogout,
                 )
             }
             composable("discovery") {
                 DiscoveryScreen(
                     shelves = recommendations,
+                    viewModel = viewModel,
+                    onRefresh = viewModel::refreshRecommendations,
+                    onPlay = playerViewModel::play,
+                    onShelf = { navController.navigate("recommendation/${Uri.encode(it)}") },
+                    onBack = navController::popBackStack,
+                )
+            }
+            composable(
+                route = "recommendation/{id}",
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id").orEmpty()
+                RecommendationShelfScreen(
+                    shelf = recommendations.firstOrNull { it.id == id },
+                    viewModel = viewModel,
                     onRefresh = viewModel::refreshRecommendations,
                     onPlay = playerViewModel::play,
                     onFavorite = viewModel::toggleSongFavorite,
@@ -562,8 +600,8 @@ private fun HomeScreen(
     recommendations: List<RecommendationShelf>,
     onDiscovery: () -> Unit,
     onRefreshRecommendations: () -> Unit,
-    onShuffleAll: () -> Unit,
 ) {
+    val isLibraryEmpty = state.albums.isEmpty() && state.artists.isEmpty() && state.songs.isEmpty()
     val newTaste = recommendations.firstOrNull { it.id == "new-taste" }
         ?: recommendations.firstOrNull { it.id == "random" }
     val frequent = recommendations.firstOrNull { it.id == "frequent" }
@@ -583,15 +621,21 @@ private fun HomeScreen(
                     .padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = stringResource(R.string.home_greeting, profile.username),
                         style = MaterialTheme.typography.headlineSmall,
                     )
-                    Text(
-                        text = profile.serverType,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                }
+                Surface(
+                    modifier = Modifier.size(44.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.AccountCircle, contentDescription = stringResource(R.string.nav_my))
+                    }
                 }
             }
         }
@@ -599,14 +643,12 @@ private fun HomeScreen(
             DiscoveryHeroCard(
                 songs = heroSongs,
                 viewModel = viewModel,
-                shuffleEnabled = state.songs.isNotEmpty(),
                 onDiscovery = onDiscovery,
-                onShuffleAll = onShuffleAll,
             )
         }
-        if (state.isRefreshing && state.albums.isEmpty()) {
+        if ((state.isInitializing || state.isRefreshing) && isLibraryEmpty) {
             item { LoadingBlock() }
-        } else if (state.albums.isEmpty() && state.songs.isEmpty()) {
+        } else if (isLibraryEmpty) {
             item {
                 EmptyBlock(
                     text = state.errorMessage ?: stringResource(R.string.empty_library),
@@ -615,6 +657,21 @@ private fun HomeScreen(
                 )
             }
         } else {
+            item {
+                HomeSectionHeader(
+                    title = stringResource(R.string.home_listen_today),
+                    subtitle = stringResource(R.string.home_listen_today_subtitle),
+                )
+            }
+            item {
+                RecommendationSceneCards(
+                    newTaste = newTaste,
+                    frequent = frequent,
+                    viewModel = viewModel,
+                    onRefresh = onRefreshRecommendations,
+                    onPlay = onPlay,
+                )
+            }
             if (state.albums.isNotEmpty()) {
                 item {
                     HomeSectionHeader(
@@ -630,22 +687,6 @@ private fun HomeScreen(
                     )
                 }
             }
-            item {
-                HomeSectionHeader(
-                    title = stringResource(R.string.home_listen_today),
-                    subtitle = stringResource(R.string.home_listen_today_subtitle),
-                )
-            }
-            item {
-                RecommendationSceneCards(
-                    newTaste = newTaste,
-                    frequent = frequent,
-                    viewModel = viewModel,
-                    onDiscovery = onDiscovery,
-                    onRefresh = onRefreshRecommendations,
-                    onPlay = onPlay,
-                )
-            }
         }
     }
 }
@@ -654,9 +695,7 @@ private fun HomeScreen(
 private fun DiscoveryHeroCard(
     songs: List<Song>,
     viewModel: MusicViewModel,
-    shuffleEnabled: Boolean,
     onDiscovery: () -> Unit,
-    onShuffleAll: () -> Unit,
 ) {
     val gradient = Brush.linearGradient(
         listOf(
@@ -674,25 +713,11 @@ private fun DiscoveryHeroCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(gradient)
-                .padding(18.dp),
+                .padding(horizontal = 18.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Surface(
-                    modifier = Modifier.size(42.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Rounded.Explore,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
                 Text(
                     stringResource(R.string.discover_music),
                     style = MaterialTheme.typography.titleLarge,
@@ -706,20 +731,22 @@ private fun DiscoveryHeroCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                RecommendationCoverMosaic(songs = songs, viewModel = viewModel)
-                Spacer(Modifier.height(8.dp))
-                FilledIconButton(
-                    onClick = onShuffleAll,
-                    enabled = shuffleEnabled,
-                ) {
+                Spacer(Modifier.height(18.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        stringResource(R.string.go_discover),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                     Icon(
-                        Icons.Rounded.Shuffle,
-                        contentDescription = stringResource(R.string.shuffle_all),
+                        Icons.Rounded.ChevronRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
+            RecommendationCoverMosaic(songs = songs, viewModel = viewModel)
         }
     }
 }
@@ -729,7 +756,6 @@ private fun RecommendationSceneCards(
     newTaste: RecommendationShelf?,
     frequent: RecommendationShelf?,
     viewModel: MusicViewModel,
-    onDiscovery: () -> Unit,
     onRefresh: () -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
 ) {
@@ -751,11 +777,11 @@ private fun RecommendationSceneCards(
             ),
             songs = newTaste?.songs.orEmpty(),
             viewModel = viewModel,
-            actionIcon = Icons.Rounded.Refresh,
-            actionDescription = stringResource(R.string.change_batch),
-            actionEnabled = true,
-            onAction = onRefresh,
-            onClick = onDiscovery,
+            actionIcon = Icons.Rounded.PlayArrow,
+            actionDescription = stringResource(R.string.play_action),
+            actionEnabled = !newTaste?.songs.isNullOrEmpty(),
+            onAction = { newTaste?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
+            secondaryAction = onRefresh,
         )
         RecommendationSceneCard(
             modifier = Modifier.weight(1f),
@@ -773,7 +799,6 @@ private fun RecommendationSceneCards(
             actionDescription = stringResource(R.string.play_action),
             actionEnabled = !frequent?.songs.isNullOrEmpty(),
             onAction = { frequent?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
-            onClick = onDiscovery,
         )
     }
 }
@@ -789,19 +814,16 @@ private fun RecommendationSceneCard(
     actionDescription: String,
     actionEnabled: Boolean,
     onAction: () -> Unit,
-    onClick: () -> Unit,
+    secondaryAction: (() -> Unit)? = null,
 ) {
     ElevatedCard(
-        onClick = onClick,
-        modifier = modifier.height(228.dp),
+        modifier = modifier.height(218.dp),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(14.dp),
         ) {
-            RecommendationCoverPair(songs = songs, viewModel = viewModel)
-            Spacer(Modifier.height(14.dp))
             Text(
                 title,
                 style = MaterialTheme.typography.titleMedium,
@@ -811,16 +833,28 @@ private fun RecommendationSceneCard(
             Spacer(Modifier.height(3.dp))
             Text(
                 description,
-                modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            Spacer(Modifier.height(10.dp))
+            RecommendationCoverPair(songs = songs, viewModel = viewModel)
+            Spacer(Modifier.weight(1f))
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (secondaryAction != null) {
+                    TextButton(onClick = secondaryAction) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(stringResource(R.string.change_batch))
+                    }
+                } else {
+                    Spacer(Modifier.width(1.dp))
+                }
                 FilledTonalIconButton(onClick = onAction, enabled = actionEnabled) {
                     Icon(actionIcon, contentDescription = actionDescription)
                 }
@@ -871,7 +905,7 @@ private fun RecommendationCoverCell(
     modifier: Modifier,
 ) {
     if (song != null) {
-        CoverArt(song.coverArtId, song.title, viewModel, modifier)
+        CoverArt(song.displayCoverArtId(), song.title, viewModel, modifier, fallbackSeed = song.id)
     } else {
         Surface(
             modifier = modifier,
@@ -917,17 +951,20 @@ private fun MyScreen(
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         item {
-            ClearTuneGradientHeader(
+            ClearTunePageHeader(title = stringResource(R.string.nav_my))
+            ElevatedCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                    .padding(horizontal = 20.dp),
             ) {
-                Text(stringResource(R.string.nav_my), style = MaterialTheme.typography.labelLarge)
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Icon(
                         Icons.Rounded.AccountCircle,
                         contentDescription = null,
-                        modifier = Modifier.size(68.dp),
+                        modifier = Modifier.size(60.dp),
                         tint = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.width(14.dp))
@@ -957,21 +994,27 @@ private fun MyScreen(
                 }
             }
         }
-        item { MySectionTitle(stringResource(R.string.my_music)) }
         item {
-            MyEntry(
-                icon = Icons.Rounded.Favorite,
-                title = stringResource(R.string.favorites),
-                subtitle = stringResource(R.string.liked_song_count, likedCount),
-                onClick = onFavorites,
-            )
-        }
-        item { MySectionTitle(stringResource(R.string.playlists)) }
-        items(playlists, key = Playlist::id) { playlist ->
-            PlaylistRow(playlist = playlist, viewModel = viewModel, onClick = onPlaylist)
-        }
-        item(key = "create-playlist") {
-            NewPlaylistRow(onClick = { showCreatePlaylist = true })
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                MyMetricCard(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Rounded.Favorite,
+                    value = likedCount.toString(),
+                    label = stringResource(R.string.favorites),
+                    onClick = onFavorites,
+                )
+                MyMetricCard(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                    value = playlists.size.toString(),
+                    label = stringResource(R.string.playlists),
+                )
+            }
         }
         item { MySectionTitle(stringResource(R.string.offline_and_downloads)) }
         item {
@@ -1005,6 +1048,13 @@ private fun MyScreen(
                 }
             }
         }
+        item { MySectionTitle(stringResource(R.string.playlists)) }
+        items(playlists, key = Playlist::id) { playlist ->
+            PlaylistRow(playlist = playlist, viewModel = viewModel, onClick = onPlaylist)
+        }
+        item(key = "create-playlist") {
+            NewPlaylistRow(onClick = { showCreatePlaylist = true })
+        }
     }
 
     if (showCreatePlaylist) {
@@ -1033,6 +1083,38 @@ private fun MyScreen(
                 TextButton(onClick = { showCreatePlaylist = false }) { Text(stringResource(R.string.cancel)) }
             },
         )
+    }
+}
+
+@Composable
+private fun MyMetricCard(
+    modifier: Modifier,
+    icon: ImageVector,
+    value: String,
+    label: String,
+    onClick: (() -> Unit)? = null,
+) {
+    ElevatedCard(
+        modifier = modifier.then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            ClearTuneIconTile(icon)
+            Column {
+                Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 
@@ -1182,75 +1264,88 @@ private fun FavoriteSongsScreen(
 private fun SearchScreen(
     state: SearchUiState,
     recentSearches: List<String>,
+    genres: List<String>,
     playlists: List<Playlist>,
     viewModel: MusicViewModel,
-    onBack: () -> Unit,
     onAlbum: (String) -> Unit,
     onArtist: (String) -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
     onPlaylist: (String) -> Unit,
 ) {
+    val suggestions = genres.ifEmpty {
+        listOf(
+            stringResource(R.string.genre_pop),
+            stringResource(R.string.genre_rock),
+            stringResource(R.string.genre_jazz),
+            stringResource(R.string.genre_classical),
+        )
+    }
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding(),
-        contentPadding = PaddingValues(16.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         item {
-            ClearTuneGradientHeader(
-                modifier = Modifier.padding(bottom = 12.dp),
-                contentPadding = PaddingValues(16.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FilledTonalIconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    Text(text = stringResource(R.string.nav_search), style = MaterialTheme.typography.headlineSmall)
-                }
-                OutlinedTextField(
-                    value = state.query,
-                    onValueChange = viewModel::updateSearchQuery,
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text(stringResource(R.string.search_hint)) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { viewModel.submitSearch() }),
-                )
-            }
+            ClearTunePageHeader(title = stringResource(R.string.nav_search))
+            OutlinedTextField(
+                value = state.query,
+                onValueChange = viewModel::updateSearchQuery,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                shape = MaterialTheme.shapes.large,
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                placeholder = { Text(stringResource(R.string.search_hint)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { viewModel.submitSearch() }),
+            )
         }
         when {
-            state.query.isBlank() && recentSearches.isEmpty() -> item {
-                EmptyBlock(stringResource(R.string.search_start))
-            }
             state.query.isBlank() -> {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        SectionTitle(stringResource(R.string.recent_searches))
-                        TextButton(onClick = viewModel::clearRecentSearches) {
-                            Text(stringResource(R.string.clear_action))
+                if (recentSearches.isNotEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            SectionTitle(stringResource(R.string.recent_searches))
+                            TextButton(onClick = viewModel::clearRecentSearches) {
+                                Text(stringResource(R.string.clear_action))
+                            }
+                        }
+                    }
+                    items(recentSearches, key = { "recent-$it" }) { query ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.updateSearchQuery(query) }
+                                .padding(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AssistChip(
+                                onClick = { viewModel.updateSearchQuery(query) },
+                                label = { Text(query) },
+                            )
+                            TextButton(onClick = { viewModel.removeRecentSearch(query) }) {
+                                Text(stringResource(R.string.remove_action))
+                            }
                         }
                     }
                 }
-                items(recentSearches, key = { "recent-$it" }) { query ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.updateSearchQuery(query) },
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AssistChip(
-                            onClick = { viewModel.updateSearchQuery(query) },
-                            label = { Text(query) },
-                        )
-                        TextButton(onClick = { viewModel.removeRecentSearch(query) }) {
-                            Text(stringResource(R.string.remove_action))
+                if (suggestions.isNotEmpty()) {
+                    item { SectionTitle(stringResource(R.string.search_recommended)) }
+                    item {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(suggestions.take(8), key = { "suggestion-$it" }) { genre ->
+                                FilterChip(
+                                    selected = false,
+                                    onClick = { viewModel.updateSearchQuery(genre) },
+                                    label = { Text(genre) },
+                                )
+                            }
                         }
                     }
                 }
@@ -1322,7 +1417,6 @@ private fun LibraryScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onPlayNext: (Song) -> Unit,
     onDownload: (Song) -> Unit,
-    onSearch: () -> Unit,
 ) {
     val labels = listOf(
         stringResource(R.string.songs),
@@ -1330,37 +1424,18 @@ private fun LibraryScreen(
         stringResource(R.string.artists),
         stringResource(R.string.genres),
     )
-    var savedSelectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var savedSelectedTab by rememberSaveable { mutableIntStateOf(1) }
     val selectedTab = savedSelectedTab.coerceIn(labels.indices)
     LaunchedEffect(savedSelectedTab, labels.size) {
         if (savedSelectedTab !in labels.indices) savedSelectedTab = 0
     }
     Column(Modifier.fillMaxSize()) {
-        ClearTuneGradientHeader(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
+        ClearTunePageHeader(
+            title = stringResource(R.string.nav_library),
+            subtitle = stringResource(R.string.library_subtitle),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
-                    Text(stringResource(R.string.nav_library), style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        stringResource(R.string.library_subtitle),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Row {
-                    FilledTonalIconButton(onClick = onRefresh) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.refresh))
-                    }
-                    FilledTonalIconButton(onClick = onSearch) {
-                        Icon(Icons.Rounded.Search, contentDescription = stringResource(R.string.nav_search))
-                    }
-                }
+            FilledTonalIconButton(onClick = onRefresh) {
+                Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.refresh))
             }
         }
         PrimaryScrollableTabRow(selectedTabIndex = selectedTab) {
@@ -1373,7 +1448,8 @@ private fun LibraryScreen(
             }
         }
         val contentState = when {
-            state.isRefreshing && state.albums.isEmpty() -> -2
+            (state.isInitializing || state.isRefreshing) &&
+                state.albums.isEmpty() && state.artists.isEmpty() && state.songs.isEmpty() -> -2
             state.albums.isEmpty() && state.artists.isEmpty() && state.songs.isEmpty() -> -1
             else -> selectedTab
         }
@@ -1413,15 +1489,45 @@ private fun LibraryScreen(
                     action = stringResource(R.string.refresh),
                     onAction = onRefresh,
                 )
-                0 -> LazyColumn(Modifier.fillMaxSize()) {
+                0 -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = 10.dp, bottom = 14.dp),
+                ) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    stringResource(R.string.song_count, state.songs.size),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    stringResource(R.string.library_songs_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            FilledTonalButton(
+                                onClick = { if (state.songs.isNotEmpty()) onPlay(state.songs.shuffled(), 0) },
+                                enabled = state.songs.isNotEmpty(),
+                            ) {
+                                Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(stringResource(R.string.mode_shuffle))
+                            }
+                        }
+                    }
                     items(state.songs, key = { it.id }) { song ->
-                        SongRow(
+                        LibrarySongRow(
                             song = song,
+                            viewModel = viewModel,
                             onClick = { onPlay(state.songs, state.songs.indexOf(song)) },
-                            showTrackNumber = false,
-                            showFileType = true,
-                            showDuration = false,
-                            trailingContent = {
+                            actions = {
                                 LibrarySongActions(
                                     song = song,
                                     playlists = state.playlists,
@@ -1437,8 +1543,16 @@ private fun LibraryScreen(
                         )
                     }
                 }
-                1 -> LazyColumn(Modifier.fillMaxSize()) {
-                    items(state.albums, key = { it.id }) { AlbumListRow(it, viewModel, onAlbum) }
+                1 -> LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    gridItems(state.albums, key = { it.id }) { album ->
+                        AlbumGridCard(album = album, viewModel = viewModel, onClick = onAlbum)
+                    }
                 }
                 2 -> LazyColumn(Modifier.fillMaxSize()) {
                     items(state.artists, key = { it.id }) { ArtistRow(it, viewModel, onArtist) }
@@ -1459,6 +1573,56 @@ private fun LibraryScreen(
             }
         }
     }
+}
+
+@Composable
+private fun LibrarySongRow(
+    song: Song,
+    viewModel: MusicViewModel,
+    onClick: () -> Unit,
+    actions: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 20.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CoverArt(
+            id = song.displayCoverArtId(),
+            description = song.title,
+            viewModel = viewModel,
+            modifier = Modifier.size(50.dp),
+            fallbackSeed = song.id,
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp),
+        ) {
+            Text(
+                song.title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium,
+            )
+            val subtitle = listOfNotNull(song.displayArtistName(), song.displayAlbumName()).joinToString(" · ")
+            if (subtitle.isNotEmpty() || !song.suffix.isNullOrBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
+                if (subtitle.isNotEmpty()) Text(
+                    subtitle,
+                    modifier = Modifier.weight(1f, fill = false),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                song.suffix?.takeIf(String::isNotBlank)?.let { SongFormatBadge(it) }
+            }
+        }
+        actions()
+    }
+    HorizontalDivider(modifier = Modifier.padding(start = 82.dp), color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 @Composable
@@ -1530,7 +1694,7 @@ private fun AlbumDetailScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onDownload: (List<Song>) -> Unit,
 ) {
-    DetailScaffold(title = state.album?.name.orEmpty(), onBack = onBack) {
+    DetailScaffold(title = "", onBack = onBack) {
         if (state.isLoading) {
             item { LoadingBlock() }
         } else {
@@ -1582,7 +1746,7 @@ private fun ArtistDetailScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onDownload: (List<Song>) -> Unit,
 ) {
-    DetailScaffold(title = state.artist?.name.orEmpty(), onBack = onBack) {
+    DetailScaffold(title = "", onBack = onBack) {
         if (state.isLoading) item { LoadingBlock() } else {
             state.artist?.let { artist ->
                 item {
@@ -1782,7 +1946,9 @@ private fun PlaylistDetailScreen(
                         ) {
                             Column {
                                 Text(song.title)
-                                Text(song.artistName, style = MaterialTheme.typography.bodySmall)
+                                song.displayArtistName()?.let {
+                                    Text(it, style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
@@ -1822,11 +1988,14 @@ private fun PlaylistDetailScreen(
 @Composable
 private fun DiscoveryScreen(
     shelves: List<RecommendationShelf>,
+    viewModel: MusicViewModel,
     onRefresh: () -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
-    onFavorite: (Song) -> Unit,
+    onShelf: (String) -> Unit,
     onBack: () -> Unit,
 ) {
+    var selectedShelfId by rememberSaveable { mutableStateOf<String?>(null) }
+    val visibleShelves = selectedShelfId?.let { selected -> shelves.filter { it.id == selected } } ?: shelves
     Scaffold(
         topBar = {
             ClearTuneTopAppBar(
@@ -1845,29 +2014,177 @@ private fun DiscoveryScreen(
                 .fillMaxSize()
                 .padding(padding),
             contentPadding = PaddingValues(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (shelves.isEmpty()) {
-                item { EmptyBlock(stringResource(R.string.discovery_empty)) }
+            item {
+                Text(
+                    text = stringResource(R.string.discover_page_subtitle),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            shelves.forEach { shelf ->
+            if (shelves.isNotEmpty()) {
+                item {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = selectedShelfId == null,
+                                onClick = { selectedShelfId = null },
+                                label = { Text(stringResource(R.string.all)) },
+                            )
+                        }
+                        items(shelves, key = { "filter-${it.id}" }) { shelf ->
+                            FilterChip(
+                                selected = selectedShelfId == shelf.id,
+                                onClick = { selectedShelfId = shelf.id },
+                                label = { Text(shelf.title) },
+                            )
+                        }
+                    }
+                }
+            }
+            if (shelves.isEmpty()) {
+                item {
+                    ClearTuneEmptyState(
+                        title = stringResource(R.string.discover_music),
+                        description = stringResource(R.string.discovery_empty),
+                        icon = Icons.Rounded.Explore,
+                    )
+                }
+            }
+            items(visibleShelves, key = RecommendationShelf::id) { shelf ->
+                RecommendationShelfCard(
+                    shelf = shelf,
+                    viewModel = viewModel,
+                    onOpen = { onShelf(shelf.id) },
+                    onPlay = { if (shelf.songs.isNotEmpty()) onPlay(shelf.songs, 0) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecommendationShelfCard(
+    shelf: RecommendationShelf,
+    viewModel: MusicViewModel,
+    onOpen: () -> Unit,
+    onPlay: () -> Unit,
+) {
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(shelf.title, style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        shelf.reason,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                TextButton(onClick = onOpen) {
+                    Text(stringResource(R.string.view_all))
+                    Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                repeat(4) { index ->
+                    RecommendationCoverCell(
+                        song = shelf.songs.getOrNull(index),
+                        viewModel = viewModel,
+                        modifier = Modifier.size(64.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                FilledIconButton(onClick = onPlay, enabled = shelf.songs.isNotEmpty()) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = stringResource(R.string.play_all))
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RecommendationShelfScreen(
+    shelf: RecommendationShelf?,
+    viewModel: MusicViewModel,
+    onRefresh: () -> Unit,
+    onPlay: (List<Song>, Int) -> Unit,
+    onFavorite: (Song) -> Unit,
+    onBack: () -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            ClearTuneTopAppBar(
+                title = shelf?.title ?: stringResource(R.string.discover_music),
+                onBack = onBack,
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(bottom = 24.dp),
+        ) {
+            if (shelf == null) {
+                item {
+                    ClearTuneEmptyState(
+                        title = stringResource(R.string.discover_music),
+                        description = stringResource(R.string.discovery_empty),
+                        icon = Icons.Rounded.Explore,
+                    )
+                }
+            } else {
                 item {
                     ClearTuneGradientHeader(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-                        contentPadding = PaddingValues(14.dp),
+                        contentPadding = PaddingValues(18.dp),
                     ) {
-                        Text(shelf.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                        RecommendationCoverPair(songs = shelf.songs, viewModel = viewModel)
+                        Text(shelf.title, style = MaterialTheme.typography.headlineSmall)
+                        Text(shelf.reason, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
-                            shelf.reason,
+                            stringResource(R.string.recommendation_song_count, shelf.songs.size),
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium,
                         )
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Button(
+                            onClick = { if (shelf.songs.isNotEmpty()) onPlay(shelf.songs, 0) },
+                            enabled = shelf.songs.isNotEmpty(),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.play_all))
+                        }
+                        OutlinedButton(onClick = onRefresh, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.change_batch))
+                        }
+                    }
                 }
-                items(shelf.songs, key = { "${shelf.id}-${it.id}" }) { song ->
+                items(shelf.songs, key = Song::id) { song ->
                     SongRow(
-                        song,
+                        song = song,
                         onClick = { onPlay(shelf.songs, shelf.songs.indexOf(song)) },
                         onFavorite = { onFavorite(song) },
+                        showTrackNumber = false,
                     )
                 }
             }
@@ -1894,7 +2211,7 @@ private fun CompactSongShelf(
                     modifier = Modifier.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    CoverArt(song.coverArtId, song.title, viewModel, Modifier.size(66.dp))
+                    CoverArt(song.displayCoverArtId(), song.title, viewModel, Modifier.size(66.dp), fallbackSeed = song.id)
                     Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -1903,20 +2220,24 @@ private fun CompactSongShelf(
                             overflow = TextOverflow.Ellipsis,
                             fontWeight = FontWeight.Medium,
                         )
-                        Text(
-                            song.artistName,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            song.albumName,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        song.displayArtistName()?.let {
+                            Text(
+                                it,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        song.displayAlbumName()?.let {
+                            Text(
+                                it,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -1961,37 +2282,36 @@ private fun DetailHeader(
     onFavorite: (() -> Unit)? = null,
     onEditTitle: (() -> Unit)? = null,
 ) {
-    ClearTuneGradientHeader(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        contentPadding = PaddingValues(20.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
     ) {
-        Column(
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            CoverArt(coverArtId, title, viewModel, Modifier.size(220.dp), requestSize = 768)
+        }
+        Spacer(Modifier.height(18.dp))
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            CoverArt(coverArtId, title, viewModel, Modifier.size(220.dp))
-            Spacer(Modifier.height(16.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                onEditTitle?.let {
-                    FilledTonalIconButton(onClick = it) {
-                        Icon(Icons.Rounded.Edit, contentDescription = stringResource(R.string.rename_playlist))
-                    }
+            Text(
+                title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            onEditTitle?.let {
+                FilledTonalIconButton(onClick = it) {
+                    Icon(Icons.Rounded.Edit, contentDescription = stringResource(R.string.rename_playlist))
                 }
             }
-            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
             onFavorite?.let {
                 FilledTonalIconButton(onClick = it) {
                     Icon(
-                        Icons.Rounded.Favorite,
+                        if (favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                         contentDescription = stringResource(
                             if (favorite) R.string.unfavorite_action else R.string.favorite_action,
                         ),
@@ -2000,6 +2320,7 @@ private fun DetailHeader(
                 }
             }
         }
+        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -2065,7 +2386,14 @@ private fun AlbumShelf(
                     .width(150.dp)
                     .clickable { onAlbum(album.id) },
             ) {
-                CoverArt(album.coverArtId, album.name, viewModel, Modifier.size(150.dp))
+                CoverArt(
+                    album.coverArtId,
+                    album.name,
+                    viewModel,
+                    Modifier.size(150.dp),
+                    fallbackSeed = album.id,
+                    requestSize = 512,
+                )
                 Spacer(Modifier.height(9.dp))
                 Text(album.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
                 Text(
@@ -2143,6 +2471,44 @@ private fun AlbumListRow(album: Album, viewModel: MusicViewModel, onClick: (Stri
 }
 
 @Composable
+private fun AlbumGridCard(
+    album: Album,
+    viewModel: MusicViewModel,
+    onClick: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick(album.id) },
+    ) {
+        CoverArt(
+            id = album.coverArtId,
+            description = album.name,
+            viewModel = viewModel,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f),
+            fallbackSeed = album.id,
+            requestSize = 512,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            album.name,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            album.artistName,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun ArtistRow(artist: Artist, viewModel: MusicViewModel, onClick: (String) -> Unit) {
     MediaRow(
         title = artist.name,
@@ -2211,9 +2577,10 @@ private fun SongRow(
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = FontWeight.Medium,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "${song.artistName} · ${song.albumName}",
+            val subtitle = listOfNotNull(song.displayArtistName(), song.displayAlbumName()).joinToString(" · ")
+            if (subtitle.isNotEmpty() || showFileType && !fileType.isNullOrBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
+                if (subtitle.isNotEmpty()) Text(
+                    subtitle,
                     modifier = Modifier.weight(1f, fill = false),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -2441,8 +2808,8 @@ private fun SongDetailsDialog(song: Song, onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(song.title, style = MaterialTheme.typography.titleMedium)
-                Text(stringResource(R.string.song_detail_artist, song.artistName))
-                Text(stringResource(R.string.song_detail_album, song.albumName))
+                song.displayArtistName()?.let { Text(stringResource(R.string.song_detail_artist, it)) }
+                song.displayAlbumName()?.let { Text(stringResource(R.string.song_detail_album, it)) }
                 Text(stringResource(R.string.song_detail_duration, formatDuration(song.durationSeconds)))
                 Text(
                     stringResource(
@@ -2498,10 +2865,12 @@ internal fun CoverArt(
     description: String,
     viewModel: MusicViewModel,
     modifier: Modifier = Modifier,
-    fallbackIcon: ImageVector = Icons.Rounded.Album,
+    fallbackSeed: String = description,
+    requestSize: Int = 192,
 ) {
-    val url by produceState<String?>(initialValue = null, id) {
-        value = id?.let { viewModel.coverArtUrl(it) }
+    val displayableId = id.displayableArtworkId()
+    val url by produceState<String?>(initialValue = null, displayableId, requestSize) {
+        value = displayableId?.let { viewModel.coverArtUrl(it, requestSize) }
     }
     val context = LocalPlatformContext.current
     Box(
@@ -2510,22 +2879,26 @@ internal fun CoverArt(
             .clip(RoundedCornerShape(12.dp))
             .semantics { contentDescription = description },
     ) {
-        ClearTuneArtworkPlaceholder(
-            icon = fallbackIcon,
+        val fallbackResource = remember(fallbackSeed) { clearTuneFallbackCover(fallbackSeed) }
+        val fallbackPainter = painterResource(fallbackResource)
+        AsyncImage(
+            model = url?.let {
+                ImageRequest.Builder(context)
+                    .data(it)
+                    .size(requestSize)
+                    .memoryCacheKey("cover-$displayableId-$requestSize")
+                    .diskCacheKey("cover-$displayableId-$requestSize")
+                    .crossfade(false)
+                    .build()
+            },
+            placeholder = fallbackPainter,
+            error = fallbackPainter,
+            fallback = fallbackPainter,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            filterQuality = if (requestSize <= 384) FilterQuality.Low else FilterQuality.Medium,
             modifier = Modifier.fillMaxSize(),
         )
-        if (url != null) {
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(url)
-                    .memoryCacheKey("cover-$id")
-                    .diskCacheKey("cover-$id")
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
     }
 }
 
@@ -2542,7 +2915,6 @@ private fun PlaylistCover(
             description = description,
             viewModel = viewModel,
             modifier = modifier,
-            fallbackIcon = Icons.AutoMirrored.Rounded.QueueMusic,
         )
     } else {
         Box(
@@ -2557,6 +2929,33 @@ private fun PlaylistCover(
             )
         }
     }
+}
+
+private val clearTuneFallbackCovers = intArrayOf(
+    R.drawable.cleartune_cover_horizon,
+    R.drawable.cleartune_cover_orb,
+    R.drawable.cleartune_cover_ribbon,
+    R.drawable.cleartune_cover_portal,
+)
+
+internal fun clearTuneFallbackCover(seed: String): Int =
+    clearTuneFallbackCovers[(seed.hashCode() and Int.MAX_VALUE) % clearTuneFallbackCovers.size]
+
+private fun String.knownMetadataOrNull(): String? = trim().takeUnless { value ->
+    value.isBlank() ||
+        value.contains("unknown", ignoreCase = true) ||
+        value.contains("未知", ignoreCase = true) ||
+        value.equals("n/a", ignoreCase = true) ||
+        value.equals("null", ignoreCase = true)
+}
+
+internal fun Song.displayArtistName(): String? = artistName.knownMetadataOrNull()
+
+internal fun Song.displayAlbumName(): String? = albumName.knownMetadataOrNull()
+
+internal fun Song.displayCoverArtId(): String? {
+    val hasUnknownMetadata = displayAlbumName() == null || displayArtistName() == null
+    return coverArtId.takeUnless { hasUnknownMetadata }.displayableArtworkId()
 }
 
 @Composable

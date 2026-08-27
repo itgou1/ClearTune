@@ -35,8 +35,16 @@ data class LibraryUiState(
     val artists: List<Artist> = emptyList(),
     val songs: List<Song> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
+    val isInitializing: Boolean = true,
     val isRefreshing: Boolean = false,
     val errorMessage: String? = null,
+)
+
+private data class LibrarySnapshot(
+    val albums: List<Album>,
+    val artists: List<Artist>,
+    val songs: List<Song>,
+    val playlists: List<Playlist>,
 )
 
 data class SearchUiState(
@@ -83,20 +91,28 @@ class MusicViewModel @Inject constructor(
     private val recommendationExclusions = MutableStateFlow<Set<String>>(emptySet())
     private val recommendationEngine = RecommendationEngine()
 
-    val libraryState: StateFlow<LibraryUiState> = combine(
+    private val librarySnapshot = combine(
         repository.albums,
         repository.artists,
         repository.songs,
         repository.playlists,
+    ) { albums, artists, songs, playlists ->
+        LibrarySnapshot(albums, artists, songs, playlists)
+    }
+
+    val libraryState: StateFlow<LibraryUiState> = combine(
+        librarySnapshot,
         refreshing,
-    ) { albums, artists, songs, playlists, isRefreshing ->
+        libraryError,
+    ) { snapshot, isRefreshing, errorMessage ->
         LibraryUiState(
-            albums = albums,
-            artists = artists,
-            songs = songs,
-            playlists = playlists,
+            albums = snapshot.albums,
+            artists = snapshot.artists,
+            songs = snapshot.songs,
+            playlists = snapshot.playlists,
+            isInitializing = false,
             isRefreshing = isRefreshing,
-            errorMessage = libraryError.value,
+            errorMessage = errorMessage,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryUiState())
 

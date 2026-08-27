@@ -22,6 +22,7 @@ import com.cleartune.core.network.SearchResults
 import javax.inject.Inject
 import javax.inject.Singleton
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -35,6 +36,7 @@ class MusicRepository @Inject constructor(
     private val apiFactory: OpenSubsonicApiFactory,
 ) {
     private val mediaDao = database.mediaDao()
+    private val coverArtUrls = ConcurrentHashMap<String, String>()
 
     val albums: Flow<List<Album>> = mediaDao.observeAlbums().map { items -> items.map { it.toModel() } }
     val artists: Flow<List<Artist>> = mediaDao.observeArtists().map { items -> items.map { it.toModel() } }
@@ -212,7 +214,16 @@ class MusicRepository @Inject constructor(
     }
 
     suspend fun coverArtUrl(id: String, size: Int = 512): String? {
-        return remote()?.coverArtUrl(id, size)
+        val credentials = credentialsStore.credentials.first() ?: return null
+        val safeSize = size.coerceIn(96, 1_200)
+        val key = "${credentials.baseUrl}|${credentials.username}|$id|$safeSize"
+        coverArtUrls[key]?.let { return it }
+        val url = runCatching {
+            LibraryRemoteDataSource(apiFactory.authorized(credentials)).coverArtUrl(id, safeSize)
+        }.getOrNull() ?: return null
+        if (coverArtUrls.size >= MAX_COVER_URL_CACHE_ENTRIES) coverArtUrls.clear()
+        coverArtUrls[key] = url
+        return url
     }
 
     suspend fun setSongFavorite(song: Song, favorite: Boolean) =
@@ -304,5 +315,6 @@ class MusicRepository @Inject constructor(
 
     private companion object {
         const val PAGE_SIZE = 500
+        const val MAX_COVER_URL_CACHE_ENTRIES = 2_048
     }
 }

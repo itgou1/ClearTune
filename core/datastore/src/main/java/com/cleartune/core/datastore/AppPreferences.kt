@@ -4,9 +4,11 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
@@ -55,6 +57,11 @@ data class EqualizerSettings(
 
 val EQUALIZER_FREQUENCIES_HZ = listOf(60, 230, 910, 3_600, 14_000)
 val DEFAULT_EQUALIZER_LEVELS_DB = listOf(2, 1, 0, 1, 2)
+const val DEFAULT_PLAYBACK_CACHE_SIZE_MB = 512
+val PLAYBACK_CACHE_SIZE_OPTIONS_MB = listOf(128, 256, 512, 1_024, 2_048)
+
+fun normalizedPlaybackCacheSizeMb(value: Int?): Int =
+    value?.takeIf(PLAYBACK_CACHE_SIZE_OPTIONS_MB::contains) ?: DEFAULT_PLAYBACK_CACHE_SIZE_MB
 
 private fun List<Int>.sanitizedEqualizerLevels(): List<Int> =
     takeIf { size == EQUALIZER_FREQUENCIES_HZ.size }
@@ -66,6 +73,7 @@ data class AppSettings(
     val volumeNormalizationEnabled: Boolean = true,
     val equalizer: EqualizerSettings = EqualizerSettings(),
     val wifiOnlyDownloads: Boolean = true,
+    val playbackCacheSizeMb: Int = DEFAULT_PLAYBACK_CACHE_SIZE_MB,
     val mobileAudioQuality: MobileAudioQuality = MobileAudioQuality.RATE_192,
     val checkUpdates: Boolean = true,
     val recentSearches: List<String> = emptyList(),
@@ -91,6 +99,7 @@ class AppPreferences(private val context: Context) {
                     ?: DEFAULT_EQUALIZER_LEVELS_DB,
             ),
             wifiOnlyDownloads = preferences[WIFI_ONLY] ?: true,
+            playbackCacheSizeMb = normalizedPlaybackCacheSizeMb(preferences[PLAYBACK_CACHE_SIZE_MB]),
             mobileAudioQuality = preferences[MOBILE_AUDIO_QUALITY]
                 ?.let { runCatching { MobileAudioQuality.valueOf(it) }.getOrNull() }
                 ?: MobileAudioQuality.fromLegacyBitRate(preferences[MOBILE_BIT_RATE]),
@@ -112,11 +121,28 @@ class AppPreferences(private val context: Context) {
         it[EQUALIZER_CUSTOM_LEVELS] = value.sanitizedEqualizerLevels().joinToString(EQUALIZER_SEPARATOR)
     }
     suspend fun setWifiOnlyDownloads(value: Boolean) = edit { it[WIFI_ONLY] = value }
+    suspend fun setPlaybackCacheSizeMb(value: Int) = edit {
+        it[PLAYBACK_CACHE_SIZE_MB] = normalizedPlaybackCacheSizeMb(value)
+    }
     suspend fun setMobileAudioQuality(value: MobileAudioQuality) = edit {
         it[MOBILE_AUDIO_QUALITY] = value.name
         it.remove(MOBILE_BIT_RATE)
     }
     suspend fun setCheckUpdates(value: Boolean) = edit { it[CHECK_UPDATES] = value }
+
+    suspend fun lastUpdateCheckEpochMs(): Long =
+        context.appSettingsDataStore.data.first()[LAST_UPDATE_CHECK_EPOCH_MS] ?: 0L
+
+    suspend fun setLastUpdateCheckEpochMs(value: Long) = edit {
+        it[LAST_UPDATE_CHECK_EPOCH_MS] = value.coerceAtLeast(0L)
+    }
+
+    suspend fun ignoredUpdateVersion(): String? =
+        context.appSettingsDataStore.data.first()[IGNORED_UPDATE_VERSION]
+
+    suspend fun setIgnoredUpdateVersion(value: String) = edit {
+        it[IGNORED_UPDATE_VERSION] = value.trim()
+    }
 
     suspend fun addRecentSearch(query: String) = edit { preferences ->
         val normalized = query.trim().replace(SEARCH_SEPARATOR, " ")
@@ -152,9 +178,12 @@ class AppPreferences(private val context: Context) {
         val EQUALIZER_PRESET = stringPreferencesKey("equalizer_preset")
         val EQUALIZER_CUSTOM_LEVELS = stringPreferencesKey("equalizer_custom_levels")
         val WIFI_ONLY = booleanPreferencesKey("wifi_only_downloads")
+        val PLAYBACK_CACHE_SIZE_MB = intPreferencesKey("playback_cache_size_mb")
         val MOBILE_BIT_RATE = intPreferencesKey("mobile_bit_rate")
         val MOBILE_AUDIO_QUALITY = stringPreferencesKey("mobile_audio_quality")
         val CHECK_UPDATES = booleanPreferencesKey("check_updates")
+        val LAST_UPDATE_CHECK_EPOCH_MS = longPreferencesKey("last_update_check_epoch_ms")
+        val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
         val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         const val SEARCH_SEPARATOR = "\u001F"
         const val EQUALIZER_SEPARATOR = ","

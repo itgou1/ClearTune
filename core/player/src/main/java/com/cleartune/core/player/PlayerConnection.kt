@@ -5,14 +5,17 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.cleartune.core.model.PlaybackMode
 import com.cleartune.core.model.Song
 import com.google.common.util.concurrent.ListenableFuture
+import java.net.URI as JavaUri
 import java.util.concurrent.Executor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +36,7 @@ data class PlayerUiState(
     val errorMessage: String? = null,
 )
 
+@OptIn(markerClass = [UnstableApi::class])
 class PlayerConnection(context: Context) {
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
@@ -133,6 +137,7 @@ class PlayerConnection(context: Context) {
                         .setExtras(ReplayGainMetadata.extras(song, replayGainQueue))
                         .build(),
                 )
+                .apply { playbackCacheKey(song.id, stream)?.let(::setCustomCacheKey) }
                 .build()
         }
         if (items.isEmpty()) return
@@ -170,6 +175,7 @@ class PlayerConnection(context: Context) {
                     .setExtras(ReplayGainMetadata.extras(song, replayGainQueue))
                     .build(),
             )
+            .apply { playbackCacheKey(song.id, streamUrl)?.let(::setCustomCacheKey) }
             .build()
         val insertAt = if (mediaController.currentMediaItemIndex in 0 until mediaController.mediaItemCount) {
             mediaController.currentMediaItemIndex + 1
@@ -244,4 +250,28 @@ class PlayerConnection(context: Context) {
         val positionMs: Long,
         val playWhenReady: Boolean,
     )
+}
+
+/** Stable across short-lived authentication tokens, but distinct per server and transcode quality. */
+internal fun playbackCacheKey(songId: String, streamUrl: String): String? {
+    val uri = runCatching { JavaUri(streamUrl) }.getOrNull() ?: return null
+    if (!uri.scheme.equals("http", true) && !uri.scheme.equals("https", true)) return null
+    val endpoint = buildString {
+        append(uri.scheme?.lowercase())
+        append("://")
+        append(uri.host?.lowercase().orEmpty())
+        if (uri.port >= 0) append(":${uri.port}")
+        append(uri.rawPath.orEmpty())
+    }
+    val parameters = uri.rawQuery.orEmpty()
+        .split('&')
+        .mapNotNull { part ->
+            val name = part.substringBefore('=', missingDelimiterValue = part)
+            val value = part.substringAfter('=', missingDelimiterValue = "")
+            name.takeIf(String::isNotEmpty)?.let { it to value }
+        }
+        .toMap()
+    val bitRate = parameters["maxBitRate"] ?: "original"
+    val format = parameters["format"] ?: "default"
+    return "cleartune:$endpoint:song=$songId:maxBitRate=$bitRate:format=$format"
 }
