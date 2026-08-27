@@ -18,7 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      CLEARTUNE_RELEASE_STORE_FILE: ${{ runner.temp }}/cleartune-release.jks
       CLEARTUNE_RELEASE_STORE_PASSWORD: ${{ secrets.CLEARTUNE_RELEASE_STORE_PASSWORD }}
       CLEARTUNE_RELEASE_KEY_ALIAS: ${{ secrets.CLEARTUNE_RELEASE_KEY_ALIAS }}
       CLEARTUNE_RELEASE_KEY_PASSWORD: ${{ secrets.CLEARTUNE_RELEASE_KEY_PASSWORD }}
@@ -50,7 +49,9 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.CLEARTUNE_RELEASE_KEYSTORE_BASE64 }}
         run: |
           umask 077
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$CLEARTUNE_RELEASE_STORE_FILE"
+          KEYSTORE_PATH="$RUNNER_TEMP/cleartune-release.jks"
+          echo "CLEARTUNE_RELEASE_STORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
 
       - name: Validate tag and read app version
         id: version
@@ -96,4 +97,4 @@ jobs:
 
       - name: Remove signing key
         if: always()
-        run: rm -f "$CLEARTUNE_RELEASE_STORE_FILE"
+        run: rm -f "${CLEARTUNE_RELEASE_STORE_FILE:-$RUNNER_TEMP/cleartune-release.jks}"
