@@ -1,64 +1,98 @@
 # ClearTune（轻调）
 
-[English](README.en.md) | 简体中文
+一款为私人音乐库设计的原生 Android 播放器。
 
-ClearTune 是一款面向 Navidrome / OpenSubsonic 的原生 Android 音乐客户端，专注于清晰、轻量且适合日常使用的私人音乐体验。应用直接连接用户自己的音乐服务器，不提供 ClearTune 云账户，也不会内置任何服务器地址或登录凭据。
+ClearTune 连接你自己的 Navidrome 或 OpenSubsonic 兼容服务器，把浏览、播放、歌单、下载和音质设置整理成轻量、清晰的日常听歌体验。它不提供云音乐内容，也不要求注册 ClearTune 账号。
 
 当前版本：`1.0.0`
 
 <p align="center">
-  <img src="screenshots/now-playing.png" alt="ClearTune 正在播放页面" width="360">
+  <img src="screenshots/product-overview.png" alt="ClearTune 首页、正在播放与离线音乐体验插图">
 </p>
+<p align="center"><sub>产品体验示意图；画面使用抽象封面和占位信息，不包含真实用户数据。</sub></p>
 
-## 功能
+## 真实界面
 
-- 首页推荐：最近加入、换个口味、常听精选与发现音乐
-- 音乐库：专辑、艺术家、歌曲与文件夹浏览、全库搜索及格式标识
-- 歌曲与歌单：喜欢、下一首播放、添加到歌单、批量移除歌单歌曲及 Navidrome 双向同步
-- 播放器：常驻迷你播放器、播放队列拖动排序、顺序/随机/循环模式、同步歌词与歌曲详情
-- 离线能力：原始文件下载、暂停/继续、重复任务识别、Wi-Fi 等待提示、离线播放与缓存管理
-- 音频体验：移动网络 128/192/320 kbps 或原始音质、均衡器预设、自定义调节与 ReplayGain 音量平衡
-- 外观：Material 3、页面动效、专辑封面占位图、浅色/深色/跟随系统主题与沉浸式系统栏
-- 更新：可选的 GitHub Releases 新版本检查、24 小时自动检查节流与更新日志展示
+以下画面来自实际运行中的 ClearTune。为保护隐私，截图中的用户名、人物封面、歌曲名称和艺术家名称已替换为虚拟内容；页面布局、功能控件与视觉样式保持真实状态。
 
-## 本次更新
+<table>
+  <tr>
+    <td align="center"><img src="screenshots/ui-home-sanitized.png" alt="ClearTune 首页真实界面（已脱敏）" width="250"></td>
+    <td align="center"><img src="screenshots/ui-now-playing-sanitized.png" alt="ClearTune 正在播放真实界面（已脱敏）" width="250"></td>
+    <td align="center"><img src="screenshots/ui-queue-sanitized.png" alt="ClearTune 播放列表真实界面（已脱敏）" width="250"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>首页与个性化推荐</sub></td>
+    <td align="center"><sub>正在播放</sub></td>
+    <td align="center"><sub>播放模式与队列</sub></td>
+  </tr>
+</table>
 
-- 扩充歌曲快捷操作，新增“下一首播放”、添加到歌单、下载、喜欢与详情入口。
-- 播放队列改为长按拖动排序，并保留无障碍上移/下移操作；歌词视图与播放进度拖动也得到优化。
-- 歌单支持多选并一次移除多首歌曲，专辑、艺术家和歌单详情页的加载状态更加稳定。
-- 离线下载改用 OpenSubsonic 原始文件接口，增加续传校验、服务器错误提示、重复下载识别和 Wi-Fi 等待反馈。
-- 移动网络新增原始音质选项，同时兼容 128、192 和 320 kbps 转码设置。
-- 改进数字型音乐文件夹 ID、部分服务器不提供物理目录时的提示，以及艺术家同步和歌曲匹配的兼容性。
+## 产品亮点
 
-## 技术架构
+### 打开就有想听的音乐
 
-- Kotlin、Jetpack Compose、Material 3
-- Media3 / ExoPlayer 与 `MediaLibraryService`
-- Retrofit、OkHttp、kotlinx.serialization
-- Room、DataStore、WorkManager
-- Hilt、Coroutines、Flow
-- Navidrome / OpenSubsonic API
+首页围绕私人曲库提供最近加入、换个口味、常听精选和发现音乐等内容。推荐只来自你自己的音乐收藏，不混入广告或平台推广内容。
 
-## 构建要求
+### 从曲库到播放，操作更顺手
 
-- Android Studio 或命令行 Android SDK
-- JDK 17
-- Android SDK 37
-- Windows、macOS 或 Linux
+- 按专辑、艺术家、歌曲或文件夹浏览，支持全库搜索与最近搜索
+- 快速喜欢歌曲、下一首播放、加入歌单、下载或查看歌曲详情
+- 歌单与 Navidrome 同步，支持多选后批量移除歌曲
+- 常驻迷你播放器，在浏览不同页面时也能继续控制播放
+- 播放队列支持长按拖动排序，并提供顺序、随机和循环模式
+- 支持同步歌词、歌曲格式与码率信息，以及播放进度快速调整
 
-项目通过 Gradle Wrapper 固定构建工具版本。第三方依赖由 Gradle 在构建时从公开仓库下载，不存放在本仓库中。
+### 离线也能完整听歌
 
-## 构建
+ClearTune 可以下载服务器中的原始音乐文件，并支持暂停、继续和断点续传。应用会识别重复任务、显示 Wi-Fi 等待状态，并在服务器拒绝下载或本地空间不足时给出明确提示。完成下载后，无网络也可以直接播放。
+
+### 音质由你决定
+
+- Wi-Fi 下默认保留服务器提供的原始音质
+- 移动网络可选择 128、192、320 kbps，或继续使用原始音质
+- ReplayGain 音量平衡，减少不同专辑之间忽大忽小的听感
+- 提供易用的均衡器预设，也支持自定义调节
+
+### 贴近日常 Android 使用习惯
+
+界面采用 Material 3，支持浅色、深色和跟随系统主题，并配有沉浸式系统栏、自然的页面动效和无封面时的统一占位图。播放、下载和操作结果会在当前页面及时反馈。
+
+## 为私人音乐库而设计
+
+<p align="center">
+  <img src="screenshots/private-library.png" alt="手机直连私人音乐服务器的隐私体验插图">
+</p>
+<p align="center"><sub>隐私关系示意图；不展示账号、服务器地址、真实封面或曲目信息。</sub></p>
+
+- 应用只连接你主动配置的音乐服务器，不内置公共服务器或共享账号
+- 不提供 ClearTune 云账户，曲库和播放内容不会上传到 ClearTune 服务
+- 登录凭据由 Android Keystore 保护并保存在设备本地
+- 喜欢、歌单和播放记录只在本地设备与你的音乐服务器之间处理或同步
+- 不接入广告、用户行为统计 SDK 或大模型服务
+- 开启更新检查时，仅访问公开的 GitHub Releases 接口
+
+## 适合谁
+
+ClearTune 适合已经拥有 Navidrome 或其他 OpenSubsonic 兼容服务器，希望在 Android 上获得原生、轻量、重视离线和音质体验的用户。
+
+它不是在线音乐平台，不提供歌曲版权内容或公共曲库；使用前需要准备一个可访问的私人音乐服务器。目前客户端面向 Android 设备。
+
+## 快速开始
+
+1. 从项目的 [GitHub Releases](https://github.com/itgou1/ClearTune/releases) 下载并安装最新版 APK。
+2. 准备一个可访问的 Navidrome 或 OpenSubsonic 兼容服务器。
+3. 打开 ClearTune，填写服务器地址、用户名和密码。
+4. 连接成功后，即可浏览曲库、同步喜欢与歌单并开始播放。
+
+<details>
+<summary>开发者构建信息</summary>
+
+本项目使用 JDK 17 和 Android SDK 37，并通过 Gradle Wrapper 固定构建工具版本。
 
 ```bash
 git clone https://github.com/itgou1/ClearTune.git
 cd ClearTune
-```
-
-确保 `ANDROID_HOME` 指向 Android SDK，或在未纳入版本控制的 `local.properties` 中配置：
-
-```properties
-sdk.dir=/path/to/Android/Sdk
 ```
 
 macOS / Linux：
@@ -73,75 +107,15 @@ Windows：
 .\gradlew.bat :app:assembleDebug
 ```
 
-APK 输出位置：`app/build/outputs/apk/debug/app-debug.apk`。
-
-## 测试
-
 运行本地单元测试：
 
 ```bash
 ./gradlew testDebugUnitTest
 ```
 
-Windows 用户还可以启动可见的 Android 模拟器、构建、安装并打开应用：
+Debug APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`。正式版由仓库的 GitHub Actions 工作流签名并发布到 GitHub Releases；签名文件和密码不得提交到仓库。
 
-```powershell
-.\scripts\android-test.ps1
-```
-
-也可以直接双击 `start-android-test.bat`。脚本不会填写或保存音乐服务器的账号密码。
-
-### 正式版签名
-
-正式构建不会回退到调试证书，也不会生成未签名的发布包。构建前请通过 Gradle 属性或环境变量提供以下四项：
-
-- `CLEARTUNE_RELEASE_STORE_FILE`
-- `CLEARTUNE_RELEASE_STORE_PASSWORD`
-- `CLEARTUNE_RELEASE_KEY_ALIAS`
-- `CLEARTUNE_RELEASE_KEY_PASSWORD`
-
-密钥文件和密码不得提交到仓库。配置完成后运行 `./gradlew assembleRelease bundleRelease`。
-
-### GitHub Releases 自动发版
-
-仓库中的 `.github/workflows/release.yml` 会在推送 `v*` 标签后自动运行单元测试与 Lint，使用正式证书构建 APK/AAB，生成 `update.json` 和 SHA-256 校验文件，并创建 GitHub Release。
-
-请先在仓库的 **Settings → Secrets and variables → Actions** 中添加：
-
-- `CLEARTUNE_RELEASE_KEYSTORE_BASE64`：正式 keystore 文件的 Base64 内容
-- `CLEARTUNE_RELEASE_STORE_PASSWORD`
-- `CLEARTUNE_RELEASE_KEY_ALIAS`
-- `CLEARTUNE_RELEASE_KEY_PASSWORD`
-
-标签必须与 `app/build.gradle.kts` 中的 `versionName` 完全一致。例如发布 `1.0.0`：
-
-```bash
-git tag -a v1.0.0 -m "ClearTune 1.0.0"
-git push origin v1.0.0
-```
-
-APK/AAB 不应提交到 Git 历史；它们由工作流上传到 GitHub Releases。App 使用公开的 `releases/latest` 接口检查更新，以 `update.json` 中的 `versionCode` 为权威版本，并在清单缺失时兼容旧版语义化标签。
-
-## 使用
-
-1. 准备一个可访问的 Navidrome 或其他兼容 OpenSubsonic 的服务器。
-2. 启动 ClearTune，输入服务器地址、用户名和密码。
-3. 连接成功后，应用会从服务器读取音乐库、歌单和收藏状态。
-
-凭据使用 Android Keystore 保护后保存在设备本地。ClearTune V1 不接入广告、统计 SDK 或大模型服务。
-
-## 项目结构
-
-```text
-app/                 Android 应用与 Compose 界面
-core/model/          领域模型与纯逻辑
-core/network/        OpenSubsonic 网络协议
-core/database/       Room 本地数据库
-core/datastore/      设置与凭据存储
-core/player/         Media3 播放、均衡器与音量平衡
-core/designsystem/   主题与设计系统
-scripts/             本地 Android 测试脚本
-```
+</details>
 
 ## 许可与商标
 
@@ -149,7 +123,7 @@ ClearTune 源代码采用 [GNU General Public License v3.0](LICENSE) 发布。�
 
 `ClearTune`、`轻调`、猫头鹰耳机图形和应用图标属于项目标识，不因 GPL-3.0 自动获得商标使用许可。修改版应使用不同的名称、图标和包名，并清晰说明其基于 ClearTune。详情参见 [商标政策](TRADEMARKS.zh-CN.md)。
 
-## 相关项目
+## 相关生态
 
 - [Navidrome](https://www.navidrome.org/)
 - [OpenSubsonic API](https://opensubsonic.netlify.app/)
