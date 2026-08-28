@@ -85,6 +85,9 @@ interface MediaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertArtists(items: List<ArtistEntity>)
 
+    @Query("DELETE FROM artists WHERE id = :id")
+    suspend fun deleteArtist(id: String)
+
     @Query("DELETE FROM artists")
     suspend fun clearArtists()
 
@@ -97,8 +100,30 @@ interface MediaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSongs(items: List<SongEntity>)
 
+    @Query("DELETE FROM songs")
+    suspend fun clearSongs()
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPlaylists(items: List<PlaylistEntity>)
+
+    @Query("DELETE FROM playlists")
+    suspend fun clearPlaylists()
+
+    @Query(
+        """
+        DELETE FROM playlist_songs
+        WHERE playlistId NOT IN (SELECT id FROM playlists)
+           OR songId NOT IN (SELECT id FROM songs)
+        """,
+    )
+    suspend fun clearOrphanedPlaylistSongs()
+
+    @Transaction
+    suspend fun replacePlaylists(items: List<PlaylistEntity>) {
+        clearPlaylists()
+        upsertPlaylists(items)
+        clearOrphanedPlaylistSongs()
+    }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPlaylistSongs(items: List<PlaylistSongEntity>)
@@ -112,10 +137,28 @@ interface MediaDao {
     @Query("DELETE FROM albums")
     suspend fun clearAlbums()
 
+    @Query("DELETE FROM albums WHERE id = :id")
+    suspend fun deleteAlbum(id: String)
+
     @Transaction
     suspend fun replaceAlbums(items: List<AlbumEntity>) {
         clearAlbums()
         upsertAlbums(items)
+    }
+
+    @Transaction
+    suspend fun replaceLibrary(
+        albums: List<AlbumEntity>,
+        artists: List<ArtistEntity>,
+        songs: List<SongEntity>,
+    ) {
+        clearAlbums()
+        clearArtists()
+        clearSongs()
+        upsertAlbums(albums)
+        upsertArtists(artists)
+        upsertSongs(songs)
+        clearOrphanedPlaylistSongs()
     }
 
     @Transaction

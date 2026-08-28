@@ -18,6 +18,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -38,6 +40,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
@@ -51,6 +54,8 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -62,7 +67,10 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -74,11 +82,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -100,6 +113,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -409,13 +423,35 @@ internal fun NowPlayingScreen(
                         isSeeking = false
                     },
                     valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(32.dp),
                     interactionSource = seekInteractionSource,
                     thumb = {
-                        SliderDefaults.Thumb(
-                            interactionSource = seekInteractionSource,
-                            modifier = Modifier.size(12.dp),
-                        )
+                        Surface(
+                            modifier = Modifier.size(14.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary,
+                            shadowElevation = 1.dp,
+                        ) {}
+                    },
+                    track = {
+                        val progress = (seekPosition / durationMs.coerceAtLeast(1))
+                            .coerceIn(0f, 1f)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(progress)
+                                    .fillMaxHeight()
+                                    .background(MaterialTheme.colorScheme.primary),
+                            )
+                        }
                     },
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -890,182 +926,528 @@ internal fun LyricsScreen(
 internal fun QueueScreen(
     state: PlayerUiState,
     playerViewModel: PlayerViewModel,
+    musicViewModel: MusicViewModel,
     onBack: () -> Unit,
+    onBrowseLibrary: () -> Unit,
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
+    val snackbarHostState = remember { SnackbarHostState() }
     val latestQueue by rememberUpdatedState(state.queue)
     var draggedItemIndex by remember { mutableStateOf<Int?>(null) }
     var draggedItemOffset by remember { mutableFloatStateOf(0f) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showClearConfirmation by remember { mutableStateOf(false) }
     val moveUpLabel = stringResource(R.string.move_up)
     val moveDownLabel = stringResource(R.string.move_down)
+    val removeMessage = stringResource(R.string.queue_song_removed)
+    val queueClearedMessage = stringResource(R.string.queue_cleared)
+    val undoLabel = stringResource(R.string.undo_action)
+
+    LaunchedEffect(state.currentIndex, state.queue.size) {
+        if (draggedItemIndex == null && state.currentIndex in state.queue.indices) {
+            listState.scrollToItem(state.currentIndex)
+        }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             ClearTuneTopAppBar(
                 title = stringResource(R.string.play_queue),
                 onBack = onBack,
                 actions = {
-                    IconButton(onClick = playerViewModel::clearQueue) {
-                        Icon(Icons.Rounded.DeleteSweep, contentDescription = stringResource(R.string.clear_queue))
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.more_actions))
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.clear_queue)) },
+                                leadingIcon = { Icon(Icons.Rounded.DeleteSweep, contentDescription = null) },
+                                enabled = state.queue.isNotEmpty(),
+                                onClick = {
+                                    showMenu = false
+                                    showClearConfirmation = true
+                                },
+                            )
+                        }
                     }
                 },
             )
         },
     ) { padding ->
-        if (state.queue.isEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) { Text(stringResource(R.string.empty_queue)) }
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.padding(padding),
-            ) {
-                itemsIndexed(state.queue, key = { _, song -> song.id }) { index, song ->
-                    val isDragging = draggedItemIndex == index
-                    val draggedScale by animateFloatAsState(
-                        targetValue = if (isDragging) 1.015f else 1f,
-                        animationSpec = ClearTuneMotion.quick(),
-                        label = "queueItemScale",
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
+            QueueModeSelector(
+                mode = state.mode,
+                onMode = playerViewModel::setMode,
+            )
+            if (state.queue.isEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.QueueMusic,
+                        contentDescription = null,
+                        modifier = Modifier.size(52.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .zIndex(if (isDragging) 1f else 0f)
-                            .graphicsLayer {
-                                translationY = if (isDragging) draggedItemOffset else 0f
-                                scaleX = draggedScale
-                                scaleY = draggedScale
-                            }
-                            .then(
-                                if (isDragging) Modifier.shadow(8.dp, RoundedCornerShape(16.dp)) else Modifier,
-                            )
-                            .semantics {
-                                customActions = buildList {
-                                    if (index > 0) {
-                                        add(CustomAccessibilityAction(moveUpLabel) {
-                                            playerViewModel.move(index, index - 1)
-                                            true
-                                        })
-                                    }
-                                    if (index < state.queue.lastIndex) {
-                                        add(CustomAccessibilityAction(moveDownLabel) {
-                                            playerViewModel.move(index, index + 1)
-                                            true
-                                        })
+                    Spacer(Modifier.height(14.dp))
+                    Text(stringResource(R.string.empty_queue), style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(18.dp))
+                    FilledTonalButton(onClick = onBrowseLibrary) {
+                        Text(stringResource(R.string.browse_music))
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        stringResource(R.string.queue_section),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        stringResource(
+                            R.string.queue_summary,
+                            state.queue.size,
+                            formatQueueDuration(state.queue.sumOf { it.durationSeconds }),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        start = 10.dp,
+                        end = 10.dp,
+                        bottom = 24.dp,
+                    ),
+                ) {
+                    itemsIndexed(state.queue, key = { _, song -> song.id }) { index, song ->
+                        val isCurrent = index == state.currentIndex
+                        val isDragging = draggedItemIndex == index
+                        var removalHandled by remember(song.id) { mutableStateOf(false) }
+                        val dismissState = rememberSwipeToDismissBoxState()
+                        LaunchedEffect(dismissState.currentValue) {
+                            if (
+                                dismissState.currentValue == SwipeToDismissBoxValue.EndToStart &&
+                                !removalHandled
+                            ) {
+                                removalHandled = true
+                                val undoToken = playerViewModel.removeUndoable(index)
+                                if (undoToken != null) {
+                                    scope.launch {
+                                        val result = snackbarHostState.showSnackbar(
+                                            message = removeMessage,
+                                            actionLabel = undoLabel,
+                                        )
+                                        if (result == SnackbarResult.ActionPerformed) {
+                                            playerViewModel.undoQueueMutation(undoToken)
+                                        } else {
+                                            playerViewModel.discardQueueUndo(undoToken)
+                                        }
                                     }
                                 }
                             }
-                            .pointerInput(song.id) {
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = {
-                                        val currentIndex = latestQueue.indexOfFirst { it.id == song.id }
-                                        if (currentIndex >= 0) {
-                                            draggedItemIndex = currentIndex
-                                            draggedItemOffset = 0f
-                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        }
-                                    },
-                                    onDragCancel = {
-                                        draggedItemIndex = null
-                                        draggedItemOffset = 0f
-                                    },
-                                    onDragEnd = {
-                                        draggedItemIndex = null
-                                        draggedItemOffset = 0f
-                                    },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        val currentIndex = draggedItemIndex ?: return@detectDragGesturesAfterLongPress
-                                        draggedItemOffset += dragAmount.y
-
-                                        val layoutInfo = listState.layoutInfo
-                                        val draggedInfo = layoutInfo.visibleItemsInfo
-                                            .firstOrNull { it.index == currentIndex }
-                                            ?: return@detectDragGesturesAfterLongPress
-                                        val draggedTop = draggedInfo.offset + draggedItemOffset
-                                        val draggedBottom = draggedTop + draggedInfo.size
-                                        val draggedCenter = (draggedTop + draggedBottom) / 2f
-                                        val targetInfo = layoutInfo.visibleItemsInfo.firstOrNull { itemInfo ->
-                                            itemInfo.index != currentIndex &&
-                                                draggedCenter >= itemInfo.offset &&
-                                                draggedCenter <= itemInfo.offset + itemInfo.size
-                                        }
-
-                                        if (targetInfo != null) {
-                                            draggedItemOffset += draggedInfo.offset - targetInfo.offset
-                                            playerViewModel.move(currentIndex, targetInfo.index)
-                                            draggedItemIndex = targetInfo.index
-                                        }
-
-                                        val scrollAmount = when {
-                                            draggedTop < layoutInfo.viewportStartOffset -> -18f
-                                            draggedBottom > layoutInfo.viewportEndOffset -> 18f
-                                            else -> 0f
-                                        }
-                                        if (scrollAmount != 0f) {
-                                            scope.launch { listState.scrollBy(scrollAmount) }
-                                        }
-                                    },
-                                )
-                            },
-                        color = if (isDragging) {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        },
-                    ) {
-                        Row(
+                        }
+                        val draggedScale by animateFloatAsState(
+                            targetValue = if (isDragging) 1.015f else 1f,
+                            animationSpec = ClearTuneMotion.quick(),
+                            label = "queueItemScale",
+                        )
+                        SwipeToDismissBox(
+                            state = dismissState,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { playerViewModel.play(state.queue, index) }
-                                .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (index == state.currentIndex) {
-                                Icon(
-                                    Icons.Rounded.Equalizer,
-                                    contentDescription = stringResource(R.string.now_playing),
-                                    modifier = Modifier.size(28.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            } else {
-                                Text("${index + 1}", modifier = Modifier.size(28.dp))
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                song.displayArtistName()?.let {
-                                    Text(
-                                        it,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                .zIndex(if (isDragging) 1f else 0f)
+                                .graphicsLayer {
+                                    translationY = if (isDragging) draggedItemOffset else 0f
+                                    scaleX = draggedScale
+                                    scaleY = draggedScale
+                                }
+                                .then(
+                                    if (isDragging) {
+                                        Modifier.shadow(8.dp, RoundedCornerShape(16.dp))
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
+                            enableDismissFromStartToEnd = false,
+                            enableDismissFromEndToStart = !isDragging,
+                            backgroundContent = {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(vertical = 3.dp)
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(MaterialTheme.colorScheme.errorContainer)
+                                        .padding(end = 22.dp),
+                                    contentAlignment = Alignment.CenterEnd,
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.Delete,
+                                        contentDescription = stringResource(R.string.remove_action),
+                                        tint = MaterialTheme.colorScheme.onErrorContainer,
                                     )
                                 }
-                            }
-                            IconButton(
-                                onClick = { playerViewModel.remove(index) },
-                                modifier = Modifier.size(32.dp),
+                            },
+                        ) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .semantics {
+                                        customActions = buildList {
+                                            if (index > 0) {
+                                                add(CustomAccessibilityAction(moveUpLabel) {
+                                                    playerViewModel.move(index, index - 1)
+                                                    true
+                                                })
+                                            }
+                                            if (index < state.queue.lastIndex) {
+                                                add(CustomAccessibilityAction(moveDownLabel) {
+                                                    playerViewModel.move(index, index + 1)
+                                                    true
+                                                })
+                                            }
+                                        }
+                                    },
+                                shape = RoundedCornerShape(16.dp),
+                                color = when {
+                                    isDragging -> MaterialTheme.colorScheme.surfaceContainerHighest
+                                    isCurrent -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.54f)
+                                    else -> MaterialTheme.colorScheme.surface
+                                },
                             ) {
-                                Icon(
-                                    Icons.Rounded.Delete,
-                                    contentDescription = stringResource(R.string.remove_action),
-                                    modifier = Modifier.size(20.dp),
-                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { playerViewModel.playAt(index) }
+                                        .padding(start = 8.dp, end = 2.dp, top = 7.dp, bottom = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    QueueArtwork(
+                                        song = song,
+                                        isCurrent = isCurrent,
+                                        positionMs = state.positionMs,
+                                        durationMs = state.durationMs,
+                                        musicViewModel = musicViewModel,
+                                    )
+                                    Spacer(Modifier.size(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                song.title,
+                                                modifier = Modifier.weight(1f, fill = false),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                fontWeight = FontWeight.Medium,
+                                                color = if (isCurrent) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                },
+                                            )
+                                            if (isCurrent) {
+                                                Spacer(Modifier.size(6.dp))
+                                                Text(
+                                                    stringResource(R.string.now_playing),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            queueSongSubtitle(song),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {},
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .pointerInput(song.id) {
+                                                detectDragGesturesAfterLongPress(
+                                                    onDragStart = {
+                                                        val currentIndex = latestQueue.indexOfFirst { it.id == song.id }
+                                                        if (currentIndex >= 0) {
+                                                            draggedItemIndex = currentIndex
+                                                            draggedItemOffset = 0f
+                                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        }
+                                                    },
+                                                    onDragCancel = {
+                                                        draggedItemIndex = null
+                                                        draggedItemOffset = 0f
+                                                    },
+                                                    onDragEnd = {
+                                                        draggedItemIndex = null
+                                                        draggedItemOffset = 0f
+                                                    },
+                                                    onDrag = { change, dragAmount ->
+                                                        change.consume()
+                                                        val currentIndex = draggedItemIndex
+                                                            ?: return@detectDragGesturesAfterLongPress
+                                                        draggedItemOffset += dragAmount.y
+                                                        val layoutInfo = listState.layoutInfo
+                                                        val draggedInfo = layoutInfo.visibleItemsInfo
+                                                            .firstOrNull { it.index == currentIndex }
+                                                            ?: return@detectDragGesturesAfterLongPress
+                                                        val draggedTop = draggedInfo.offset + draggedItemOffset
+                                                        val draggedBottom = draggedTop + draggedInfo.size
+                                                        val draggedCenter = (draggedTop + draggedBottom) / 2f
+                                                        val targetInfo = layoutInfo.visibleItemsInfo.firstOrNull { itemInfo ->
+                                                            itemInfo.index != currentIndex &&
+                                                                draggedCenter >= itemInfo.offset &&
+                                                                draggedCenter <= itemInfo.offset + itemInfo.size
+                                                        }
+                                                        if (targetInfo != null) {
+                                                            draggedItemOffset += draggedInfo.offset - targetInfo.offset
+                                                            playerViewModel.move(currentIndex, targetInfo.index)
+                                                            draggedItemIndex = targetInfo.index
+                                                        }
+                                                        val scrollAmount = when {
+                                                            draggedTop < layoutInfo.viewportStartOffset -> -18f
+                                                            draggedBottom > layoutInfo.viewportEndOffset -> 18f
+                                                            else -> 0f
+                                                        }
+                                                        if (scrollAmount != 0f) {
+                                                            scope.launch { listState.scrollBy(scrollAmount) }
+                                                        }
+                                                    },
+                                                )
+                                            },
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.DragHandle,
+                                            contentDescription = stringResource(R.string.drag_to_reorder),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
-                    if (!isDragging) HorizontalDivider()
                 }
             }
         }
+    }
+
+    if (showClearConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmation = false },
+            title = { Text(stringResource(R.string.clear_queue_question)) },
+            text = { Text(stringResource(R.string.clear_queue_explanation)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirmation = false
+                        val undoToken = playerViewModel.clearQueueUndoable()
+                        if (undoToken != null) {
+                            scope.launch {
+                                val result = snackbarHostState.showSnackbar(
+                                    message = queueClearedMessage,
+                                    actionLabel = undoLabel,
+                                )
+                                if (result == SnackbarResult.ActionPerformed) {
+                                    playerViewModel.undoQueueMutation(undoToken)
+                                } else {
+                                    playerViewModel.discardQueueUndo(undoToken)
+                                }
+                            }
+                        }
+                    },
+                ) {
+                    Text(
+                        stringResource(R.string.clear_action),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmation = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun QueueModeSelector(
+    mode: PlaybackMode,
+    onMode: (PlaybackMode) -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(R.string.playback_method),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    mode.label(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                PlaybackMode.entries.forEach { candidate ->
+                    val selected = candidate == mode
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (selected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    Color.Transparent
+                                },
+                            )
+                            .selectable(
+                                selected = selected,
+                                onClick = { onMode(candidate) },
+                                role = Role.RadioButton,
+                            )
+                            .padding(horizontal = 2.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Icon(
+                            candidate.icon(),
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = if (selected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            candidate.queueLabel(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueArtwork(
+    song: com.cleartune.core.model.Song,
+    isCurrent: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    musicViewModel: MusicViewModel,
+) {
+    Box(
+        modifier = Modifier
+            .size(52.dp)
+            .clip(RoundedCornerShape(12.dp)),
+    ) {
+        CoverArt(
+            id = song.coverArtId,
+            description = song.title,
+            viewModel = musicViewModel,
+            modifier = Modifier.fillMaxSize(),
+            fallbackSeed = song.id,
+            requestSize = 144,
+        )
+        if (isCurrent) {
+            val fallbackDuration = song.durationSeconds * 1_000
+            val duration = durationMs.takeIf { it > 0 } ?: fallbackDuration
+            val progress = if (duration > 0) {
+                (positionMs.toFloat() / duration).coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.34f)),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(progress)
+                        .fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.onPrimary),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackMode.queueLabel(): String = stringResource(when (this) {
+    PlaybackMode.SEQUENTIAL -> R.string.queue_mode_sequential
+    PlaybackMode.REPEAT_ALL -> R.string.queue_mode_repeat_all
+    PlaybackMode.REPEAT_ONE -> R.string.queue_mode_repeat_one
+    PlaybackMode.SHUFFLE -> R.string.queue_mode_shuffle
+})
+
+private fun queueSongSubtitle(song: com.cleartune.core.model.Song): String {
+    val artist = song.displayArtistName()
+    val duration = song.durationSeconds.takeIf { it > 0 }?.let { formatTime(it * 1_000) }
+    return listOfNotNull(artist, duration).joinToString(" · ")
+}
+
+@Composable
+private fun formatQueueDuration(durationSeconds: Long): String {
+    val minutes = durationSeconds.coerceAtLeast(0) / 60
+    val hours = minutes / 60
+    return if (hours > 0) {
+        stringResource(R.string.queue_duration_hours_minutes, hours, minutes % 60)
+    } else {
+        stringResource(R.string.queue_duration_minutes, minutes)
     }
 }
 

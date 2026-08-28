@@ -463,6 +463,11 @@ fun ClearTuneApp(
             ) { entry ->
                 val id = entry.arguments?.getString("id").orEmpty()
                 LaunchedEffect(id) { viewModel.loadAlbum(id) }
+                LaunchedEffect(id) {
+                    viewModel.detailInvalidations.collect { route ->
+                        if (route == "album/$id") navController.popBackStack()
+                    }
+                }
                 AlbumDetailScreen(
                     state = detailState,
                     playlists = libraryState.playlists,
@@ -478,6 +483,11 @@ fun ClearTuneApp(
             ) { entry ->
                 val id = entry.arguments?.getString("id").orEmpty()
                 LaunchedEffect(id) { viewModel.loadArtist(id) }
+                LaunchedEffect(id) {
+                    viewModel.detailInvalidations.collect { route ->
+                        if (route == "artist/$id") navController.popBackStack()
+                    }
+                }
                 ArtistDetailScreen(
                     state = detailState,
                     albums = libraryState.albums.filter { it.artistId == id },
@@ -494,6 +504,11 @@ fun ClearTuneApp(
             ) { entry ->
                 val id = entry.arguments?.getString("id").orEmpty()
                 LaunchedEffect(id) { viewModel.loadPlaylist(id) }
+                LaunchedEffect(id) {
+                    viewModel.detailInvalidations.collect { route ->
+                        if (route == "playlist/$id") navController.popBackStack()
+                    }
+                }
                 PlaylistDetailScreen(
                     state = detailState,
                     viewModel = viewModel,
@@ -504,6 +519,7 @@ fun ClearTuneApp(
                     onRename = viewModel::renamePlaylist,
                     onAddSong = viewModel::addPlaylistSong,
                     onRemoveSongs = viewModel::removePlaylistSongs,
+                    onDelete = viewModel::deletePlaylist,
                 )
             }
             composable("settings") {
@@ -559,7 +575,17 @@ fun ClearTuneApp(
                 QueueScreen(
                     state = playerState,
                     playerViewModel = playerViewModel,
+                    musicViewModel = viewModel,
                     onBack = navController::popBackStack,
+                    onBrowseLibrary = {
+                        navController.navigate("library") {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                 )
             }
             composable("equalizer") {
@@ -1705,6 +1731,7 @@ private fun AlbumDetailScreen(
                         album.artistName,
                         album.coverArtId,
                         viewModel,
+                        fallbackSeed = album.id,
                         favorite = album.starredAt != null,
                         onFavorite = { viewModel.toggleAlbumFavorite(album) },
                     )
@@ -1795,12 +1822,14 @@ private fun PlaylistDetailScreen(
     onRename: (String, String) -> Unit,
     onAddSong: (String, String) -> Unit,
     onRemoveSongs: (String, List<Int>) -> Unit,
+    onDelete: (String, () -> Unit) -> Unit,
 ) {
     var showRename by remember { mutableStateOf(false) }
     var showAdd by remember { mutableStateOf(false) }
     var isSelecting by remember(state.playlist?.id) { mutableStateOf(false) }
     var selectedIndexes by remember(state.playlist?.id) { mutableStateOf(emptySet<Int>()) }
     var showRemoveSelectedConfirmation by remember { mutableStateOf(false) }
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
     var newName by remember(state.playlist?.id) { mutableStateOf(state.playlist?.name.orEmpty()) }
     DetailScaffold(
         title = if (isSelecting) {
@@ -1861,6 +1890,23 @@ private fun PlaylistDetailScreen(
                         Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(stringResource(R.string.add_songs))
+                    }
+                    TextButton(
+                        onClick = { showDeleteConfirmation = true },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 2.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Delete,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            stringResource(R.string.delete_playlist),
+                            color = MaterialTheme.colorScheme.error,
+                        )
                     }
                 }
             }
@@ -1977,6 +2023,31 @@ private fun PlaylistDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showRemoveSelectedConfirmation = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
+    if (showDeleteConfirmation && playlist != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            title = { Text(stringResource(R.string.delete_playlist_question)) },
+            text = { Text(stringResource(R.string.delete_playlist_explanation)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirmation = false
+                        onDelete(playlist.id, onBack)
+                    },
+                ) {
+                    Text(
+                        stringResource(R.string.delete_action),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmation = false }) {
                     Text(stringResource(R.string.cancel))
                 }
             },
@@ -2278,6 +2349,7 @@ private fun DetailHeader(
     subtitle: String,
     coverArtId: String?,
     viewModel: MusicViewModel,
+    fallbackSeed: String = title,
     favorite: Boolean = false,
     onFavorite: (() -> Unit)? = null,
     onEditTitle: (() -> Unit)? = null,
@@ -2288,7 +2360,14 @@ private fun DetailHeader(
             .padding(horizontal = 20.dp, vertical = 16.dp),
     ) {
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            CoverArt(coverArtId, title, viewModel, Modifier.size(220.dp), requestSize = 768)
+            CoverArt(
+                id = coverArtId,
+                description = title,
+                viewModel = viewModel,
+                modifier = Modifier.size(220.dp),
+                fallbackSeed = fallbackSeed,
+                requestSize = 768,
+            )
         }
         Spacer(Modifier.height(18.dp))
         Row(

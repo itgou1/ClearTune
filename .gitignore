@@ -28,3 +28,8 @@ service-account*.json
 
 # Internal planning and deployment records are not part of the public source release.
 /docs/
+
+# Local music-library repair reports and manual decisions may contain private filenames.
+/outputs/
+/tmp_music_tag_report/
+/scripts/music_tag_manual_decisions_*.json

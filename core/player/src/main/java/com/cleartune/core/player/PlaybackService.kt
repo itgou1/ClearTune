@@ -1,5 +1,7 @@
 package com.cleartune.core.player
 
+import android.app.PendingIntent
+import android.content.Intent
 import android.media.audiofx.Equalizer
 import android.util.Log
 import androidx.media3.exoplayer.ExoPlayer
@@ -95,11 +97,23 @@ class PlaybackService : MediaLibraryService() {
             setHandleAudioBecomingNoisy(true)
             addListener(playerListener)
         }
-        session = MediaLibraryService.MediaLibrarySession.Builder(
+        val sessionBuilder = MediaLibraryService.MediaLibrarySession.Builder(
             this,
             player,
             object : MediaLibraryService.MediaLibrarySession.Callback {},
-        ).build()
+        )
+        packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            sessionBuilder.setSessionActivity(
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+        }
+        session = sessionBuilder.build()
         val settingsFlow = AppPreferences(this@PlaybackService).settings
         playbackScope.launch {
             settingsFlow

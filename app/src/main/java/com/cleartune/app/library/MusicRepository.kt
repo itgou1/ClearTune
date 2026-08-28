@@ -52,20 +52,26 @@ class MusicRepository @Inject constructor(
         val favoritesRequest = async { remote.favorites() }
         val errors = mutableListOf<ClearTuneError>()
 
-        when (val result = albumsRequest.await()) {
-            is RemoteResult.Success -> mediaDao.upsertAlbums(result.value.map { it.toEntity() })
-            is RemoteResult.Failure -> errors += result.error
-        }
-        when (val result = artistsRequest.await()) {
-            is RemoteResult.Success -> mediaDao.replaceArtists(result.value.map { it.toEntity() })
-            is RemoteResult.Failure -> errors += result.error
+        val albumsResult = albumsRequest.await()
+        val artistsResult = artistsRequest.await()
+        val songsResult = songsRequest.await()
+        if (
+            albumsResult is RemoteResult.Success &&
+            artistsResult is RemoteResult.Success &&
+            songsResult is RemoteResult.Success
+        ) {
+            mediaDao.replaceLibrary(
+                albums = albumsResult.value.map { it.toEntity() },
+                artists = artistsResult.value.map { it.toEntity() },
+                songs = songsResult.value.map { it.toEntity() },
+            )
+        } else {
+            (albumsResult as? RemoteResult.Failure)?.let { errors += it.error }
+            (artistsResult as? RemoteResult.Failure)?.let { errors += it.error }
+            (songsResult as? RemoteResult.Failure)?.let { errors += it.error }
         }
         when (val result = playlistsRequest.await()) {
-            is RemoteResult.Success -> mediaDao.upsertPlaylists(result.value.map { it.toEntity() })
-            is RemoteResult.Failure -> errors += result.error
-        }
-        when (val result = songsRequest.await()) {
-            is RemoteResult.Success -> mediaDao.upsertSongs(result.value.map { it.toEntity() })
+            is RemoteResult.Success -> mediaDao.replacePlaylists(result.value.map { it.toEntity() })
             is RemoteResult.Failure -> errors += result.error
         }
         when (val result = favoritesRequest.await()) {
@@ -89,7 +95,10 @@ class MusicRepository @Inject constructor(
                 mediaDao.upsertSongs(result.value.songs.map { it.toEntity() })
                 null
             }
-            is RemoteResult.Failure -> result.error
+            is RemoteResult.Failure -> {
+                if (result.error.isNotFound()) mediaDao.deleteAlbum(id)
+                result.error
+            }
         }
     }
 
@@ -105,7 +114,10 @@ class MusicRepository @Inject constructor(
                 }
                 null
             }
-            is RemoteResult.Failure -> result.error
+            is RemoteResult.Failure -> {
+                if (result.error.isNotFound()) mediaDao.deleteArtist(id)
+                result.error
+            }
         }
     }
 
@@ -123,7 +135,13 @@ class MusicRepository @Inject constructor(
                 )
                 null
             }
-            is RemoteResult.Failure -> result.error
+            is RemoteResult.Failure -> {
+                if (result.error.isNotFound()) {
+                    mediaDao.clearPlaylistSongs(id)
+                    mediaDao.deletePlaylist(id)
+                }
+                result.error
+            }
         }
     }
 
@@ -139,7 +157,7 @@ class MusicRepository @Inject constructor(
         val remote = remote() ?: return ClearTuneError.Authentication()
         return when (val result = remote.renamePlaylist(id, name.trim())) {
             is RemoteResult.Success -> loadPlaylist(id)
-            is RemoteResult.Failure -> result.error
+            is RemoteResult.Failure -> cleanMissingPlaylist(id, result.error)
         }
     }
 
@@ -147,7 +165,7 @@ class MusicRepository @Inject constructor(
         val remote = remote() ?: return ClearTuneError.Authentication()
         return when (val result = remote.addPlaylistSongs(id, listOf(songId))) {
             is RemoteResult.Success -> loadPlaylist(id)
-            is RemoteResult.Failure -> result.error
+            is RemoteResult.Failure -> cleanMissingPlaylist(id, result.error)
         }
     }
 
@@ -156,7 +174,7 @@ class MusicRepository @Inject constructor(
         val remote = remote() ?: return ClearTuneError.Authentication()
         return when (val result = remote.removePlaylistSongs(id, indexes.distinct().sortedDescending())) {
             is RemoteResult.Success -> loadPlaylist(id)
-            is RemoteResult.Failure -> result.error
+            is RemoteResult.Failure -> cleanMissingPlaylist(id, result.error)
         }
     }
 
@@ -168,7 +186,14 @@ class MusicRepository @Inject constructor(
                 mediaDao.deletePlaylist(id)
                 null
             }
-            is RemoteResult.Failure -> result.error
+            is RemoteResult.Failure -> {
+                if (result.error.isNotFound()) {
+                    removeLocalPlaylist(id)
+                    null
+                } else {
+                    result.error
+                }
+            }
         }
     }
 
@@ -273,7 +298,9 @@ class MusicRepository @Inject constructor(
                 FavoriteTargetType.ALBUM -> mediaDao.updateAlbumStarred(mutation.targetId, starredAt, now)
                 FavoriteTargetType.ARTIST -> mediaDao.updateArtistStarred(mutation.targetId, starredAt, now)
             }
-            if (remote.setFavorite(type, mutation.targetId, favorite) is RemoteResult.Success) {
+            val result = remote.setFavorite(type, mutation.targetId, favorite)
+            val targetMissing = result is RemoteResult.Failure && result.error.isNotFound()
+            if (result is RemoteResult.Success || targetMissing) {
                 database.activityDao().deleteMutation(mutation.id)
             }
         }
@@ -282,11 +309,21 @@ class MusicRepository @Inject constructor(
     private suspend fun refreshPlaylists(remote: LibraryRemoteDataSource): ClearTuneError? {
         return when (val result = remote.playlists()) {
             is RemoteResult.Success -> {
-                mediaDao.upsertPlaylists(result.value.map { it.toEntity() })
+                mediaDao.replacePlaylists(result.value.map { it.toEntity() })
                 null
             }
             is RemoteResult.Failure -> result.error
         }
+    }
+
+    private suspend fun cleanMissingPlaylist(id: String, error: ClearTuneError): ClearTuneError {
+        if (error.isNotFound()) removeLocalPlaylist(id)
+        return error
+    }
+
+    private suspend fun removeLocalPlaylist(id: String) {
+        mediaDao.clearPlaylistSongs(id)
+        mediaDao.deletePlaylist(id)
     }
 
     private suspend fun remote(): LibraryRemoteDataSource? {
@@ -318,3 +355,6 @@ class MusicRepository @Inject constructor(
         const val MAX_COVER_URL_CACHE_ENTRIES = 2_048
     }
 }
+
+internal fun ClearTuneError?.isNotFound(): Boolean =
+    this is ClearTuneError.Server && code in setOf(70, 404)

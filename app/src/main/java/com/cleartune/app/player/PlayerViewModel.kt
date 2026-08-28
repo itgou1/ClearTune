@@ -49,28 +49,30 @@ class PlayerViewModel @Inject constructor(
             val mode = preferences.mode.first()
             connection.setMode(mode)
             state.filter { it.connected }.first()
-            repository.restoreQueue()?.let { restoredQueue ->
-                repository.urls(restoredQueue.songs)?.let { urls ->
-                    connection.setQueue(
-                        songs = restoredQueue.songs,
-                        startIndex = restoredQueue.currentIndex,
-                        streamUrls = urls.streams,
-                        artworkUrls = urls.artwork,
-                        positionMs = restoredQueue.positionMs,
-                        playWhenReady = false,
-                    )
+            if (!connection.hasActiveQueue()) {
+                repository.restoreQueue()?.let { restoredQueue ->
+                    repository.urls(restoredQueue.songs)?.let { urls ->
+                        connection.setQueue(
+                            songs = restoredQueue.songs,
+                            startIndex = restoredQueue.currentIndex,
+                            streamUrls = urls.streams,
+                            artworkUrls = urls.artwork,
+                            positionMs = restoredQueue.positionMs,
+                            playWhenReady = false,
+                        )
+                    }
                 }
-            }
-            repository.newerServerQueue()?.takeIf { state.value.status != PlaybackStatus.PLAYING }?.let { serverQueue ->
-                repository.urls(serverQueue.songs)?.let { urls ->
-                    connection.setQueue(
-                        songs = serverQueue.songs,
-                        startIndex = serverQueue.currentIndex,
-                        streamUrls = urls.streams,
-                        artworkUrls = urls.artwork,
-                        positionMs = serverQueue.positionMs,
-                        playWhenReady = false,
-                    )
+                repository.newerServerQueue()?.takeIf { state.value.status != PlaybackStatus.PLAYING }?.let { serverQueue ->
+                    repository.urls(serverQueue.songs)?.let { urls ->
+                        connection.setQueue(
+                            songs = serverQueue.songs,
+                            startIndex = serverQueue.currentIndex,
+                            streamUrls = urls.streams,
+                            artworkUrls = urls.artwork,
+                            positionMs = serverQueue.positionMs,
+                            playWhenReady = false,
+                        )
+                    }
                 }
             }
             restored = true
@@ -175,9 +177,14 @@ class PlayerViewModel @Inject constructor(
     fun next() = connection.next()
     fun previous() = connection.previous()
     fun seekTo(positionMs: Long) = connection.seekTo(positionMs)
+    fun playAt(index: Int) = connection.playAt(index)
     fun remove(index: Int) = connection.remove(index)
+    fun removeUndoable(index: Int): Long? = connection.removeUndoable(index)
     fun move(from: Int, to: Int) = connection.move(from, to)
     fun clearQueue() = connection.clear()
+    fun clearQueueUndoable(): Long? = connection.clearUndoable()
+    fun undoQueueMutation(token: Long) = connection.undoQueueMutation(token)
+    fun discardQueueUndo(token: Long) = connection.discardQueueUndo(token)
 
     fun persistNow() {
         if (!restored || state.value.queue.isEmpty()) return
@@ -186,6 +193,13 @@ class PlayerViewModel @Inject constructor(
 
     fun cycleMode() {
         val mode = connection.cycleMode()
+        viewModelScope.launch { preferences.setMode(mode) }
+        _message.value = mode.chineseName()
+    }
+
+    fun setMode(mode: PlaybackMode) {
+        if (state.value.mode == mode) return
+        connection.setMode(mode)
         viewModelScope.launch { preferences.setMode(mode) }
         _message.value = mode.chineseName()
     }

@@ -2,6 +2,7 @@ package com.cleartune.app.library
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.cleartune.app.withResolvedArtwork
 import com.cleartune.core.model.Album
 import com.cleartune.core.model.Artist
 import com.cleartune.core.model.Playlist
@@ -18,13 +19,16 @@ import javax.inject.Inject
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -106,7 +110,7 @@ class MusicViewModel @Inject constructor(
         libraryError,
     ) { snapshot, isRefreshing, errorMessage ->
         LibraryUiState(
-            albums = snapshot.albums,
+            albums = snapshot.albums.withResolvedArtwork(snapshot.songs),
             artists = snapshot.artists,
             songs = snapshot.songs,
             playlists = snapshot.playlists,
@@ -135,6 +139,8 @@ class MusicViewModel @Inject constructor(
     val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
+    private val _detailInvalidations = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val detailInvalidations = _detailInvalidations.asSharedFlow()
 
     val recommendations: StateFlow<List<RecommendationShelf>> = combine(
         repository.songs,
@@ -300,27 +306,32 @@ class MusicViewModel @Inject constructor(
     fun renamePlaylist(id: String, name: String) {
         if (name.isBlank()) return
         viewModelScope.launch {
-            _actionMessage.value = repository.renamePlaylist(id, name)?.userMessage ?: "歌单已改名"
+            reportPlaylistAction(id, repository.renamePlaylist(id, name), "歌单已改名")
         }
     }
 
     fun addPlaylistSong(id: String, songId: String) {
         viewModelScope.launch {
-            _actionMessage.value = repository.addPlaylistSong(id, songId)?.userMessage ?: "已添加到歌单"
+            reportPlaylistAction(id, repository.addPlaylistSong(id, songId), "已添加到歌单")
         }
     }
 
     fun removePlaylistSongs(id: String, indexes: List<Int>) {
         if (indexes.isEmpty()) return
         viewModelScope.launch {
-            _actionMessage.value = repository.removePlaylistSongs(id, indexes)?.userMessage
-                ?: "已从歌单移除 ${indexes.distinct().size} 首歌曲"
+            reportPlaylistAction(
+                id,
+                repository.removePlaylistSongs(id, indexes),
+                "已从歌单移除 ${indexes.distinct().size} 首歌曲",
+            )
         }
     }
 
-    fun deletePlaylist(id: String) {
+    fun deletePlaylist(id: String, onDeleted: () -> Unit = {}) {
         viewModelScope.launch {
-            _actionMessage.value = repository.deletePlaylist(id)?.userMessage ?: "歌单已删除"
+            val error = repository.deletePlaylist(id)
+            _actionMessage.value = error?.userMessage ?: "歌单已删除"
+            if (error == null) onDeleted()
         }
     }
 
@@ -334,13 +345,17 @@ class MusicViewModel @Inject constructor(
         detailJob = viewModelScope.launch {
             launch {
                 val error = repository.loadAlbum(id)
-                _detailState.update { it.copy(isLoading = false, errorMessage = error?.userMessage) }
+                val missing = error.isNotFound()
+                _detailState.update {
+                    it.copy(isLoading = false, errorMessage = error?.userMessage.takeUnless { missing })
+                }
+                if (missing) invalidateDetail("album/$id")
             }
             combine(repository.album(id), repository.albumSongs(id)) { album, songs -> album to songs }
                 .collect { (album, songs) ->
                     _detailState.update { current -> DetailUiState(
                         isLoading = album == null && current.errorMessage == null,
-                        album = album,
+                        album = album?.withResolvedArtwork(songs),
                         songs = songs,
                         errorMessage = current.errorMessage,
                     ) }
@@ -354,7 +369,11 @@ class MusicViewModel @Inject constructor(
         detailJob = viewModelScope.launch {
             launch {
                 val error = repository.loadArtist(id)
-                _detailState.update { it.copy(isLoading = false, errorMessage = error?.userMessage) }
+                val missing = error.isNotFound()
+                _detailState.update {
+                    it.copy(isLoading = false, errorMessage = error?.userMessage.takeUnless { missing })
+                }
+                if (missing) invalidateDetail("artist/$id")
             }
             combine(repository.artist(id), repository.artistSongs(id)) { artist, songs -> artist to songs }
                 .collect { (artist, songs) ->
@@ -374,7 +393,11 @@ class MusicViewModel @Inject constructor(
         detailJob = viewModelScope.launch {
             launch {
                 val error = repository.loadPlaylist(id)
-                _detailState.update { it.copy(isLoading = false, errorMessage = error?.userMessage) }
+                val missing = error.isNotFound()
+                _detailState.update {
+                    it.copy(isLoading = false, errorMessage = error?.userMessage.takeUnless { missing })
+                }
+                if (missing) invalidateDetail("playlist/$id")
             }
             combine(repository.playlist(id), repository.playlistSongs(id)) { playlist, songs -> playlist to songs }
                 .collect { (playlist, songs) ->
@@ -390,6 +413,20 @@ class MusicViewModel @Inject constructor(
 
     suspend fun coverArtUrl(id: String, size: Int = 512): String? = repository.coverArtUrl(id, size)
 
+    private suspend fun reportPlaylistAction(id: String, error: com.cleartune.core.model.ClearTuneError?, success: String) {
+        if (error.isNotFound()) {
+            invalidateDetail("playlist/$id")
+        } else {
+            _actionMessage.value = error?.userMessage ?: success
+        }
+    }
+
+    private suspend fun invalidateDetail(route: String) {
+        _actionMessage.value = "内容已从服务器移除，本地缓存已自动清理"
+        _detailInvalidations.emit(route)
+        refresh()
+    }
+
     private suspend fun performSearch(query: String) {
         if (query.isBlank()) {
             _searchState.value = SearchUiState()
@@ -397,7 +434,15 @@ class MusicViewModel @Inject constructor(
         }
         _searchState.value = _searchState.value.copy(isSearching = true, errorMessage = null)
         _searchState.value = when (val result = repository.search(query.trim())) {
-            is RemoteResult.Success -> SearchUiState(query = query, results = result.value)
+            is RemoteResult.Success -> {
+                val knownSongs = repository.songs.first() + result.value.songs
+                SearchUiState(
+                    query = query,
+                    results = result.value.copy(
+                        albums = result.value.albums.withResolvedArtwork(knownSongs),
+                    ),
+                )
+            }
             is RemoteResult.Failure -> SearchUiState(query = query, errorMessage = result.error.userMessage)
         }
     }
