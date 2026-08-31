@@ -18,7 +18,7 @@ ClearTune 连接你自己的 Navidrome 或 OpenSubsonic 兼容服务器，把浏
 <table>
   <tr>
     <td align="center"><img src="screenshots/ui-home-sanitized.png" alt="ClearTune 首页真实界面（已脱敏）" width="250"></td>
-    <td align="center"><img src="screenshots/ui-now-playing-sanitized.png" alt="ClearTune 正在播放真实界面（已脱敏）" width="250"></td>
+    <td align="center"><img src="./screenshots/ui-now-playing-sanitized.png?raw=true" alt="ClearTune 正在播放真实界面（已脱敏）" width="250"></td>
   </tr>
   <tr>
     <td align="center"><sub>首页与个性化推荐</sub></td>
