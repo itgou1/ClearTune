@@ -32,59 +32,88 @@ class RecommendationEngine {
         val day = 24 * 60 * 60 * 1_000L
         val favoriteArtists = songs.filter { it.starredAt != null }.mapNotNull(Song::artistId).toSet()
         val favoriteGenres = songs.filter { it.starredAt != null }.mapNotNull(Song::genre).toSet()
+        val favoriteSignals = songs.filter { it.starredAt != null }
+            .flatMap { song -> listOfNotNull(song.artistName.takeIf(String::isNotBlank), song.genre?.takeUnless(::isMetadataId)) }
+            .groupingBy(String::trim)
+            .eachCount()
+            .entries
+            .sortedByDescending(Map.Entry<String, Int>::value)
+            .map(Map.Entry<String, Int>::key)
+            .distinct()
+            .take(2)
         val random = Random(seed)
+        val longAbsent = songs.filter { it.lastPlayedAt != null && it.lastPlayedAt < now - 30 * day }
+            .sortedWith(compareByDescending<Song> { it.starredAt != null }.thenBy { it.lastPlayedAt })
+        val recentlyAdded = songs.filter { (it.createdAt ?: 0) >= now - 30 * day }
+            .sortedWith(compareBy<Song> { it.playCount > 0 }.thenByDescending { it.createdAt })
+        val fromFavorites = songs.filter {
+            it.starredAt == null && (it.artistId in favoriteArtists || it.genre in favoriteGenres)
+        }.shuffled(random)
+        val newTaste = songs.filter {
+            (it.createdAt == null || it.createdAt < now - 30 * day) &&
+                it.playCount <= 2 &&
+                (it.lastPlayedAt == null || it.lastPlayedAt < now - 7 * day)
+        }.shuffled(random)
+        val frequent = songs.filter {
+            it.playCount >= 3 && it.lastPlayedAt != null && it.lastPlayedAt < now - day
+        }.sortedWith(compareByDescending<Song> { it.starredAt != null }.thenByDescending { it.playCount })
+        val selectedSongIds = mutableSetOf<String>()
+        fun uniqueShelf(
+            id: String,
+            title: String,
+            reason: String,
+            candidates: List<Song>,
+            size: Int,
+        ): RecommendationShelf = shelf(
+            id = id,
+            title = title,
+            reason = reason,
+            candidates = candidates.filterNot { it.id in selectedSongIds },
+            size = size,
+        ).also { result -> selectedSongIds += result.songs.map(Song::id) }
+
         return listOf(
-            shelf(
+            uniqueShelf(
                 "long-absent",
                 "好久不见",
-                "这些歌已经至少 30 天没播放了",
-                songs.filter { it.lastPlayedAt != null && it.lastPlayedAt < now - 30 * day }
-                    .sortedWith(compareByDescending<Song> { it.starredAt != null }.thenBy { it.lastPlayedAt }),
+                "至少 30 天没播放，从 ${longAbsent.size} 首旧爱中挑选",
+                longAbsent,
                 20,
             ),
-            shelf(
+            uniqueShelf(
                 "recently-added",
                 "最近加入",
-                "最近 30 天加入，没听过的排在前面",
-                songs.filter { (it.createdAt ?: 0) >= now - 30 * day }
-                    .sortedWith(compareBy<Song> { it.playCount > 0 }.thenByDescending { it.createdAt }),
+                "近 30 天加入的 ${recentlyAdded.size} 首歌，没听过的优先",
+                recentlyAdded,
                 20,
             ),
-            shelf(
+            uniqueShelf(
                 "from-favorites",
                 "从喜欢出发",
-                "与你喜欢的艺术家或流派相关",
-                songs.filter {
-                    it.starredAt == null && (it.artistId in favoriteArtists || it.genre in favoriteGenres)
-                }.shuffled(random),
+                favoriteSignals.takeIf(List<String>::isNotEmpty)
+                    ?.joinToString(prefix = "因为你喜欢 ", separator = "、")
+                    ?: "与你收藏的艺术家或流派相关",
+                fromFavorites,
                 20,
             ),
-            shelf(
+            uniqueShelf(
                 "new-taste",
                 "换个口味",
-                "从旧曲库里挑些很少播放的歌",
-                songs.filter {
-                    (it.createdAt == null || it.createdAt < now - 30 * day) &&
-                        it.playCount <= 2 &&
-                        (it.lastPlayedAt == null || it.lastPlayedAt < now - 7 * day)
-                }
-                    .shuffled(random),
+                "播放不超过 2 次，并避开最近 7 天听过的歌",
+                newTaste,
                 20,
             ),
-            shelf(
+            uniqueShelf(
                 "frequent",
                 "常听精选",
-                "你反复播放过的熟悉旋律",
-                songs.filter {
-                    it.playCount >= 3 && it.lastPlayedAt != null && it.lastPlayedAt < now - day
-                }
-                    .sortedWith(compareByDescending<Song> { it.starredAt != null }.thenByDescending { it.playCount }),
+                "播放至少 3 次，并避开今天刚听过的歌",
+                frequent,
                 20,
             ),
-            shelf(
+            uniqueShelf(
                 "random",
                 "随便听听",
-                "从整个音乐库分散随机挑选",
+                "从全曲库随机抽取，每位艺术家最多 2 首",
                 songs.shuffled(random),
                 30,
             ),
@@ -108,3 +137,7 @@ class RecommendationEngine {
         return RecommendationShelf(id, title, reason, selected)
     }
 }
+
+private val metadataIdPattern = Regex("^\\d+(?:[_:/-]\\d+)+$")
+
+private fun isMetadataId(value: String): Boolean = metadataIdPattern.matches(value.trim())

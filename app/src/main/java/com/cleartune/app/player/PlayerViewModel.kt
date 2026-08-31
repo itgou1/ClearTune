@@ -120,6 +120,10 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun play(songs: List<Song>, startIndex: Int = 0) {
+        val target = songs.getOrNull(startIndex.coerceIn(0, songs.lastIndex.coerceAtLeast(0)))
+        if (target != null) {
+            _message.value = "正在准备播放《${target.title}》"
+        }
         viewModelScope.launch {
             val urls = repository.urls(songs)
             if (urls == null) {

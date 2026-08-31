@@ -19,12 +19,10 @@ ClearTune 连接你自己的 Navidrome 或 OpenSubsonic 兼容服务器，把浏
   <tr>
     <td align="center"><img src="screenshots/ui-home-sanitized.png" alt="ClearTune 首页真实界面（已脱敏）" width="250"></td>
     <td align="center"><img src="screenshots/ui-now-playing-sanitized.png" alt="ClearTune 正在播放真实界面（已脱敏）" width="250"></td>
-    <td align="center"><img src="screenshots/ui-queue-sanitized.png" alt="ClearTune 播放列表真实界面（已脱敏）" width="250"></td>
   </tr>
   <tr>
     <td align="center"><sub>首页与个性化推荐</sub></td>
     <td align="center"><sub>正在播放</sub></td>
-    <td align="center"><sub>播放模式与队列</sub></td>
   </tr>
 </table>
 
@@ -36,7 +34,9 @@ ClearTune 连接你自己的 Navidrome 或 OpenSubsonic 兼容服务器，把浏
 
 ### 从曲库到播放，操作更顺手
 
-- 按专辑、艺术家、歌曲或文件夹浏览，支持全库搜索与最近搜索
+- 按专辑、艺术家、歌曲、流派或服务器文件夹浏览；流派可直接进入对应歌曲列表
+- 搜索会先从本地缓存即时显示结果，再合并服务器结果，并支持继续加载更多内容
+- 音乐库显示当前同步阶段和上次成功同步时间，连接异常时仍保留本地内容
 - 快速喜欢歌曲、下一首播放、加入歌单、下载或查看歌曲详情
 - 歌单与 Navidrome 同步，支持多选后批量移除歌曲
 - 常驻迷你播放器，在浏览不同页面时也能继续控制播放
@@ -45,7 +45,7 @@ ClearTune 连接你自己的 Navidrome 或 OpenSubsonic 兼容服务器，把浏
 
 ### 离线也能完整听歌
 
-ClearTune 可以下载服务器中的原始音乐文件，并支持暂停、继续和断点续传。应用会识别重复任务、显示 Wi-Fi 等待状态，并在服务器拒绝下载或本地空间不足时给出明确提示。完成下载后，无网络也可以直接播放。
+ClearTune 可以下载服务器中的原始音乐文件，并支持暂停、继续和断点续传。应用会识别重复任务、显示 Wi-Fi 等待状态，并在服务器拒绝下载或本地空间不足时给出明确提示。取消下载任务与删除已完成文件使用不同操作文案，并在删除前再次确认。完成下载后，无网络也可以直接播放。
 
 ### 音质由你决定
 

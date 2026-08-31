@@ -87,7 +87,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -165,18 +164,27 @@ internal fun MiniPlayer(
         } else {
             0f
         }
+        val isBuffering = state.status in setOf(PlaybackStatus.BUFFERING, PlaybackStatus.READY)
         Column(
             modifier = Modifier
                 .padding(horizontal = 12.dp, vertical = 6.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerLow),
         ) {
-            LinearProgressIndicator(
-                progress = { progress.coerceIn(0f, 1f) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(2.dp),
-            )
+            if (isBuffering) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                )
+            } else {
+                LinearProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                )
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -210,12 +218,19 @@ internal fun MiniPlayer(
                     }
                 }
                 ClearTuneTonalIconButton(onClick = onToggle) {
-                    Icon(
-                        if (state.status == PlaybackStatus.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                        contentDescription = stringResource(
-                            if (state.status == PlaybackStatus.PLAYING) R.string.pause_action else R.string.play_action,
-                        ),
-                    )
+                    if (isBuffering) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            if (state.status == PlaybackStatus.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            contentDescription = stringResource(
+                                if (state.status == PlaybackStatus.PLAYING) R.string.pause_action else R.string.play_action,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -471,13 +486,21 @@ internal fun NowPlayingScreen(
                         Icon(Icons.Rounded.SkipPrevious, contentDescription = stringResource(R.string.previous_song))
                     }
                     FilledIconButton(onClick = playerViewModel::togglePlayPause, modifier = Modifier.size(70.dp)) {
-                        Icon(
-                            if (state.status == PlaybackStatus.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = stringResource(
-                                if (state.status == PlaybackStatus.PLAYING) R.string.pause_action else R.string.play_action,
-                            ),
-                            modifier = Modifier.size(36.dp),
-                        )
+                        if (state.status in setOf(PlaybackStatus.BUFFERING, PlaybackStatus.READY)) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(32.dp),
+                                strokeWidth = 3.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        } else {
+                            Icon(
+                                if (state.status == PlaybackStatus.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = stringResource(
+                                    if (state.status == PlaybackStatus.PLAYING) R.string.pause_action else R.string.play_action,
+                                ),
+                                modifier = Modifier.size(36.dp),
+                            )
+                        }
                     }
                     IconButton(
                         onClick = playerViewModel::next,
@@ -832,8 +855,14 @@ private fun LyricsArtwork(
     }
     Box(modifier = modifier) {
         when {
-            lyricsState.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            lyricsState.loading -> Column(
+                Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 CircularProgressIndicator()
+                Spacer(Modifier.height(12.dp))
+                Text(stringResource(R.string.loading_lyrics))
             }
             lines.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(lyricsState.message ?: stringResource(R.string.no_lyrics))
@@ -886,7 +915,11 @@ internal fun LyricsScreen(
                     .padding(padding),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
-            ) { Text(stringResource(R.string.loading_lyrics)) }
+            ) {
+                CircularProgressIndicator()
+                Spacer(Modifier.height(12.dp))
+                Text(stringResource(R.string.loading_lyrics))
+            }
             state.lyrics?.lines.isNullOrEmpty() -> Column(
                 Modifier
                     .fillMaxSize()
@@ -1046,30 +1079,7 @@ internal fun QueueScreen(
                     itemsIndexed(state.queue, key = { _, song -> song.id }) { index, song ->
                         val isCurrent = index == state.currentIndex
                         val isDragging = draggedItemIndex == index
-                        var removalHandled by remember(song.id) { mutableStateOf(false) }
                         val dismissState = rememberSwipeToDismissBoxState()
-                        LaunchedEffect(dismissState.currentValue) {
-                            if (
-                                dismissState.currentValue == SwipeToDismissBoxValue.EndToStart &&
-                                !removalHandled
-                            ) {
-                                removalHandled = true
-                                val undoToken = playerViewModel.removeUndoable(index)
-                                if (undoToken != null) {
-                                    scope.launch {
-                                        val result = snackbarHostState.showSnackbar(
-                                            message = removeMessage,
-                                            actionLabel = undoLabel,
-                                        )
-                                        if (result == SnackbarResult.ActionPerformed) {
-                                            playerViewModel.undoQueueMutation(undoToken)
-                                        } else {
-                                            playerViewModel.discardQueueUndo(undoToken)
-                                        }
-                                    }
-                                }
-                            }
-                        }
                         val draggedScale by animateFloatAsState(
                             targetValue = if (isDragging) 1.015f else 1f,
                             animationSpec = ClearTuneMotion.quick(),
@@ -1092,24 +1102,8 @@ internal fun QueueScreen(
                                     },
                                 ),
                             enableDismissFromStartToEnd = false,
-                            enableDismissFromEndToStart = !isDragging,
-                            backgroundContent = {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(vertical = 3.dp)
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(MaterialTheme.colorScheme.errorContainer)
-                                        .padding(end = 22.dp),
-                                    contentAlignment = Alignment.CenterEnd,
-                                ) {
-                                    Icon(
-                                        Icons.Rounded.Delete,
-                                        contentDescription = stringResource(R.string.remove_action),
-                                        tint = MaterialTheme.colorScheme.onErrorContainer,
-                                    )
-                                }
-                            },
+                            enableDismissFromEndToStart = false,
+                            backgroundContent = {},
                         ) {
                             Surface(
                                 modifier = Modifier
@@ -1186,9 +1180,37 @@ internal fun QueueScreen(
                                         )
                                     }
                                     IconButton(
+                                        onClick = {
+                                            val currentIndex = latestQueue.indexOfFirst { it.id == song.id }
+                                            if (currentIndex >= 0) {
+                                                val undoToken = playerViewModel.removeUndoable(currentIndex)
+                                                if (undoToken != null) {
+                                                    scope.launch {
+                                                        val result = snackbarHostState.showSnackbar(
+                                                            message = removeMessage,
+                                                            actionLabel = undoLabel,
+                                                        )
+                                                        if (result == SnackbarResult.ActionPerformed) {
+                                                            playerViewModel.undoQueueMutation(undoToken)
+                                                        } else {
+                                                            playerViewModel.discardQueueUndo(undoToken)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.size(40.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.Delete,
+                                            contentDescription = stringResource(R.string.remove_action),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    IconButton(
                                         onClick = {},
                                         modifier = Modifier
-                                            .size(48.dp)
+                                            .size(40.dp)
                                             .pointerInput(song.id) {
                                                 detectDragGesturesAfterLongPress(
                                                     onDragStart = {
@@ -1311,18 +1333,12 @@ private fun QueueModeSelector(
         Column(Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     stringResource(R.string.playback_method),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    mode.label(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.height(8.dp))

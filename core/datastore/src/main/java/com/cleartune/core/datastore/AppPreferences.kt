@@ -77,6 +77,7 @@ data class AppSettings(
     val mobileAudioQuality: MobileAudioQuality = MobileAudioQuality.RATE_192,
     val checkUpdates: Boolean = true,
     val recentSearches: List<String> = emptyList(),
+    val lastLibrarySyncEpochMs: Long = 0L,
 )
 
 private val Context.appSettingsDataStore by preferencesDataStore(name = "app_settings")
@@ -108,6 +109,7 @@ class AppPreferences(private val context: Context) {
                 ?.split(SEARCH_SEPARATOR)
                 ?.filter(String::isNotBlank)
                 .orEmpty(),
+            lastLibrarySyncEpochMs = preferences[LAST_LIBRARY_SYNC_EPOCH_MS] ?: 0L,
         )
     }
 
@@ -167,6 +169,10 @@ class AppPreferences(private val context: Context) {
 
     suspend fun clearRecentSearches() = edit { it.remove(RECENT_SEARCHES) }
 
+    suspend fun setLastLibrarySyncEpochMs(value: Long) = edit {
+        it[LAST_LIBRARY_SYNC_EPOCH_MS] = value.coerceAtLeast(0L)
+    }
+
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.appSettingsDataStore.edit(block)
     }
@@ -185,6 +191,7 @@ class AppPreferences(private val context: Context) {
         val LAST_UPDATE_CHECK_EPOCH_MS = longPreferencesKey("last_update_check_epoch_ms")
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
         val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
+        val LAST_LIBRARY_SYNC_EPOCH_MS = longPreferencesKey("last_library_sync_epoch_ms")
         const val SEARCH_SEPARATOR = "\u001F"
         const val EQUALIZER_SEPARATOR = ","
         const val MAX_RECENT_SEARCHES = 8

@@ -9,6 +9,52 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MediaDao {
+    @Query("SELECT COUNT(*) FROM search_documents")
+    suspend fun searchDocumentCount(): Int
+
+    @Query("SELECT COUNT(*) FROM search_documents WHERE pinyin LIKE '%' || :marker || '%'")
+    suspend fun searchDocumentFormatCount(marker: String): Int
+
+    @Query(
+        """
+        SELECT * FROM search_documents
+        WHERE search_documents MATCH :matchQuery
+          AND entityType = :entityType
+        LIMIT :limit
+        """,
+    )
+    suspend fun searchDocuments(
+        entityType: String,
+        matchQuery: String,
+        limit: Int,
+    ): List<SearchDocumentEntity>
+
+    @Query("SELECT * FROM search_documents LIMIT :limit")
+    suspend fun searchSuggestionDocuments(limit: Int): List<SearchDocumentEntity>
+
+    @Insert
+    suspend fun insertSearchDocuments(items: List<SearchDocumentEntity>)
+
+    @Query("DELETE FROM search_documents")
+    suspend fun clearSearchDocuments()
+
+    @Query("DELETE FROM search_documents WHERE entityType = :entityType AND entityId IN (:entityIds)")
+    suspend fun deleteSearchDocuments(entityType: String, entityIds: List<String>)
+
+    @Transaction
+    suspend fun replaceSearchDocuments(items: List<SearchDocumentEntity>) {
+        clearSearchDocuments()
+        if (items.isNotEmpty()) insertSearchDocuments(items)
+    }
+
+    @Transaction
+    suspend fun upsertSearchDocuments(items: List<SearchDocumentEntity>) {
+        items.groupBy(SearchDocumentEntity::entityType).forEach { (entityType, documents) ->
+            deleteSearchDocuments(entityType, documents.map(SearchDocumentEntity::entityId))
+        }
+        if (items.isNotEmpty()) insertSearchDocuments(items)
+    }
+
     @Query("SELECT * FROM albums ORDER BY COALESCE(createdAt, 0) DESC, name COLLATE NOCASE")
     fun observeAlbums(): Flow<List<AlbumEntity>>
 
@@ -21,14 +67,26 @@ interface MediaDao {
     @Query("SELECT * FROM artists WHERE id = :id LIMIT 1")
     fun observeArtist(id: String): Flow<ArtistEntity?>
 
+    @Query("SELECT * FROM artists WHERE id IN (:ids)")
+    suspend fun artistsByIds(ids: List<String>): List<ArtistEntity>
+
     @Query("SELECT * FROM songs ORDER BY title COLLATE NOCASE")
     fun observeSongs(): Flow<List<SongEntity>>
+
+    @Query("SELECT * FROM albums WHERE id IN (:ids)")
+    suspend fun albumsByIds(ids: List<String>): List<AlbumEntity>
+
+    @Query("SELECT * FROM songs WHERE id IN (:ids)")
+    suspend fun songsByIds(ids: List<String>): List<SongEntity>
 
     @Query("SELECT * FROM playlists ORDER BY name COLLATE NOCASE")
     fun observePlaylists(): Flow<List<PlaylistEntity>>
 
     @Query("SELECT * FROM playlists WHERE id = :id LIMIT 1")
     fun observePlaylist(id: String): Flow<PlaylistEntity?>
+
+    @Query("SELECT * FROM playlists WHERE id IN (:ids)")
+    suspend fun playlistsByIds(ids: List<String>): List<PlaylistEntity>
 
     @Query("SELECT songs.* FROM songs INNER JOIN playlist_songs ON songs.id = playlist_songs.songId WHERE playlist_songs.playlistId = :playlistId ORDER BY playlist_songs.position")
     fun observePlaylistSongs(playlistId: String): Flow<List<SongEntity>>

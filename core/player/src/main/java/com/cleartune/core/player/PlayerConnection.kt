@@ -156,7 +156,7 @@ class PlayerConnection(context: Context) {
     }
 
     fun togglePlayPause() {
-        controller?.let { if (it.isPlaying) it.pause() else it.play() }
+        controller?.let { if (it.isPlaying || it.playWhenReady) it.pause() else it.play() }
     }
 
     fun seekTo(positionMs: Long) = controller?.seekTo(positionMs.coerceAtLeast(0)) ?: Unit

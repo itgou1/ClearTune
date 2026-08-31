@@ -55,6 +55,16 @@ class RecommendationEngineTest {
         assertTrue(frequent.all { it.playCount >= 3 && it.lastPlayedAt != null })
     }
 
+    @Test
+    fun shelvesDoNotRepeatSongsAndReasonsExplainSelection() {
+        val result = RecommendationEngine().generate(songs, 17, now = NOW)
+        val ids = result.flatMap { shelf -> shelf.songs.map(Song::id) }
+
+        assertEquals(ids.distinct().size, ids.size)
+        assertTrue(result.all { it.reason.isNotBlank() })
+        assertTrue(result.first { it.id == "new-taste" }.reason.contains("不超过 2 次"))
+    }
+
     private companion object {
         const val DAY = 24 * 60 * 60 * 1_000L
         const val NOW = 1_800_000_000_000L

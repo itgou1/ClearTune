@@ -1,6 +1,7 @@
 package com.cleartune.app
 
 import com.cleartune.core.model.Album
+import com.cleartune.core.model.Artist
 import com.cleartune.core.model.Song
 
 /**
@@ -9,15 +10,15 @@ import com.cleartune.core.model.Song
  * how that legacy response appears in the library data. Treat it as missing so ClearTune can use
  * its own deterministic fallback artwork instead.
  */
-private val navidromeMissingAlbumArtwork = Regex(
-    pattern = "^al-[^_]+_0+(?:[?#].*)?$",
+private val navidromeMissingGeneratedArtwork = Regex(
+    pattern = "^(?:al|ar)-[^_]+_0+(?:[?#].*)?$",
     option = RegexOption.IGNORE_CASE,
 )
 
 internal fun String?.displayableArtworkId(): String? = this
     ?.trim()
     ?.takeIf(String::isNotEmpty)
-    ?.takeUnless(navidromeMissingAlbumArtwork::matches)
+    ?.takeUnless(navidromeMissingGeneratedArtwork::matches)
 
 /**
  * Navidrome may give an album a non-zero artwork revision even though getCoverArt still returns
@@ -53,3 +54,31 @@ internal fun List<Album>.withResolvedArtwork(songs: List<Song>): List<Album> {
 
 internal fun Album.withResolvedArtwork(songs: List<Song>): Album =
     listOf(this).withResolvedArtwork(songs).single()
+
+/**
+ * Navidrome commonly returns an `ar-…_0` generated placeholder for every artist. Prefer the
+ * artist's own real image, then a real image from one of their albums.
+ */
+internal fun List<Artist>.withResolvedArtistArtwork(albums: List<Album>): List<Artist> {
+    if (isEmpty()) return this
+
+    val albumArtworkByArtistId = LinkedHashMap<String, String>()
+    albums.forEach { album ->
+        val artistId = album.artistId ?: return@forEach
+        album.coverArtId.displayableArtworkId()?.let { artworkId ->
+            albumArtworkByArtistId.putIfAbsent(artistId, artworkId)
+        }
+    }
+
+    return map { artist ->
+        artist.copy(
+            coverArtId = artist.coverArtId.displayableArtworkId()
+                ?: albumArtworkByArtistId[artist.id],
+        )
+    }
+}
+
+internal fun Artist.withResolvedArtistArtwork(songs: List<Song>): Artist = copy(
+    coverArtId = coverArtId.displayableArtworkId()
+        ?: songs.firstNotNullOfOrNull { it.coverArtId.displayableArtworkId() },
+)

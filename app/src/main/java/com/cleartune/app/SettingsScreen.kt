@@ -57,6 +57,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -170,7 +173,8 @@ internal fun FullSettingsScreen(
                     title = stringResource(R.string.volume_normalization),
                     subtitle = stringResource(R.string.volume_normalization_auto_mode),
                     trailing = {
-                        Switch(
+                        ClearTuneAccessibleSwitch(
+                            label = stringResource(R.string.volume_normalization),
                             checked = settings.volumeNormalizationEnabled,
                             onCheckedChange = viewModel::setVolumeNormalization,
                         )
@@ -198,7 +202,11 @@ internal fun FullSettingsScreen(
                     icon = Icons.Rounded.Download,
                     title = stringResource(R.string.wifi_only_downloads),
                     trailing = {
-                        Switch(checked = settings.wifiOnlyDownloads, onCheckedChange = viewModel::setWifiOnly)
+                        ClearTuneAccessibleSwitch(
+                            label = stringResource(R.string.wifi_only_downloads),
+                            checked = settings.wifiOnlyDownloads,
+                            onCheckedChange = viewModel::setWifiOnly,
+                        )
                     },
                 )
                 SettingsDivider()
@@ -227,7 +235,11 @@ internal fun FullSettingsScreen(
                     icon = Icons.Rounded.SystemUpdate,
                     title = stringResource(R.string.auto_check_updates),
                     trailing = {
-                        Switch(checked = settings.checkUpdates, onCheckedChange = viewModel::setCheckUpdates)
+                        ClearTuneAccessibleSwitch(
+                            label = stringResource(R.string.auto_check_updates),
+                            checked = settings.checkUpdates,
+                            onCheckedChange = viewModel::setCheckUpdates,
+                        )
                     },
                 )
                 SettingsDivider()
@@ -339,6 +351,25 @@ internal fun FullSettingsScreen(
             )
         }
     }
+}
+
+@Composable
+internal fun ClearTuneAccessibleSwitch(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val stateLabel = stringResource(if (checked) R.string.switch_state_on else R.string.switch_state_off)
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        enabled = enabled,
+        modifier = Modifier.semantics {
+            contentDescription = label
+            stateDescription = stateLabel
+        },
+    )
 }
 
 @Composable

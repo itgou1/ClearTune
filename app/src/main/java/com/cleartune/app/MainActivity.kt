@@ -34,7 +34,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
@@ -269,7 +268,8 @@ private fun LoginScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Switch(
+                        ClearTuneAccessibleSwitch(
+                            label = stringResource(R.string.allow_http),
                             checked = allowHttp,
                             onCheckedChange = { enabled ->
                                 if (enabled) showHttpWarning = true else allowHttp = false

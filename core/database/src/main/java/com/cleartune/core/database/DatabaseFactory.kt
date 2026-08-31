@@ -11,7 +11,7 @@ object DatabaseFactory {
             context.applicationContext,
             ClearTuneDatabase::class.java,
             "cleartune.db",
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     }
 
     private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -22,6 +22,25 @@ object DatabaseFactory {
             db.execSQL("ALTER TABLE songs ADD COLUMN replayGainAlbumPeak REAL")
             db.execSQL("ALTER TABLE songs ADD COLUMN replayGainBaseDb REAL")
             db.execSQL("ALTER TABLE songs ADD COLUMN replayGainFallbackDb REAL")
+        }
+    }
+
+    private val MIGRATION_2_3 = object : Migration(2, 3) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS search_documents USING FTS4(
+                    entityType TEXT NOT NULL,
+                    entityId TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    subtitle TEXT NOT NULL,
+                    keywords TEXT NOT NULL,
+                    pinyin TEXT NOT NULL,
+                    initials TEXT NOT NULL,
+                    tokenize=unicode61
+                )
+                """.trimIndent(),
+            )
         }
     }
 }

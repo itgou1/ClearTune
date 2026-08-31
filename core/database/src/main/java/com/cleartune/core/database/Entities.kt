@@ -1,8 +1,22 @@
 package com.cleartune.core.database
 
 import androidx.room.Entity
+import androidx.room.Fts4
+import androidx.room.FtsOptions
 import androidx.room.Index
 import androidx.room.PrimaryKey
+
+@Fts4(tokenizer = FtsOptions.TOKENIZER_UNICODE61)
+@Entity(tableName = "search_documents")
+data class SearchDocumentEntity(
+    val entityType: String,
+    val entityId: String,
+    val title: String,
+    val subtitle: String,
+    val keywords: String,
+    val pinyin: String,
+    val initials: String,
+)
 
 @Entity(tableName = "artists")
 data class ArtistEntity(

@@ -15,8 +15,9 @@ import androidx.room.RoomDatabase
         PlayEventEntity::class,
         PendingMutationEntity::class,
         RecommendationSessionEntity::class,
+        SearchDocumentEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class ClearTuneDatabase : RoomDatabase() {
