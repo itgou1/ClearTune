@@ -11,7 +11,7 @@ object DatabaseFactory {
             context.applicationContext,
             ClearTuneDatabase::class.java,
             "cleartune.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
     }
 
     private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -39,6 +39,45 @@ object DatabaseFactory {
                     initials TEXT NOT NULL,
                     tokenize=unicode61
                 )
+                """.trimIndent(),
+            )
+        }
+    }
+
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS lyrics_cache (
+                    serverUrl TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    songId TEXT NOT NULL,
+                    synced INTEGER NOT NULL,
+                    updatedAt INTEGER NOT NULL,
+                    PRIMARY KEY(serverUrl, username, songId)
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_lyrics_cache_updatedAt ON lyrics_cache(updatedAt)",
+            )
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS lyric_lines (
+                    serverUrl TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    songId TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    startMs INTEGER,
+                    text TEXT NOT NULL,
+                    PRIMARY KEY(serverUrl, username, songId, position)
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS index_lyric_lines_serverUrl_username_songId
+                ON lyric_lines(serverUrl, username, songId)
                 """.trimIndent(),
             )
         }

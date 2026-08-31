@@ -59,6 +59,7 @@ import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Download
@@ -109,6 +110,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
@@ -117,6 +119,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -254,7 +257,7 @@ fun ClearTuneApp(
         }
     }
     val showNavigationBar = currentRoute in mainDestinations.map { it.route }
-    val showMiniPlayer = playerState.currentSong != null && currentRoute != "now-playing"
+    val showMiniPlayer = playerState.currentSong != null && currentRoute !in setOf("now-playing", "queue")
     val viewDownloadsLabel = stringResource(R.string.view_downloads)
     val viewUpdateLabel = stringResource(R.string.update_available_action)
     val updateAvailableMessage = updateState.release
@@ -664,6 +667,8 @@ fun ClearTuneApp(
                     playerViewModel = playerViewModel,
                     musicViewModel = viewModel,
                     onBack = navController::popBackStack,
+                    onOpenPlayer = openNowPlaying,
+                    onTogglePlayback = playerViewModel::togglePlayPause,
                     onBrowseLibrary = {
                         navController.navigate("library") {
                             popUpTo(navController.graph.findStartDestination().id) {
@@ -1776,6 +1781,9 @@ private fun LibraryScreen(
     }
     val songListState = rememberLazyListState()
     val songListScope = rememberCoroutineScope()
+    val showSongScrollToTop by remember {
+        derivedStateOf { songListState.firstVisibleItemIndex >= 8 }
+    }
     LaunchedEffect(savedSelectedTab, labels.size) {
         if (savedSelectedTab !in labels.indices) savedSelectedTab = 0
     }
@@ -1871,7 +1879,7 @@ private fun LibraryScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(
                             top = 10.dp,
-                            bottom = 14.dp,
+                            bottom = 80.dp,
                         ),
                     ) {
                         item {
@@ -2111,6 +2119,35 @@ private fun LibraryScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showSongScrollToTop,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 20.dp, bottom = 20.dp),
+                        enter = fadeIn(ClearTuneMotion.standard()) + scaleIn(
+                            initialScale = 0.82f,
+                            animationSpec = ClearTuneMotion.standard(),
+                        ),
+                        exit = fadeOut(ClearTuneMotion.quick()) + scaleOut(
+                            targetScale = 0.82f,
+                            animationSpec = ClearTuneMotion.quick(),
+                        ),
+                    ) {
+                        SmallFloatingActionButton(
+                            onClick = {
+                                songListScope.launch {
+                                    songListState.animateScrollToItem(0)
+                                }
+                            },
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ArrowUpward,
+                                contentDescription = stringResource(R.string.scroll_to_top),
+                            )
                         }
                     }
                 }

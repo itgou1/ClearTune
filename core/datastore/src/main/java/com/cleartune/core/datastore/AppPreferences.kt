@@ -47,10 +47,10 @@ data class EqualizerSettings(
     val activeLevelsDb: List<Int>
         get() = when (preset) {
             EqualizerPreset.BALANCED -> listOf(0, 0, 0, 0, 0)
-            EqualizerPreset.CLEAR_VOCAL -> listOf(-2, 0, 3, 2, -1)
-            EqualizerPreset.WARM_BASS -> listOf(4, 3, 0, -1, -2)
-            EqualizerPreset.AIRY_TREBLE -> listOf(-2, -1, 0, 3, 4)
-            EqualizerPreset.NIGHT_SOFT -> listOf(-2, 0, 1, 0, -3)
+            EqualizerPreset.CLEAR_VOCAL -> listOf(-4, -3, -1, 0, -1)
+            EqualizerPreset.WARM_BASS -> listOf(0, 0, -3, -2, -1)
+            EqualizerPreset.AIRY_TREBLE -> listOf(-3, -2, -2, -1, 0)
+            EqualizerPreset.NIGHT_SOFT -> listOf(-4, -2, 0, -2, -4)
             EqualizerPreset.CUSTOM -> customLevelsDb.sanitizedEqualizerLevels()
         }
 }

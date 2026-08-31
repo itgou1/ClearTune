@@ -961,6 +961,8 @@ internal fun QueueScreen(
     playerViewModel: PlayerViewModel,
     musicViewModel: MusicViewModel,
     onBack: () -> Unit,
+    onOpenPlayer: () -> Unit,
+    onTogglePlayback: () -> Unit,
     onBrowseLibrary: () -> Unit,
 ) {
     val listState = rememberLazyListState()
@@ -986,6 +988,23 @@ internal fun QueueScreen(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        bottomBar = {
+            state.currentSong?.let {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    shadowElevation = 8.dp,
+                ) {
+                    Column(Modifier.navigationBarsPadding()) {
+                        MiniPlayer(
+                            state = state,
+                            musicViewModel = musicViewModel,
+                            onOpen = onOpenPlayer,
+                            onToggle = onTogglePlayback,
+                        )
+                    }
+                }
+            }
+        },
         topBar = {
             ClearTuneTopAppBar(
                 title = stringResource(R.string.play_queue),

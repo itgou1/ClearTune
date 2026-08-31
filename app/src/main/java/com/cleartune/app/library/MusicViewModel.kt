@@ -406,10 +406,14 @@ class MusicViewModel @Inject constructor(
     }
 
     fun toggleSongFavorite(song: Song) {
-        viewModelScope.launch { repository.setSongFavorite(song, song.starredAt == null) }
+        setSongFavorite(song, song.starredAt == null)
     }
 
     fun setSongFavorite(song: Song, favorite: Boolean) {
+        val starredAt = System.currentTimeMillis().takeIf { favorite }
+        _searchState.update { state ->
+            state.copy(results = state.results.withSongFavorite(song.id, starredAt))
+        }
         viewModelScope.launch { repository.setSongFavorite(song, favorite) }
     }
 

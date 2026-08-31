@@ -295,6 +295,12 @@ internal fun mergeFreshSearchResults(first: SearchResults, fresh: SearchResults)
     },
 )
 
+internal fun SearchResults.withSongFavorite(songId: String, starredAt: Long?): SearchResults = copy(
+    songs = songs.map { song ->
+        if (song.id == songId) song.copy(starredAt = starredAt) else song
+    },
+)
+
 private fun <T> mergeById(
     local: List<T>,
     remote: List<T>,

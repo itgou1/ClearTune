@@ -2,6 +2,8 @@ package com.cleartune.core.database
 
 import com.cleartune.core.model.Album
 import com.cleartune.core.model.Artist
+import com.cleartune.core.model.LyricLine
+import com.cleartune.core.model.Lyrics
 import com.cleartune.core.model.Playlist
 import com.cleartune.core.model.ReplayGain
 import com.cleartune.core.model.Song
@@ -134,4 +136,39 @@ fun PlaylistEntity.toModel() = Playlist(
     isPublic,
     coverArtId,
     changedAt,
+)
+
+data class LyricsCacheWrite(
+    val cache: LyricsCacheEntity,
+    val lines: List<LyricLineEntity>,
+)
+
+fun Lyrics.toCacheWrite(
+    serverUrl: String,
+    username: String,
+    now: Long = System.currentTimeMillis(),
+) = LyricsCacheWrite(
+    cache = LyricsCacheEntity(
+        serverUrl = serverUrl,
+        username = username,
+        songId = songId,
+        synced = synced,
+        updatedAt = now,
+    ),
+    lines = lines.mapIndexed { position, line ->
+        LyricLineEntity(
+            serverUrl = serverUrl,
+            username = username,
+            songId = songId,
+            position = position,
+            startMs = line.startMs,
+            text = line.text,
+        )
+    },
+)
+
+fun CachedLyrics.toModel() = Lyrics(
+    songId = cache.songId,
+    synced = cache.synced,
+    lines = lines.map { LyricLine(startMs = it.startMs, text = it.text) },
 )

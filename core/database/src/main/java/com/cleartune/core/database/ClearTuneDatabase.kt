@@ -16,8 +16,10 @@ import androidx.room.RoomDatabase
         PendingMutationEntity::class,
         RecommendationSessionEntity::class,
         SearchDocumentEntity::class,
+        LyricsCacheEntity::class,
+        LyricLineEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class ClearTuneDatabase : RoomDatabase() {
@@ -25,4 +27,5 @@ abstract class ClearTuneDatabase : RoomDatabase() {
     abstract fun queueDao(): QueueDao
     abstract fun downloadDao(): DownloadDao
     abstract fun activityDao(): ActivityDao
+    abstract fun lyricsDao(): LyricsDao
 }

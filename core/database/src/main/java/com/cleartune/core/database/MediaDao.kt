@@ -279,3 +279,56 @@ interface ActivityDao {
     @Query("DELETE FROM pending_mutations WHERE id = :id")
     suspend fun deleteMutation(id: String)
 }
+
+data class CachedLyrics(
+    val cache: LyricsCacheEntity,
+    val lines: List<LyricLineEntity>,
+)
+
+@Dao
+interface LyricsDao {
+    @Query(
+        """
+        SELECT * FROM lyrics_cache
+        WHERE serverUrl = :serverUrl AND username = :username AND songId = :songId
+        LIMIT 1
+        """,
+    )
+    suspend fun cache(serverUrl: String, username: String, songId: String): LyricsCacheEntity?
+
+    @Query(
+        """
+        SELECT * FROM lyric_lines
+        WHERE serverUrl = :serverUrl AND username = :username AND songId = :songId
+        ORDER BY position
+        """,
+    )
+    suspend fun lines(serverUrl: String, username: String, songId: String): List<LyricLineEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCache(item: LyricsCacheEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertLines(items: List<LyricLineEntity>)
+
+    @Query(
+        """
+        DELETE FROM lyric_lines
+        WHERE serverUrl = :serverUrl AND username = :username AND songId = :songId
+        """,
+    )
+    suspend fun deleteLines(serverUrl: String, username: String, songId: String)
+
+    @Transaction
+    suspend fun lyrics(serverUrl: String, username: String, songId: String): CachedLyrics? {
+        val cache = cache(serverUrl, username, songId) ?: return null
+        return CachedLyrics(cache, lines(serverUrl, username, songId))
+    }
+
+    @Transaction
+    suspend fun replace(item: LyricsCacheEntity, lines: List<LyricLineEntity>) {
+        upsertCache(item)
+        deleteLines(item.serverUrl, item.username, item.songId)
+        if (lines.isNotEmpty()) insertLines(lines)
+    }
+}

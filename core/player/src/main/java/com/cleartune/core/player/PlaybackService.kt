@@ -21,16 +21,18 @@ import com.cleartune.core.datastore.AppPreferences
 import com.cleartune.core.datastore.DEFAULT_PLAYBACK_CACHE_SIZE_MB
 import com.cleartune.core.datastore.EQUALIZER_FREQUENCIES_HZ
 import com.cleartune.core.datastore.EqualizerSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import java.io.File
-import kotlin.math.abs
-import kotlin.math.ln
+import kotlin.math.roundToInt
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class PlaybackService : MediaLibraryService() {
@@ -44,6 +46,7 @@ class PlaybackService : MediaLibraryService() {
     private var equalizerSettings = EqualizerSettings()
     private var audioSessionId = C.AUDIO_SESSION_ID_UNSET
     private var equalizer: Equalizer? = null
+    private var equalizerTransitionJob: Job? = null
     private var replayGainVolume = 1f
     private var equalizerHeadroom = 1f
     private val playerListener = object : Player.Listener {
@@ -55,7 +58,7 @@ class PlaybackService : MediaLibraryService() {
             if (this@PlaybackService.audioSessionId == audioSessionId) return
             releaseEqualizer()
             this@PlaybackService.audioSessionId = audioSessionId
-            applyEqualizer()
+            applyEqualizer(animate = false)
         }
     }
 
@@ -121,7 +124,7 @@ class PlaybackService : MediaLibraryService() {
                     volumeNormalizationEnabled = settings.volumeNormalizationEnabled
                     equalizerSettings = settings.equalizer
                     applyReplayGain()
-                    applyEqualizer()
+                    applyEqualizer(animate = true)
                 }
         }
         cacheScope.launch {
@@ -164,10 +167,9 @@ class PlaybackService : MediaLibraryService() {
         applyOutputVolume()
     }
 
-    private fun applyEqualizer() {
+    private fun applyEqualizer(animate: Boolean) {
         if (!::player.isInitialized) return
-        if (!equalizerSettings.enabled) {
-            releaseEqualizer()
+        if (!equalizerSettings.enabled && equalizer == null) {
             equalizerHeadroom = 1f
             applyOutputVolume()
             return
@@ -186,27 +188,71 @@ class PlaybackService : MediaLibraryService() {
             ?.also { equalizer = it }
             ?: return
 
-        val levels = equalizerSettings.activeLevelsDb
-        runCatching {
-            effect.enabled = false
+        if (!effect.hasControl()) {
+            Log.w(TAG, "System equalizer control is held by another audio effect")
+            return
+        }
+
+        val anchorLevels = if (equalizerSettings.enabled) {
+            equalizerSettings.activeLevelsDb
+        } else {
+            List(EQUALIZER_FREQUENCIES_HZ.size) { 0 }
+        }
+        val plan = runCatching {
             val range = effect.bandLevelRange
             val deviceRange = range[0].toInt()..range[1].toInt()
-            repeat(effect.numberOfBands.toInt()) { index ->
+            List(effect.numberOfBands.toInt()) { index ->
                 val band = index.toShort()
                 val centerHz = effect.getCenterFreq(band) / 1_000
-                val targetIndex = EQUALIZER_FREQUENCIES_HZ.indices.minBy { target ->
-                    abs(ln(centerHz.coerceAtLeast(1).toDouble()) - ln(EQUALIZER_FREQUENCIES_HZ[target].toDouble()))
-                }
-                effect.setBandLevel(band, EqualizerMath.millibels(levels[targetIndex], deviceRange))
+                val levelDb = interpolatedEqualizerLevelDb(
+                    anchorFrequenciesHz = EQUALIZER_FREQUENCIES_HZ,
+                    anchorLevelsDb = anchorLevels,
+                    frequencyHz = centerHz.coerceAtLeast(1),
+                )
+                EqualizerBandPlan(
+                    band = band,
+                    targetMillibels = EqualizerMath.millibels(levelDb, deviceRange),
+                )
             }
-            effect.enabled = true
-            equalizerHeadroom = EqualizerMath.headroomMultiplier(levels)
-            applyOutputVolume()
         }.onFailure {
-            Log.w(TAG, "Could not apply equalizer settings", it)
-            releaseEqualizer()
-            equalizerHeadroom = 1f
-            applyOutputVolume()
+            handleEqualizerFailure(it)
+        }.getOrNull() ?: return
+
+        val targetHeadroom = EqualizerMath.headroomMultiplier(
+            plan.map { it.targetMillibels.toInt() / 100f },
+        )
+        val startLevels = runCatching {
+            plan.map { effect.getBandLevel(it.band) }
+        }.onFailure {
+            handleEqualizerFailure(it)
+        }.getOrNull() ?: return
+
+        equalizerTransitionJob?.cancel()
+        equalizerTransitionJob = playbackScope.launch {
+            try {
+                if (!effect.enabled) effect.enabled = true
+                equalizerHeadroom = minOf(equalizerHeadroom, targetHeadroom)
+                applyOutputVolume()
+                val steps = if (animate) EQUALIZER_TRANSITION_STEPS else 1
+                repeat(steps) { step ->
+                    val progress = (step + 1f) / steps
+                    plan.forEachIndexed { index, target ->
+                        val start = startLevels[index].toInt()
+                        val level = (start + (target.targetMillibels.toInt() - start) * progress)
+                            .roundToInt()
+                            .toShort()
+                        effect.setBandLevel(target.band, level)
+                    }
+                    if (step < steps - 1) delay(EQUALIZER_TRANSITION_DURATION_MS / steps)
+                }
+                if (!equalizerSettings.enabled) effect.enabled = false
+                equalizerHeadroom = targetHeadroom
+                applyOutputVolume()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                handleEqualizerFailure(error)
+            }
         }
     }
 
@@ -217,17 +263,33 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun releaseEqualizer() {
+        equalizerTransitionJob?.cancel()
+        equalizerTransitionJob = null
         runCatching { equalizer?.enabled = false }
         runCatching { equalizer?.release() }
         equalizer = null
     }
 
+    private fun handleEqualizerFailure(error: Throwable) {
+        Log.w(TAG, "Could not apply system equalizer settings", error)
+        releaseEqualizer()
+        equalizerHeadroom = 1f
+        applyOutputVolume()
+    }
+
     private companion object {
         const val TAG = "ClearTunePlayback"
         const val BYTES_PER_MEGABYTE = 1_024L * 1_024L
+        const val EQUALIZER_TRANSITION_STEPS = 8
+        const val EQUALIZER_TRANSITION_DURATION_MS = 96L
 
         fun Int.toBytes(): Long = toLong() * BYTES_PER_MEGABYTE
     }
 }
+
+private data class EqualizerBandPlan(
+    val band: Short,
+    val targetMillibels: Short,
+)
 
 const val PLAYBACK_CACHE_DIRECTORY_NAME = "playback_cache"

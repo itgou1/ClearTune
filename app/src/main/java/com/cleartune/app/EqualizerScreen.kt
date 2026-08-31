@@ -54,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cleartune.app.settings.SettingsViewModel
 import com.cleartune.core.datastore.EQUALIZER_FREQUENCIES_HZ
 import com.cleartune.core.datastore.EqualizerPreset
+import com.cleartune.core.player.sampledEqualizerCurveDb
 import kotlin.math.roundToInt
 
 private data class PresetPresentation(
@@ -350,7 +351,10 @@ private fun FrequencyCurve(levelsDb: List<Int>, modifier: Modifier = Modifier) {
     val lineColor = MaterialTheme.colorScheme.primary
     val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
     val fillColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-    val surfaceColor = MaterialTheme.colorScheme.surface
+    val curveLevels = sampledEqualizerCurveDb(
+        anchorFrequenciesHz = EQUALIZER_FREQUENCIES_HZ,
+        anchorLevelsDb = levelsDb,
+    )
     Canvas(modifier) {
         val horizontalPadding = 8.dp.toPx()
         val usableWidth = size.width - horizontalPadding * 2
@@ -359,10 +363,10 @@ private fun FrequencyCurve(levelsDb: List<Int>, modifier: Modifier = Modifier) {
             val y = size.height * row / 4f
             drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
         }
-        val points = levelsDb.mapIndexed { index, level ->
+        val points = curveLevels.mapIndexed { index, level ->
             Offset(
-                x = horizontalPadding + usableWidth * index / (levelsDb.size - 1).coerceAtLeast(1),
-                y = centerY - (level.coerceIn(-6, 6) / 6f) * centerY * 0.78f,
+                x = horizontalPadding + usableWidth * index / (curveLevels.size - 1).coerceAtLeast(1),
+                y = centerY - (level.coerceIn(-6f, 6f) / 6f) * centerY * 0.78f,
             )
         }
         if (points.isNotEmpty()) {
@@ -375,10 +379,6 @@ private fun FrequencyCurve(levelsDb: List<Int>, modifier: Modifier = Modifier) {
             drawPath(fill, fillColor)
             points.zipWithNext().forEach { (start, end) ->
                 drawLine(lineColor, start, end, strokeWidth = 3.dp.toPx())
-            }
-            points.forEach { point ->
-                drawCircle(surfaceColor, radius = 5.dp.toPx(), center = point)
-                drawCircle(lineColor, radius = 3.dp.toPx(), center = point)
             }
         }
     }

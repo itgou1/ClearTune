@@ -3,6 +3,7 @@ package com.cleartune.app.library
 import com.cleartune.core.database.ClearTuneDatabase
 import com.cleartune.core.database.PlaylistSongEntity
 import com.cleartune.core.database.PendingMutationEntity
+import com.cleartune.core.database.toCacheWrite
 import com.cleartune.core.database.toEntity
 import com.cleartune.core.database.toModel
 import com.cleartune.core.datastore.CredentialsStore
@@ -38,6 +39,7 @@ class MusicRepository @Inject constructor(
     private val apiFactory: OpenSubsonicApiFactory,
 ) {
     private val mediaDao = database.mediaDao()
+    private val lyricsDao = database.lyricsDao()
     private val coverArtUrls = ConcurrentHashMap<String, String>()
     private val remoteSearchCache = ConcurrentHashMap<RemoteSearchCacheKey, CachedRemoteSearch>()
     @Volatile
@@ -363,7 +365,26 @@ class MusicRepository @Inject constructor(
         remote()?.musicDirectory(id) ?: RemoteResult.Failure(ClearTuneError.Authentication())
 
     suspend fun lyrics(song: Song): RemoteResult<Lyrics> {
-        return remote()?.lyrics(song) ?: RemoteResult.Failure(ClearTuneError.Authentication())
+        val credentials = credentialsStore.credentials.first()
+            ?: return RemoteResult.Failure(ClearTuneError.Authentication())
+        val serverUrl = credentials.baseUrl.trimEnd('/')
+        runCatching {
+            lyricsDao.lyrics(serverUrl, credentials.username, song.id)
+        }.getOrNull()?.let { cached ->
+            return RemoteResult.Success(cached.toModel())
+        }
+
+        val remote = runCatching {
+            LibraryRemoteDataSource(apiFactory.authorized(credentials))
+        }.getOrNull() ?: return RemoteResult.Failure(ClearTuneError.Authentication())
+        return when (val result = remote.lyrics(song)) {
+            is RemoteResult.Success -> {
+                val write = result.value.toCacheWrite(serverUrl, credentials.username)
+                runCatching { lyricsDao.replace(write.cache, write.lines) }
+                result
+            }
+            is RemoteResult.Failure -> result
+        }
     }
 
     suspend fun coverArtUrl(id: String, size: Int = 512): String? {

@@ -71,6 +71,25 @@ class SearchResultsPolicyTest {
     }
 
     @Test
+    fun favoriteActionUpdatesMatchingSearchResultImmediately() {
+        val results = SearchResults(
+            artists = emptyList(),
+            albums = emptyList(),
+            songs = listOf(
+                Song("song-1", "目标歌曲"),
+                Song("song-2", "其他歌曲"),
+            ),
+        )
+
+        val favorited = results.withSongFavorite("song-1", starredAt = 123L)
+        val unfavorited = favorited.withSongFavorite("song-1", starredAt = null)
+
+        assertEquals(123L, favorited.songs.first().starredAt)
+        assertEquals(null, favorited.songs.last().starredAt)
+        assertEquals(null, unfavorited.songs.first().starredAt)
+    }
+
+    @Test
     fun serverSearchIsConditionalUnlessExplicitlyRequested() {
         val now = 2 * 24 * 60 * 60 * 1_000L
         assertEquals(false, shouldSearchServer(8, now - 1_000, forced = false, now = now))

@@ -157,3 +157,30 @@ data class RecommendationSessionEntity(
     val songIds: String,
     val createdAt: Long,
 )
+
+@Entity(
+    tableName = "lyrics_cache",
+    primaryKeys = ["serverUrl", "username", "songId"],
+    indices = [Index("updatedAt")],
+)
+data class LyricsCacheEntity(
+    val serverUrl: String,
+    val username: String,
+    val songId: String,
+    val synced: Boolean,
+    val updatedAt: Long,
+)
+
+@Entity(
+    tableName = "lyric_lines",
+    primaryKeys = ["serverUrl", "username", "songId", "position"],
+    indices = [Index(value = ["serverUrl", "username", "songId"])],
+)
+data class LyricLineEntity(
+    val serverUrl: String,
+    val username: String,
+    val songId: String,
+    val position: Int,
+    val startMs: Long?,
+    val text: String,
+)
