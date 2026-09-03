@@ -170,6 +170,7 @@ import com.cleartune.app.library.MusicViewModel
 import com.cleartune.app.library.SearchUiState
 import com.cleartune.app.library.SearchCategory
 import com.cleartune.app.library.genreLabelsMatch
+import com.cleartune.app.library.recommendationSurfaces
 import com.cleartune.app.library.resultCount
 import com.cleartune.app.player.PlayerViewModel
 import com.cleartune.app.download.DownloadViewModel
@@ -220,6 +221,14 @@ private data class IndexedLibrarySongs(
 
 private enum class LibrarySongSort {
     TITLE,
+    PLAY_COUNT,
+    RECENTLY_ADDED,
+}
+
+internal enum class FavoriteSongSort {
+    TITLE,
+    RECENTLY_FAVORITED,
+    ARTIST,
     PLAY_COUNT,
     RECENTLY_ADDED,
 }
@@ -394,9 +403,7 @@ fun ClearTuneApp(
         NavHost(
             navController = navController,
             startDestination = "home",
-            modifier = Modifier
-                .padding(padding)
-                .then(if (showNavigationBar) Modifier.statusBarsPadding() else Modifier),
+            modifier = Modifier.padding(padding),
             enterTransition = {
                 val switchesMainDestination =
                     initialState.destination.route in mainDestinations.map { it.route } &&
@@ -443,45 +450,50 @@ fun ClearTuneApp(
             },
         ) {
             composable("home") {
-                HomeScreen(
-                    profile = profile,
-                    state = libraryState,
-                    viewModel = viewModel,
-                    onRefresh = viewModel::refresh,
-                    onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
-                    onPlay = playerViewModel::play,
-                    recommendations = recommendations,
-                    onDiscovery = { navController.navigate("discovery") },
-                    onRefreshRecommendations = viewModel::refreshRecommendations,
-                )
+                MainDestinationContent {
+                    HomeScreen(
+                        profile = profile,
+                        state = libraryState,
+                        viewModel = viewModel,
+                        onRefresh = viewModel::refresh,
+                        onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
+                        onPlay = playerViewModel::play,
+                        recommendations = recommendations,
+                        onDiscovery = { navController.navigate("discovery") },
+                    )
+                }
             }
             composable("search") {
-                SearchScreen(
-                    state = searchState,
-                    recentSearches = recentSearches,
-                    genres = genres,
-                    playlists = libraryState.playlists,
-                    viewModel = viewModel,
-                    onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
-                    onArtist = { navController.navigate("artist/${Uri.encode(it)}") },
-                    onPlay = playerViewModel::play,
-                    onPlaylist = { navController.navigate("playlist/${Uri.encode(it)}") },
-                )
+                MainDestinationContent {
+                    SearchScreen(
+                        state = searchState,
+                        recentSearches = recentSearches,
+                        genres = genres,
+                        playlists = libraryState.playlists,
+                        viewModel = viewModel,
+                        onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
+                        onArtist = { navController.navigate("artist/${Uri.encode(it)}") },
+                        onPlay = playerViewModel::play,
+                        onPlaylist = { navController.navigate("playlist/${Uri.encode(it)}") },
+                    )
+                }
             }
             composable("library") {
-                LibraryScreen(
-                    state = libraryState,
-                    genres = genres,
-                    folderState = folderState,
-                    viewModel = viewModel,
-                    onRefresh = viewModel::refresh,
-                    onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
-                    onArtist = { navController.navigate("artist/${Uri.encode(it)}") },
-                    onPlay = playerViewModel::play,
-                    onPlayNext = playerViewModel::playNext,
-                    onDownload = { downloadViewModel.download(listOf(it)) },
-                    onGenre = { navController.navigate("genre/${Uri.encode(it)}") },
-                )
+                MainDestinationContent {
+                    LibraryScreen(
+                        state = libraryState,
+                        genres = genres,
+                        folderState = folderState,
+                        viewModel = viewModel,
+                        onRefresh = viewModel::refresh,
+                        onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
+                        onArtist = { navController.navigate("artist/${Uri.encode(it)}") },
+                        onPlay = playerViewModel::play,
+                        onPlayNext = playerViewModel::playNext,
+                        onDownload = { downloadViewModel.download(listOf(it)) },
+                        onGenre = { navController.navigate("genre/${Uri.encode(it)}") },
+                    )
+                }
             }
             composable(
                 route = "genre/{name}",
@@ -497,23 +509,25 @@ fun ClearTuneApp(
                 )
             }
             composable("my") {
-                MyScreen(
-                    profile = profile,
-                    playlists = libraryState.playlists,
-                    viewModel = viewModel,
-                    likedCount = libraryState.songs.count { it.starredAt != null },
-                    offlineCount = downloads.count { it.state == DownloadState.COMPLETED },
-                    downloadCount = downloads.count { it.state != DownloadState.COMPLETED },
-                    isConnecting = libraryState.isRefreshing,
-                    connectionError = libraryState.errorMessage,
-                    onFavorites = { navController.navigate("favorites") },
-                    onListeningProfile = { navController.navigate("listening-profile") },
-                    onPlaylist = { navController.navigate("playlist/${Uri.encode(it)}") },
-                    onCreatePlaylist = viewModel::createPlaylist,
-                    onOffline = { navController.navigate("offline") },
-                    onDownloads = { navController.navigate("downloads") },
-                    onSettings = { navController.navigate("settings") },
-                )
+                MainDestinationContent {
+                    MyScreen(
+                        profile = profile,
+                        playlists = libraryState.playlists,
+                        viewModel = viewModel,
+                        likedCount = libraryState.songs.count { it.starredAt != null },
+                        offlineCount = downloads.count { it.state == DownloadState.COMPLETED },
+                        downloadCount = downloads.count { it.state != DownloadState.COMPLETED },
+                        isConnecting = libraryState.isRefreshing,
+                        connectionError = libraryState.errorMessage,
+                        onFavorites = { navController.navigate("favorites") },
+                        onListeningProfile = { navController.navigate("listening-profile") },
+                        onPlaylist = { navController.navigate("playlist/${Uri.encode(it)}") },
+                        onCreatePlaylist = viewModel::createPlaylist,
+                        onOffline = { navController.navigate("offline") },
+                        onDownloads = { navController.navigate("downloads") },
+                        onSettings = { navController.navigate("settings") },
+                    )
+                }
             }
             composable("favorites") {
                 FavoriteSongsScreen(
@@ -622,8 +636,12 @@ fun ClearTuneApp(
                 )
             }
             composable("discovery") {
-                DiscoveryScreen(
+                val discoveryShelves = recommendationSurfaces(
                     shelves = recommendations,
+                    librarySongCount = libraryState.songs.size,
+                ).discovery
+                DiscoveryScreen(
+                    shelves = discoveryShelves,
                     viewModel = viewModel,
                     onRefresh = viewModel::refreshRecommendations,
                     onPlay = playerViewModel::play,
@@ -715,6 +733,17 @@ fun ClearTuneApp(
 }
 
 @Composable
+private fun MainDestinationContent(content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
+    ) {
+        content()
+    }
+}
+
+@Composable
 private fun HomeScreen(
     profile: ServerProfile,
     state: LibraryUiState,
@@ -724,14 +753,14 @@ private fun HomeScreen(
     onPlay: (List<Song>, Int) -> Unit,
     recommendations: List<RecommendationShelf>,
     onDiscovery: () -> Unit,
-    onRefreshRecommendations: () -> Unit,
 ) {
     val isLibraryEmpty = state.albums.isEmpty() && state.artists.isEmpty() && state.songs.isEmpty()
-    val newTaste = recommendations.firstOrNull { it.id == "new-taste" }
-        ?: recommendations.firstOrNull { it.id == "random" }
-    val frequent = recommendations.firstOrNull { it.id == "frequent" }
-    val heroSongs = remember(newTaste, frequent, recommendations) {
-        (newTaste?.songs.orEmpty() + frequent?.songs.orEmpty() + recommendations.flatMap { it.songs })
+    val recommendationContent = remember(recommendations, state.songs.size) {
+        recommendationSurfaces(recommendations, state.songs.size)
+    }
+    val heroSongs = remember(recommendationContent.discovery) {
+        recommendationContent.discovery
+            .flatMap { it.songs }
             .distinctBy(Song::id)
             .take(4)
     }
@@ -764,13 +793,6 @@ private fun HomeScreen(
                 }
             }
         }
-        item {
-            DiscoveryHeroCard(
-                songs = heroSongs,
-                viewModel = viewModel,
-                onDiscovery = onDiscovery,
-            )
-        }
         if ((state.isInitializing || state.isRefreshing) && isLibraryEmpty) {
             item { LoadingBlock() }
         } else if (isLibraryEmpty) {
@@ -790,12 +812,20 @@ private fun HomeScreen(
             }
             item {
                 RecommendationSceneCards(
-                    newTaste = newTaste,
-                    frequent = frequent,
+                    rediscovery = recommendationContent.rediscovery,
+                    frequent = recommendationContent.frequent,
                     viewModel = viewModel,
-                    onRefresh = onRefreshRecommendations,
                     onPlay = onPlay,
                 )
+            }
+            if (recommendationContent.discovery.isNotEmpty()) {
+                item {
+                    DiscoveryHeroCard(
+                        songs = heroSongs,
+                        viewModel = viewModel,
+                        onDiscovery = onDiscovery,
+                    )
+                }
             }
             if (state.albums.isNotEmpty()) {
                 item {
@@ -878,10 +908,9 @@ private fun DiscoveryHeroCard(
 
 @Composable
 private fun RecommendationSceneCards(
-    newTaste: RecommendationShelf?,
+    rediscovery: RecommendationShelf?,
     frequent: RecommendationShelf?,
     viewModel: MusicViewModel,
-    onRefresh: () -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
 ) {
     Row(
@@ -892,21 +921,22 @@ private fun RecommendationSceneCards(
     ) {
         RecommendationSceneCard(
             modifier = Modifier.weight(1f),
-            title = stringResource(R.string.home_new_taste),
+            title = stringResource(
+                if (rediscovery?.id == "random") R.string.home_random else R.string.home_long_absent,
+            ),
             description = stringResource(
-                if (newTaste?.songs.isNullOrEmpty()) {
-                    R.string.home_new_taste_empty
-                } else {
-                    R.string.home_new_taste_subtitle
+                when {
+                    rediscovery?.songs.isNullOrEmpty() -> R.string.home_long_absent_empty
+                    rediscovery.id == "random" -> R.string.home_random_subtitle
+                    else -> R.string.home_long_absent_subtitle
                 },
             ),
-            songs = newTaste?.songs.orEmpty(),
+            songs = rediscovery?.songs.orEmpty(),
             viewModel = viewModel,
             actionIcon = Icons.Rounded.PlayArrow,
             actionDescription = stringResource(R.string.play_action),
-            actionEnabled = !newTaste?.songs.isNullOrEmpty(),
-            onAction = { newTaste?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
-            secondaryAction = onRefresh,
+            actionEnabled = !rediscovery?.songs.isNullOrEmpty(),
+            onAction = { rediscovery?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
         )
         RecommendationSceneCard(
             modifier = Modifier.weight(1f),
@@ -939,7 +969,6 @@ private fun RecommendationSceneCard(
     actionDescription: String,
     actionEnabled: Boolean,
     onAction: () -> Unit,
-    secondaryAction: (() -> Unit)? = null,
 ) {
     ElevatedCard(
         modifier = modifier.height(218.dp),
@@ -971,15 +1000,7 @@ private fun RecommendationSceneCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (secondaryAction != null) {
-                    TextButton(onClick = secondaryAction) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(stringResource(R.string.change_batch))
-                    }
-                } else {
-                    Spacer(Modifier.width(1.dp))
-                }
+                Spacer(Modifier.width(1.dp))
                 FilledTonalIconButton(onClick = onAction, enabled = actionEnabled) {
                     Icon(actionIcon, contentDescription = actionDescription)
                 }
@@ -1371,12 +1392,59 @@ private fun FavoriteSongsScreen(
     onBack: () -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
 ) {
+    var savedSort by rememberSaveable { mutableIntStateOf(FavoriteSongSort.TITLE.ordinal) }
+    val sort = FavoriteSongSort.entries.getOrElse(savedSort) { FavoriteSongSort.TITLE }
+    val sortedSongs = remember(songs, sort) { sortFavoriteSongs(songs, sort) }
+    var showSortMenu by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
-            ClearTuneTopAppBar(title = stringResource(R.string.favorites), onBack = onBack)
+            ClearTuneTopAppBar(
+                title = stringResource(R.string.favorites),
+                onBack = onBack,
+                actions = {
+                    Box {
+                        IconButton(onClick = { showSortMenu = true }) {
+                            Icon(
+                                Icons.AutoMirrored.Rounded.Sort,
+                                contentDescription = stringResource(R.string.sort_current, sort.label()),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showSortMenu,
+                            onDismissRequest = { showSortMenu = false },
+                        ) {
+                            FavoriteSongSort.entries.forEach { option ->
+                                val selected = option == sort
+                                DropdownMenuItem(
+                                    text = { Text(option.label()) },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (selected) {
+                                                Icons.Rounded.CheckCircle
+                                            } else {
+                                                Icons.Rounded.RadioButtonUnchecked
+                                            },
+                                            contentDescription = null,
+                                            tint = if (selected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                        )
+                                    },
+                                    onClick = {
+                                        savedSort = option.ordinal
+                                        showSortMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                },
+            )
         },
     ) { padding ->
-        if (songs.isEmpty()) {
+        if (sortedSongs.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1388,10 +1456,10 @@ private fun FavoriteSongsScreen(
             }
         } else {
             LazyColumn(modifier = Modifier.padding(padding)) {
-                items(songs, key = Song::id) { song ->
+                itemsIndexed(sortedSongs, key = { _, song -> song.id }) { index, song ->
                     SongRow(
                         song = song,
-                        onClick = { onPlay(songs, songs.indexOf(song)) },
+                        onClick = { onPlay(sortedSongs, index) },
                         onFavorite = { viewModel.toggleSongFavorite(song) },
                     )
                 }
@@ -2298,6 +2366,52 @@ private fun LibrarySongSort.label(): String = stringResource(
         LibrarySongSort.RECENTLY_ADDED -> R.string.recently_added
     },
 )
+
+@Composable
+private fun FavoriteSongSort.label(): String = stringResource(
+    when (this) {
+        FavoriteSongSort.TITLE -> R.string.sort_by_title
+        FavoriteSongSort.RECENTLY_FAVORITED -> R.string.sort_by_recently_favorited
+        FavoriteSongSort.ARTIST -> R.string.sort_by_artist
+        FavoriteSongSort.PLAY_COUNT -> R.string.sort_by_play_count
+        FavoriteSongSort.RECENTLY_ADDED -> R.string.recently_added
+    },
+)
+
+internal fun sortFavoriteSongs(
+    songs: List<Song>,
+    sort: FavoriteSongSort,
+    locale: Locale = Locale.getDefault(),
+): List<Song> {
+    val collator = Collator.getInstance(locale)
+    val titleComparator = Comparator<Song> { first, second ->
+        collator.compare(first.title, second.title)
+    }
+    return when (sort) {
+        FavoriteSongSort.TITLE -> songs.sortedWith(titleComparator)
+        FavoriteSongSort.RECENTLY_FAVORITED -> songs.sortedWith(
+            compareByDescending<Song> { it.starredAt ?: Long.MIN_VALUE }.then(titleComparator),
+        )
+        FavoriteSongSort.ARTIST -> songs.sortedWith(
+            Comparator<Song> { first, second ->
+                val firstArtist = first.displayArtistName()
+                val secondArtist = second.displayArtistName()
+                when {
+                    firstArtist == null && secondArtist == null -> 0
+                    firstArtist == null -> 1
+                    secondArtist == null -> -1
+                    else -> collator.compare(firstArtist, secondArtist)
+                }
+            }.then(titleComparator),
+        )
+        FavoriteSongSort.PLAY_COUNT -> songs.sortedWith(
+            compareByDescending<Song> { it.playCount }.then(titleComparator),
+        )
+        FavoriteSongSort.RECENTLY_ADDED -> songs.sortedWith(
+            compareByDescending<Song> { it.createdAt ?: Long.MIN_VALUE }.then(titleComparator),
+        )
+    }
+}
 
 private fun buildLibrarySongIndex(
     songs: List<Song>,

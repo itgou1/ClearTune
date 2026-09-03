@@ -4,7 +4,7 @@
 
 ClearTune 连接你自己的 Navidrome 或 OpenSubsonic 兼容服务器，把浏览、播放、歌单、下载和音质设置整理成轻量、清晰的日常听歌体验。它不提供云音乐内容，也不要求注册 ClearTune 账号。
 
-当前版本：`1.3.0`
+当前版本：`1.3.1`
 
 <p align="center">
   <img src="screenshots/product-overview.png" alt="ClearTune 首页、正在播放与离线音乐体验插图">

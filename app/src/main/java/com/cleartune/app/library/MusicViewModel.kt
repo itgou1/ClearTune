@@ -141,7 +141,7 @@ class MusicViewModel @Inject constructor(
     private val refreshing = MutableStateFlow(false)
     private val libraryError = MutableStateFlow<String?>(null)
     private val syncStage = MutableStateFlow(LibrarySyncStage.IDLE)
-    private val recommendationSeed = MutableStateFlow(System.currentTimeMillis())
+    private val recommendationSeed = MutableStateFlow(dailyRecommendationSeed())
     private val recommendationExclusions = MutableStateFlow<Set<String>>(emptySet())
     private val recommendationEngine = RecommendationEngine()
 

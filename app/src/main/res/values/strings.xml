@@ -31,7 +31,7 @@
     <string name="refresh">刷新</string>
     <string name="all">全部</string>
     <string name="discover_music">发现音乐</string>
-    <string name="discover_music_subtitle">从你的曲库中发现下一首喜欢的歌</string>
+    <string name="discover_music_subtitle">从喜欢出发，探索没怎么听过的歌曲</string>
     <string name="discover_page_subtitle">按心情慢慢挑选</string>
     <string name="go_discover">去发现</string>
     <string name="now_playing_compact">正在播放 · %1$s</string>
@@ -47,10 +47,12 @@
     <string name="recently_added">最近添加</string>
     <string name="recently_added_subtitle">刚刚来到你音乐库的专辑</string>
     <string name="home_listen_today">今天听什么</string>
-    <string name="home_listen_today_subtitle">一个探索，一个重温</string>
-    <string name="home_new_taste">换个口味</string>
-    <string name="home_new_taste_subtitle">从旧曲库里发现很少播放的歌</string>
-    <string name="home_new_taste_empty">曲库内容还不足，再听一阵试试</string>
+    <string name="home_listen_today_subtitle">熟悉旋律，也重逢久违旧爱</string>
+    <string name="home_long_absent">好久不见</string>
+    <string name="home_long_absent_subtitle">回到至少 30 天没听过的旧爱</string>
+    <string name="home_long_absent_empty">还没有适合重温的歌曲</string>
+    <string name="home_random">随便听听</string>
+    <string name="home_random_subtitle">从你的曲库随机挑选</string>
     <string name="home_frequent">常听精选</string>
     <string name="home_frequent_subtitle">回到你反复播放过的熟悉旋律</string>
     <string name="home_frequent_empty">还没有足够的播放记录</string>
@@ -156,6 +158,8 @@
     <string name="sort_songs">歌曲排序</string>
     <string name="sort_current">排序：%1$s</string>
     <string name="sort_by_title">按歌名</string>
+    <string name="sort_by_recently_favorited">最近喜欢</string>
+    <string name="sort_by_artist">按艺术家</string>
     <string name="sort_by_play_count">播放次数</string>
     <string name="album_count">%1$d 张专辑</string>
     <string name="back">返回</string>
