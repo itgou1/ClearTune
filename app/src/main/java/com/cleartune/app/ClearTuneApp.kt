@@ -132,6 +132,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
@@ -256,6 +258,7 @@ fun ClearTuneApp(
     val playerState by playerViewModel.state.collectAsStateWithLifecycle()
     val playerMessage by playerViewModel.message.collectAsStateWithLifecycle()
     val downloads by downloadViewModel.downloads.collectAsStateWithLifecycle()
+    val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
     val updateState by settingsViewModel.updateState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val backStack by navController.currentBackStackEntryAsState()
@@ -403,7 +406,11 @@ fun ClearTuneApp(
         NavHost(
             navController = navController,
             startDestination = "home",
-            modifier = Modifier.padding(padding),
+            modifier = if (showNavigationBar || showMiniPlayer) {
+                Modifier.padding(padding)
+            } else {
+                Modifier
+            },
             enterTransition = {
                 val switchesMainDestination =
                     initialState.destination.route in mainDestinations.map { it.route } &&
@@ -452,7 +459,6 @@ fun ClearTuneApp(
             composable("home") {
                 MainDestinationContent {
                     HomeScreen(
-                        profile = profile,
                         state = libraryState,
                         viewModel = viewModel,
                         onRefresh = viewModel::refresh,
@@ -503,6 +509,7 @@ fun ClearTuneApp(
                 GenreSongsScreen(
                     genre = genre,
                     songs = libraryState.songs.filter { genreLabelsMatch(it.genre, genre) },
+                    playlists = libraryState.playlists,
                     viewModel = viewModel,
                     onBack = navController::popBackStack,
                     onPlay = playerViewModel::play,
@@ -533,6 +540,8 @@ fun ClearTuneApp(
                 FavoriteSongsScreen(
                     songs = libraryState.songs.filter { it.starredAt != null },
                     viewModel = viewModel,
+                    savedSortName = settings.favoriteSongSort,
+                    onSortChange = { settingsViewModel.setFavoriteSongSort(it.name) },
                     onBack = navController::popBackStack,
                     onPlay = playerViewModel::play,
                 )
@@ -595,6 +604,7 @@ fun ClearTuneApp(
                 ArtistDetailScreen(
                     state = detailState,
                     albums = libraryState.albums.filter { it.artistId == id },
+                    playlists = libraryState.playlists,
                     viewModel = viewModel,
                     onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
                     onBack = navController::popBackStack,
@@ -621,7 +631,6 @@ fun ClearTuneApp(
                     onDownload = { downloadViewModel.download(it) },
                     allSongs = libraryState.songs,
                     onRename = viewModel::renamePlaylist,
-                    onAddSong = viewModel::addPlaylistSong,
                     onRemoveSongs = viewModel::removePlaylistSongs,
                     onDelete = viewModel::deletePlaylist,
                 )
@@ -745,7 +754,6 @@ private fun MainDestinationContent(content: @Composable () -> Unit) {
 
 @Composable
 private fun HomeScreen(
-    profile: ServerProfile,
     state: LibraryUiState,
     viewModel: MusicViewModel,
     onRefresh: () -> Unit,
@@ -769,29 +777,13 @@ private fun HomeScreen(
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         item {
-            Row(
+            Text(
+                text = stringResource(R.string.home_listen_today),
+                style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.home_greeting, profile.username),
-                        style = MaterialTheme.typography.headlineSmall,
-                    )
-                }
-                Surface(
-                    modifier = Modifier.size(44.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    contentColor = MaterialTheme.colorScheme.primary,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Rounded.AccountCircle, contentDescription = stringResource(R.string.nav_my))
-                    }
-                }
-            }
+            )
         }
         if ((state.isInitializing || state.isRefreshing) && isLibraryEmpty) {
             item { LoadingBlock() }
@@ -804,11 +796,15 @@ private fun HomeScreen(
                 )
             }
         } else {
-            item {
-                HomeSectionHeader(
-                    title = stringResource(R.string.home_listen_today),
-                    subtitle = stringResource(R.string.home_listen_today_subtitle),
-                )
+            if (recommendationContent.discovery.isNotEmpty()) {
+                item {
+                    DiscoveryHeroCard(
+                        songs = heroSongs,
+                        viewModel = viewModel,
+                        onDiscovery = onDiscovery,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                }
             }
             item {
                 RecommendationSceneCards(
@@ -817,15 +813,6 @@ private fun HomeScreen(
                     viewModel = viewModel,
                     onPlay = onPlay,
                 )
-            }
-            if (recommendationContent.discovery.isNotEmpty()) {
-                item {
-                    DiscoveryHeroCard(
-                        songs = heroSongs,
-                        viewModel = viewModel,
-                        onDiscovery = onDiscovery,
-                    )
-                }
             }
             if (state.albums.isNotEmpty()) {
                 item {
@@ -989,6 +976,7 @@ private fun RecommendationSceneCard(
                 description,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                minLines = 2,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1142,38 +1130,26 @@ private fun MyScreen(
             }
         }
         item {
-            ElevatedCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, top = 14.dp, end = 20.dp),
-            ) {
-                MyEntry(
-                    icon = Icons.Rounded.Insights,
-                    title = stringResource(R.string.listening_profile),
-                    subtitle = stringResource(R.string.listening_profile_subtitle),
-                    onClick = onListeningProfile,
-                )
-            }
-        }
-        item {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 14.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                MyMetricCard(
+                MyFeatureCard(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Rounded.Insights,
+                    title = stringResource(R.string.listening_profile),
+                    subtitle = stringResource(R.string.my_listening_profile_subtitle),
+                    onClick = onListeningProfile,
+                )
+                MyFeatureCard(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Rounded.Favorite,
-                    value = likedCount.toString(),
-                    label = stringResource(R.string.favorites),
+                    title = stringResource(R.string.favorites),
+                    subtitle = stringResource(R.string.song_count, likedCount),
+                    alternateArtwork = true,
                     onClick = onFavorites,
-                )
-                MyMetricCard(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
-                    value = playlists.size.toString(),
-                    label = stringResource(R.string.playlists),
                 )
             }
         }
@@ -1184,37 +1160,92 @@ private fun MyScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
             ) {
-                Row(modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     MyDownloadEntry(
                         modifier = Modifier.weight(1f),
                         icon = Icons.Rounded.OfflinePin,
                         title = stringResource(R.string.offline_music),
-                        subtitle = stringResource(R.string.offline_song_count, offlineCount),
+                        subtitle = stringResource(R.string.song_count, offlineCount),
                         onClick = onOffline,
                     )
                     Box(
                         modifier = Modifier
-                            .padding(vertical = 18.dp)
                             .width(1.dp)
-                            .height(58.dp)
+                            .height(32.dp)
                             .background(MaterialTheme.colorScheme.outlineVariant),
                     )
                     MyDownloadEntry(
                         modifier = Modifier.weight(1f),
                         icon = Icons.Rounded.Download,
                         title = stringResource(R.string.downloads),
-                        subtitle = stringResource(R.string.download_task_count, downloadCount),
+                        subtitle = if (downloadCount == 0) {
+                            stringResource(R.string.my_no_download_tasks)
+                        } else {
+                            stringResource(R.string.download_task_count, downloadCount)
+                        },
                         onClick = onDownloads,
                     )
                 }
             }
         }
-        item { MySectionTitle(stringResource(R.string.playlists)) }
-        items(playlists, key = Playlist::id) { playlist ->
-            PlaylistRow(playlist = playlist, viewModel = viewModel, onClick = onPlaylist)
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(stringResource(R.string.playlists), style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(8.dp))
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                    Text(
+                        playlists.size.toString(),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showCreatePlaylist = true }) {
+                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(stringResource(R.string.my_create_playlist))
+                }
+            }
         }
-        item(key = "create-playlist") {
-            NewPlaylistRow(onClick = { showCreatePlaylist = true })
+        if (playlists.isEmpty()) {
+            item {
+                ElevatedCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(20.dp)) {
+                        Text(stringResource(R.string.empty_playlists), style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            stringResource(R.string.new_playlist_subtitle),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+        itemsIndexed(playlists, key = { _, playlist -> playlist.id }) { index, playlist ->
+            val first = index == 0
+            val last = index == playlists.lastIndex
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                shape = RoundedCornerShape(
+                    topStart = if (first) 18.dp else 0.dp,
+                    topEnd = if (first) 18.dp else 0.dp,
+                    bottomStart = if (last) 18.dp else 0.dp,
+                    bottomEnd = if (last) 18.dp else 0.dp,
+                ),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+            ) {
+                Column {
+                    PlaylistRow(playlist = playlist, viewModel = viewModel, onClick = onPlaylist)
+                    if (!last) HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 14.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    )
+                }
+            }
         }
     }
 
@@ -1248,33 +1279,69 @@ private fun MyScreen(
 }
 
 @Composable
-private fun MyMetricCard(
+private fun MyFeatureCard(
     modifier: Modifier,
     icon: ImageVector,
-    value: String,
-    label: String,
-    onClick: (() -> Unit)? = null,
+    title: String,
+    subtitle: String,
+    alternateArtwork: Boolean = false,
+    onClick: () -> Unit,
 ) {
+    val primaryArtwork = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+    val secondaryArtwork = MaterialTheme.colorScheme.secondaryContainer
+    val tertiaryArtwork = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f)
     ElevatedCard(
-        modifier = modifier.then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        onClick = onClick,
+        modifier = modifier,
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .heightIn(min = 124.dp)
+                .drawBehind {
+                    val radius = size.width * 0.55f
+                    drawCircle(
+                        color = secondaryArtwork,
+                        radius = radius,
+                        center = Offset(size.width * 0.5f, size.height + radius * 0.65f),
+                    )
+                    drawCircle(
+                        color = primaryArtwork,
+                        radius = radius * 0.85f,
+                        center = Offset(if (alternateArtwork) size.width else 0f, size.height + radius * 0.4f),
+                    )
+                    drawCircle(
+                        color = tertiaryArtwork,
+                        radius = radius * 0.55f,
+                        center = Offset(size.width * if (alternateArtwork) 0.25f else 0.9f, size.height + radius * 0.15f),
+                    )
+                }
+                .padding(start = 12.dp, end = 12.dp, top = 14.dp, bottom = 48.dp),
         ) {
-            ClearTuneIconTile(icon)
-            Column {
-                Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) {
+                    Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Spacer(Modifier.width(6.dp))
                 Text(
-                    label,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp))
             }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -1292,61 +1359,8 @@ private fun MySectionTitle(title: String) {
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 26.dp, bottom = 6.dp),
+        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 8.dp),
     )
-}
-
-@Composable
-private fun MyEntry(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-) {
-    ListItem(
-        headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
-        supportingContent = { Text(subtitle) },
-        leadingContent = { ClearTuneIconTile(icon) },
-        trailingContent = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
-        modifier = Modifier.clickable(onClick = onClick),
-    )
-}
-
-@Composable
-private fun NewPlaylistRow(onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Surface(
-            modifier = Modifier.size(52.dp),
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    Icons.Rounded.Add,
-                    contentDescription = stringResource(R.string.new_playlist),
-                    modifier = Modifier.size(28.dp),
-                )
-            }
-        }
-        Spacer(Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(stringResource(R.string.new_playlist), fontWeight = FontWeight.Medium)
-            Text(
-                stringResource(R.string.new_playlist_subtitle),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Icon(Icons.Rounded.ChevronRight, contentDescription = null)
-    }
-    HorizontalDivider(modifier = Modifier.padding(start = 86.dp))
 }
 
 @Composable
@@ -1357,30 +1371,33 @@ private fun MyDownloadEntry(
     subtitle: String,
     onClick: () -> Unit,
 ) {
-    Column(
+    Row(
         modifier = modifier
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 18.dp),
-        horizontalAlignment = Alignment.Start,
+            .heightIn(min = 68.dp)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.secondaryContainer,
             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         ) {
-            Box(modifier = Modifier.size(42.dp), contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp))
+            Box(modifier = Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
             }
         }
-        Spacer(Modifier.height(10.dp))
-        Text(title, fontWeight = FontWeight.Medium, maxLines = 1)
-        Text(
-            subtitle,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -1389,11 +1406,17 @@ private fun MyDownloadEntry(
 private fun FavoriteSongsScreen(
     songs: List<Song>,
     viewModel: MusicViewModel,
+    savedSortName: String,
+    onSortChange: (FavoriteSongSort) -> Unit,
     onBack: () -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
 ) {
-    var savedSort by rememberSaveable { mutableIntStateOf(FavoriteSongSort.TITLE.ordinal) }
-    val sort = FavoriteSongSort.entries.getOrElse(savedSort) { FavoriteSongSort.TITLE }
+    var sort by remember(savedSortName) {
+        mutableStateOf(
+            FavoriteSongSort.entries.firstOrNull { it.name == savedSortName }
+                ?: FavoriteSongSort.TITLE,
+        )
+    }
     val sortedSongs = remember(songs, sort) { sortFavoriteSongs(songs, sort) }
     var showSortMenu by remember { mutableStateOf(false) }
     Scaffold(
@@ -1433,7 +1456,8 @@ private fun FavoriteSongsScreen(
                                         )
                                     },
                                     onClick = {
-                                        savedSort = option.ordinal
+                                        sort = option
+                                        onSortChange(option)
                                         showSortMenu = false
                                     },
                                 )
@@ -1461,6 +1485,7 @@ private fun FavoriteSongsScreen(
                         song = song,
                         onClick = { onPlay(sortedSongs, index) },
                         onFavorite = { viewModel.toggleSongFavorite(song) },
+                        useTrackNumberPlaceholder = true,
                     )
                 }
             }
@@ -2317,6 +2342,7 @@ private fun LibrarySyncBanner(state: LibraryUiState, onRefresh: () -> Unit) {
 private fun GenreSongsScreen(
     genre: String,
     songs: List<Song>,
+    playlists: List<Playlist>,
     viewModel: MusicViewModel,
     onBack: () -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
@@ -2351,6 +2377,15 @@ private fun GenreSongsScreen(
                         onClick = { onPlay(songs, index) },
                         onFavorite = { viewModel.toggleSongFavorite(song) },
                         showTrackNumber = false,
+                        trailingContent = {
+                            AddToPlaylistAction(
+                                playlists = playlists,
+                                viewModel = viewModel,
+                                onAddToPlaylist = { playlistId ->
+                                    viewModel.addPlaylistSong(playlistId, song.id)
+                                },
+                            )
+                        },
                     )
                 }
             }
@@ -2622,6 +2657,7 @@ private fun AlbumDetailScreen(
 private fun ArtistDetailScreen(
     state: DetailUiState,
     albums: List<Album>,
+    playlists: List<Playlist>,
     viewModel: MusicViewModel,
     onAlbum: (String) -> Unit,
     onBack: () -> Unit,
@@ -2653,9 +2689,18 @@ private fun ArtistDetailScreen(
                 }
                 items(state.songs, key = { "artist-song-${it.id}" }) { song ->
                     SongRow(
-                        song,
-                        { onPlay(state.songs, state.songs.indexOf(song)) },
-                        { viewModel.toggleSongFavorite(song) },
+                        song = song,
+                        onClick = { onPlay(state.songs, state.songs.indexOf(song)) },
+                        onFavorite = { viewModel.toggleSongFavorite(song) },
+                        trailingContent = {
+                            AddToPlaylistAction(
+                                playlists = playlists,
+                                viewModel = viewModel,
+                                onAddToPlaylist = { playlistId ->
+                                    viewModel.addPlaylistSong(playlistId, song.id)
+                                },
+                            )
+                        },
                     )
                 }
                 item { SectionTitle(stringResource(R.string.albums)) }
@@ -2675,12 +2720,11 @@ private fun PlaylistDetailScreen(
     onDownload: (List<Song>) -> Unit,
     allSongs: List<Song>,
     onRename: (String, String) -> Unit,
-    onAddSong: (String, String) -> Unit,
     onRemoveSongs: (String, List<Int>) -> Unit,
     onDelete: (String, () -> Unit) -> Unit,
 ) {
     var showRename by remember { mutableStateOf(false) }
-    var showAdd by remember { mutableStateOf(false) }
+    var showAdd by rememberSaveable(state.playlist?.id) { mutableStateOf(false) }
     var isSelecting by remember(state.playlist?.id) { mutableStateOf(false) }
     var selectedIndexes by remember(state.playlist?.id) { mutableStateOf(emptySet<Int>()) }
     var showRemoveSelectedConfirmation by remember { mutableStateOf(false) }
@@ -2736,7 +2780,10 @@ private fun PlaylistDetailScreen(
                             hasSongs = state.songs.isNotEmpty(),
                             onPlay = { onPlay(state.songs, 0) },
                             onDownload = { onDownload(state.songs) },
-                            onAdd = { showAdd = true },
+                            onAdd = {
+                                viewModel.resetPlaylistSongAddState()
+                                showAdd = true
+                            },
                             moreExpanded = showMoreActions,
                             onMoreExpandedChange = { showMoreActions = it },
                             onManage = {
@@ -2827,31 +2874,15 @@ private fun PlaylistDetailScreen(
         )
     }
     if (showAdd && playlist != null) {
-        val existing = state.songs.map(Song::id).toSet()
-        AlertDialog(
-            onDismissRequest = { showAdd = false },
-            title = { Text(stringResource(R.string.add_songs)) },
-            text = {
-                LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    items(allSongs.filterNot { it.id in existing }, key = Song::id) { song ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onAddSong(playlist.id, song.id); showAdd = false }
-                                .padding(vertical = 10.dp),
-                        ) {
-                            Column {
-                                Text(song.title)
-                                song.displayArtistName()?.let {
-                                    Text(it, style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
-                        }
-                    }
-                }
+        PlaylistSongPicker(
+            playlist = playlist,
+            songs = allSongs,
+            existingSongs = state.songs,
+            viewModel = viewModel,
+            onDismiss = {
+                showAdd = false
+                viewModel.resetPlaylistSongAddState()
             },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { showAdd = false }) { Text(stringResource(R.string.close_action)) } },
         )
     }
     if (showRemoveSelectedConfirmation && playlist != null) {
@@ -3455,14 +3486,14 @@ private fun AlbumShelf(
         items(albums, key = { it.id }) { album ->
             Column(
                 modifier = Modifier
-                    .width(150.dp)
+                    .width(96.dp)
                     .clickable { onAlbum(album.id) },
             ) {
                 CoverArt(
                     album.coverArtId,
                     album.name,
                     viewModel,
-                    Modifier.size(150.dp),
+                    Modifier.size(96.dp),
                     fallbackSeed = album.id,
                     requestSize = 512,
                 )
@@ -3597,7 +3628,7 @@ private fun PlaylistRow(playlist: Playlist, viewModel: MusicViewModel, onClick: 
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick(playlist.id) }
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PlaylistCover(playlist.coverArtId, playlist.name, viewModel, Modifier.size(52.dp))
@@ -3612,7 +3643,6 @@ private fun PlaylistRow(playlist: Playlist, viewModel: MusicViewModel, onClick: 
         }
         Icon(Icons.Rounded.ChevronRight, contentDescription = null)
     }
-    HorizontalDivider(modifier = Modifier.padding(start = 86.dp))
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -3625,6 +3655,7 @@ private fun SongRow(
     trailingText: String? = null,
     onTrailing: (() -> Unit)? = null,
     showTrackNumber: Boolean = true,
+    useTrackNumberPlaceholder: Boolean = false,
     showFileType: Boolean = false,
     showDuration: Boolean = true,
     trailingContent: (@Composable RowScope.() -> Unit)? = null,
@@ -3639,7 +3670,7 @@ private fun SongRow(
     ) {
         if (showTrackNumber) {
             Text(
-                text = song.trackNumber?.toString() ?: "♪",
+                text = if (useTrackNumberPlaceholder) "♪" else song.trackNumber?.toString() ?: "♪",
                 modifier = Modifier.size(32.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

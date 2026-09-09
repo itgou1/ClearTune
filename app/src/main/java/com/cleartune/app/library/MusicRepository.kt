@@ -32,6 +32,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
+data class PlaylistSongsAddResult(
+    val addedCount: Int = 0,
+    val error: ClearTuneError? = null,
+    val refreshError: ClearTuneError? = null,
+)
+
 @Singleton
 class MusicRepository @Inject constructor(
     private val credentialsStore: CredentialsStore,
@@ -190,6 +196,26 @@ class MusicRepository @Inject constructor(
         }
     }
 
+    suspend fun addPlaylistSongs(id: String, songIds: List<String>): PlaylistSongsAddResult {
+        if (songIds.isEmpty()) return PlaylistSongsAddResult()
+        val remote = remote() ?: return PlaylistSongsAddResult(error = ClearTuneError.Authentication())
+        val current = when (val result = remote.playlist(id)) {
+            is RemoteResult.Success -> result.value
+            is RemoteResult.Failure -> return PlaylistSongsAddResult(error = cleanMissingPlaylist(id, result.error))
+        }
+        val existingIds = current.songs.map(Song::id).toSet()
+        val additions = songIds.distinct().filterNot { it in existingIds }
+        if (additions.isEmpty()) return PlaylistSongsAddResult(refreshError = loadPlaylist(id))
+        return when (val result = remote.addPlaylistSongs(id, additions)) {
+            is RemoteResult.Failure -> PlaylistSongsAddResult(error = cleanMissingPlaylist(id, result.error))
+            // Once the server accepted the addition, a refresh failure must not invite resubmission.
+            is RemoteResult.Success -> PlaylistSongsAddResult(
+                addedCount = additions.size,
+                refreshError = loadPlaylist(id),
+            )
+        }
+    }
+
     suspend fun removePlaylistSongs(id: String, indexes: List<Int>): ClearTuneError? {
         if (indexes.isEmpty()) return null
         val remote = remote() ?: return ClearTuneError.Authentication()
@@ -228,7 +254,7 @@ class MusicRepository @Inject constructor(
 
     suspend fun localSearch(query: String): SearchResults = withContext(Dispatchers.Default) {
         val plan = buildSearchQueryPlan(query)
-        if (plan.matchQuery.isBlank()) {
+        if (plan.matchQueries.isEmpty()) {
             return@withContext SearchResults(emptyList(), emptyList(), emptyList())
         }
         ensureSearchIndex()
@@ -488,7 +514,9 @@ class MusicRepository @Inject constructor(
         plan: SearchQueryPlan,
         resultLimit: Int,
     ) = rankSearchDocuments(
-        documents = mediaDao.searchDocuments(type, plan.matchQuery, LOCAL_SEARCH_CANDIDATE_LIMIT),
+        documents = plan.matchQueries.flatMap { matchQuery ->
+            mediaDao.searchDocuments(type, matchQuery, LOCAL_SEARCH_CANDIDATE_LIMIT)
+        }.distinctBy { it.entityId },
         plan = plan,
     ).take(resultLimit)
 

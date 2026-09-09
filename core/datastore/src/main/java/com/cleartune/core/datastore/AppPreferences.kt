@@ -78,7 +78,10 @@ data class AppSettings(
     val checkUpdates: Boolean = true,
     val recentSearches: List<String> = emptyList(),
     val lastLibrarySyncEpochMs: Long = 0L,
+    val favoriteSongSort: String = DEFAULT_FAVORITE_SONG_SORT,
 )
+
+const val DEFAULT_FAVORITE_SONG_SORT = "TITLE"
 
 private val Context.appSettingsDataStore by preferencesDataStore(name = "app_settings")
 
@@ -110,6 +113,7 @@ class AppPreferences(private val context: Context) {
                 ?.filter(String::isNotBlank)
                 .orEmpty(),
             lastLibrarySyncEpochMs = preferences[LAST_LIBRARY_SYNC_EPOCH_MS] ?: 0L,
+            favoriteSongSort = preferences[FAVORITE_SONG_SORT] ?: DEFAULT_FAVORITE_SONG_SORT,
         )
     }
 
@@ -173,6 +177,10 @@ class AppPreferences(private val context: Context) {
         it[LAST_LIBRARY_SYNC_EPOCH_MS] = value.coerceAtLeast(0L)
     }
 
+    suspend fun setFavoriteSongSort(value: String) = edit {
+        it[FAVORITE_SONG_SORT] = value
+    }
+
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.appSettingsDataStore.edit(block)
     }
@@ -192,6 +200,7 @@ class AppPreferences(private val context: Context) {
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
         val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         val LAST_LIBRARY_SYNC_EPOCH_MS = longPreferencesKey("last_library_sync_epoch_ms")
+        val FAVORITE_SONG_SORT = stringPreferencesKey("favorite_song_sort")
         const val SEARCH_SEPARATOR = "\u001F"
         const val EQUALIZER_SEPARATOR = ","
         const val MAX_RECENT_SEARCHES = 8

@@ -98,6 +98,9 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
+    fun setFavoriteSongSort(value: String) = viewModelScope.launch {
+        preferences.setFavoriteSongSort(value)
+    }
 
     fun checkUpdate() {
         viewModelScope.launch { performUpdateCheck(System.currentTimeMillis()) }

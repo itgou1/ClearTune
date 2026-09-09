@@ -18,6 +18,7 @@ import com.cleartune.core.network.SearchResults
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,6 +49,12 @@ data class LibraryUiState(
     val errorMessage: String? = null,
     val syncStage: LibrarySyncStage = LibrarySyncStage.IDLE,
     val lastSyncedAt: Long? = null,
+)
+
+data class PlaylistSongAddUiState(
+    val isAdding: Boolean = false,
+    val completed: Boolean = false,
+    val errorMessage: String? = null,
 )
 
 enum class LibrarySyncStage {
@@ -198,6 +205,8 @@ class MusicViewModel @Inject constructor(
     private val _lyricsState = MutableStateFlow(LyricsUiState())
     val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
     private val _actionMessage = MutableStateFlow<String?>(null)
+    private val _playlistSongAddState = MutableStateFlow(PlaylistSongAddUiState())
+    val playlistSongAddState: StateFlow<PlaylistSongAddUiState> = _playlistSongAddState.asStateFlow()
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
     private val _detailInvalidations = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val detailInvalidations = _detailInvalidations.asSharedFlow()
@@ -456,6 +465,35 @@ class MusicViewModel @Inject constructor(
     fun addPlaylistSong(id: String, songId: String) {
         viewModelScope.launch {
             reportPlaylistAction(id, repository.addPlaylistSong(id, songId), "已添加到歌单")
+        }
+    }
+
+    fun resetPlaylistSongAddState() {
+        if (!_playlistSongAddState.value.isAdding) _playlistSongAddState.value = PlaylistSongAddUiState()
+    }
+
+    fun addPlaylistSongs(id: String, songIds: List<String>) {
+        if (songIds.isEmpty() || _playlistSongAddState.value.isAdding) return
+        _playlistSongAddState.value = PlaylistSongAddUiState(isAdding = true)
+        viewModelScope.launch {
+            try {
+                val result = repository.addPlaylistSongs(id, songIds)
+                if (result.error != null) {
+                    _playlistSongAddState.value = PlaylistSongAddUiState(errorMessage = result.error.userMessage)
+                    if (result.error.isNotFound()) invalidateDetail("playlist/$id")
+                } else {
+                    _actionMessage.value = when {
+                        result.refreshError != null -> "歌曲已处理，歌单暂未刷新，请稍后刷新查看"
+                        result.addedCount == 0 -> "所选歌曲已在歌单中"
+                        else -> "已添加 ${result.addedCount} 首歌曲到歌单"
+                    }
+                    _playlistSongAddState.value = PlaylistSongAddUiState(completed = true)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _playlistSongAddState.value = PlaylistSongAddUiState(errorMessage = "添加失败，请稍后重试")
+            }
         }
     }
 

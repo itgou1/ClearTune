@@ -27,7 +27,7 @@ internal data class SearchQueryPlan(
     val original: String,
     val normalized: String,
     val variants: List<String>,
-    val matchQuery: String,
+    val matchQueries: List<String>,
 )
 
 private val searchSynonyms = mapOf(
@@ -44,7 +44,7 @@ private val searchSynonyms = mapOf(
 
 internal fun buildSearchQueryPlan(query: String): SearchQueryPlan {
     val normalized = normalizeSearchText(query)
-    if (normalized.isBlank()) return SearchQueryPlan(query, "", emptyList(), "")
+    if (normalized.isBlank()) return SearchQueryPlan(query, "", emptyList(), emptyList())
     val reverseSynonym = searchSynonyms.entries.firstOrNull {
         normalizeSearchText(it.value) == normalized
     }?.key
@@ -55,13 +55,15 @@ internal fun buildSearchQueryPlan(query: String): SearchQueryPlan {
     }.map(::normalizeSearchText).filter(String::isNotBlank).distinct()
     val clauses = variants.mapNotNull { variant ->
         val tokens = searchTokens(variant)
-        tokens.takeIf(List<String>::isNotEmpty)?.joinToString(" AND ") { token -> "$token*" }
+        // Implicit AND works with both standard and enhanced SQLite FTS4 syntax.
+        tokens.takeIf(List<String>::isNotEmpty)?.joinToString(" ") { token -> "$token*" }
     }
     return SearchQueryPlan(
         original = query,
         normalized = normalized,
         variants = variants,
-        matchQuery = clauses.joinToString(" OR ") { "($it)" },
+        // Run alternatives separately: parentheses and AND/OR precedence vary by SQLite build.
+        matchQueries = clauses.distinct(),
     )
 }
 
