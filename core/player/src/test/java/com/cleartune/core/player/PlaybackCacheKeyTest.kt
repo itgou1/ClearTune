@@ -22,13 +22,13 @@ class PlaybackCacheKeyTest {
 
     @Test
     fun serverSongAndQualityRemainDistinct() {
-        val original = playbackCacheKey("song-1", "https://one.example/rest/stream?id=song-1")
+        val original = playbackCacheKey("song-1", "https://one.example/rest/stream?id=song-1&u=a")
         val transcoded = playbackCacheKey(
             "song-1",
-            "https://one.example/rest/stream?id=song-1&maxBitRate=192&format=mp3",
+            "https://one.example/rest/stream?id=song-1&u=a&maxBitRate=192&format=mp3",
         )
-        val otherSong = playbackCacheKey("song-2", "https://one.example/rest/stream?id=song-2")
-        val otherServer = playbackCacheKey("song-1", "https://two.example/rest/stream?id=song-1")
+        val otherSong = playbackCacheKey("song-2", "https://one.example/rest/stream?id=song-2&u=a")
+        val otherServer = playbackCacheKey("song-1", "https://two.example/rest/stream?id=song-1&u=a")
 
         assertNotEquals(original, transcoded)
         assertNotEquals(original, otherSong)
@@ -38,5 +38,14 @@ class PlaybackCacheKeyTest {
     @Test
     fun localDownloadsDoNotEnterPlaybackCache() {
         assertNull(playbackCacheKey("song-1", "file:///data/user/0/app/files/offline/song.mp3"))
+    }
+
+    @Test
+    fun accountsOnTheSameServerNeverShareCachedAudio() {
+        assertNotEquals(
+            playbackCacheKey("song-1", "https://music.example/rest/stream?id=song-1&u=alice"),
+            playbackCacheKey("song-1", "https://music.example/rest/stream?id=song-1&u=bob"),
+        )
+        assertNull(playbackCacheKey("song-1", "https://music.example/rest/stream?id=song-1"))
     }
 }

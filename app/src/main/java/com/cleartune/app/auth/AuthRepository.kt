@@ -19,14 +19,23 @@ data class AuthRestoreResult(
 class AuthRepository @Inject constructor(
     private val credentialsStore: CredentialsStore,
     private val client: OpenSubsonicClient,
+    private val sessions: AccountSessions,
 ) {
     suspend fun restore(): AuthRestoreResult {
         val credentials = credentialsStore.credentials.first()
-        return AuthRestoreResult(
+        val result = AuthRestoreResult(
             credentials = credentials,
             connectionResult = credentials?.let { client.connect(it) },
             cachedProfile = credentialsStore.profile.first(),
         )
+        val profile = (result.connectionResult as? ConnectionResult.Success)?.profile
+            ?: result.cachedProfile.takeIf {
+                (result.connectionResult as? ConnectionResult.Failure)?.error?.allowsOfflineRestore() == true
+            }
+        if (credentials != null && profile != null) {
+            sessions.activate(credentials, profile, credentialsStore.ensureSessionToken())
+        }
+        return result
     }
 
     suspend fun connectAndSave(credentials: ServerCredentials): ConnectionResult {
@@ -36,11 +45,16 @@ class AuthRepository @Inject constructor(
                 credentials.copy(baseUrl = result.profile.baseUrl),
                 result.profile,
             )
+            sessions.activate(
+                credentials.copy(baseUrl = result.profile.baseUrl), result.profile,
+                credentialsStore.ensureSessionToken(),
+            )
         }
         return result
     }
 
     suspend fun logout() {
         credentialsStore.clear()
+        sessions.revoke()
     }
 }

@@ -6,12 +6,15 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 object DatabaseFactory {
-    fun create(context: Context): ClearTuneDatabase {
+    fun create(context: Context, accountKey: String): ClearTuneDatabase {
+        require(accountKey.matches(Regex("[0-9a-f]{64}")))
         return Room.databaseBuilder(
             context.applicationContext,
             ClearTuneDatabase::class.java,
-            "cleartune.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+            "cleartune_account_$accountKey.db",
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .enableMultiInstanceInvalidation()
+            .build()
     }
 
     private val MIGRATION_1_2 = object : Migration(1, 2) {

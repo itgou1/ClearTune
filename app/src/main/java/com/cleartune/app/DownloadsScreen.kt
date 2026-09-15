@@ -96,12 +96,18 @@ internal fun DownloadsScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (item.state in setOf(DownloadState.QUEUED, DownloadState.DOWNLOADING)) {
-                                LinearProgressIndicator(
-                                    progress = { item.progress.coerceIn(0f, 1f) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
-                                )
+                                if (item.state == DownloadState.DOWNLOADING && item.totalBytes == null) {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    )
+                                } else {
+                                    LinearProgressIndicator(
+                                        progress = { item.progress.coerceIn(0f, 1f) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp),
+                                    )
+                                }
                             }
                             item.failureReason?.let {
                                 Text(

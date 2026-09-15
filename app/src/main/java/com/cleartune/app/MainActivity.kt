@@ -61,6 +61,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.cleartune.app.auth.AuthUiState
 import com.cleartune.app.auth.AuthViewModel
+import com.cleartune.app.auth.AccountViewModels
+import androidx.lifecycle.ViewModelProvider
 import com.cleartune.app.library.MusicViewModel
 import com.cleartune.app.player.PlayerViewModel
 import com.cleartune.app.download.DownloadViewModel
@@ -73,9 +75,8 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private val authViewModel: AuthViewModel by viewModels()
-    private val musicViewModel: MusicViewModel by viewModels()
-    private val playerViewModel: PlayerViewModel by viewModels()
-    private val downloadViewModel: DownloadViewModel by viewModels()
+    private val accountViewModels: AccountViewModels by viewModels()
+    private var activePlayerViewModel: PlayerViewModel? = null
     private val settingsViewModel: SettingsViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -105,15 +106,33 @@ class MainActivity : ComponentActivity() {
                             state = current,
                             onConnect = authViewModel::connect,
                         )
-                        is AuthUiState.Connected -> ConnectedScreen(
-                            profile = current.profile,
-                            restoredOffline = current.restoredOffline,
-                            musicViewModel = musicViewModel,
-                            playerViewModel = playerViewModel,
-                            downloadViewModel = downloadViewModel,
-                            settingsViewModel = settingsViewModel,
-                            onLogout = authViewModel::logout,
-                        )
+                        is AuthUiState.Connected -> {
+                            val accountModels = remember(current) {
+                                ViewModelProvider(accountViewModels.store, defaultViewModelProviderFactory, defaultViewModelCreationExtras)
+                            }
+                            val musicViewModel = accountModels[MusicViewModel::class.java]
+                            val playerViewModel = accountModels[PlayerViewModel::class.java]
+                            val downloadViewModel = accountModels[DownloadViewModel::class.java]
+                            activePlayerViewModel = playerViewModel
+                            ConnectedScreen(
+                                profile = current.profile,
+                                restoredOffline = current.restoredOffline,
+                                musicViewModel = musicViewModel,
+                                playerViewModel = playerViewModel,
+                                downloadViewModel = downloadViewModel,
+                                settingsViewModel = settingsViewModel,
+                                onLogout = {
+                                    authViewModel.logout {
+                                        try {
+                                            playerViewModel.endSession()
+                                        } finally {
+                                            accountViewModels.clearSession()
+                                            activePlayerViewModel = null
+                                        }
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -121,7 +140,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        playerViewModel.persistNow()
+        activePlayerViewModel?.persistNow()
         super.onStop()
     }
 }

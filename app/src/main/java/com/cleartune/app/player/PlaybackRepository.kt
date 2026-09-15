@@ -5,13 +5,12 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import com.cleartune.app.displayableArtworkId
-import com.cleartune.core.database.ClearTuneDatabase
+import com.cleartune.app.auth.AccountSession
 import com.cleartune.core.database.PendingMutationEntity
 import com.cleartune.core.database.PlayEventEntity
 import com.cleartune.core.database.QueueItemEntity
 import com.cleartune.core.database.toModel
 import com.cleartune.core.database.toEntity
-import com.cleartune.core.datastore.CredentialsStore
 import com.cleartune.core.datastore.AppPreferences
 import com.cleartune.core.datastore.MobileAudioQuality
 import com.cleartune.core.model.PlayEventType
@@ -23,7 +22,6 @@ import com.cleartune.core.player.PlayerUiState
 import java.util.UUID
 import java.io.File
 import javax.inject.Inject
-import javax.inject.Singleton
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 
@@ -38,14 +36,13 @@ data class PlaybackUrls(
     val artwork: Map<String, String>,
 )
 
-@Singleton
 class PlaybackRepository @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val credentialsStore: CredentialsStore,
-    private val database: ClearTuneDatabase,
+    private val session: AccountSession,
     private val apiFactory: OpenSubsonicApiFactory,
     private val preferences: AppPreferences,
 ) {
+    private val database = session.database
     private val queueDao = database.queueDao()
     private val mediaDao = database.mediaDao()
     private val activityDao = database.activityDao()
@@ -58,7 +55,7 @@ class PlaybackRepository @Inject constructor(
             )
             ?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
         val settings = preferences.settings.first()
-        val serverProfile = credentialsStore.profile.first()
+        val serverProfile = session.profile
         val streams = mutableMapOf<String, String>()
         songs.forEach { song ->
             val download = database.downloadDao().forSong(song.id)
@@ -197,7 +194,7 @@ class PlaybackRepository @Inject constructor(
     }
 
     private suspend fun remote(): LibraryRemoteDataSource? {
-        val credentials = credentialsStore.credentials.first() ?: return null
+        val credentials = session.credentials() ?: return null
         return runCatching { LibraryRemoteDataSource(apiFactory.authorized(credentials)) }.getOrNull()
     }
 

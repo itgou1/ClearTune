@@ -249,6 +249,27 @@ interface QueueDao {
 
 @Dao
 interface DownloadDao {
+    @Query("SELECT * FROM downloads WHERE requestId = :requestId LIMIT 1")
+    suspend fun forRequest(requestId: String): DownloadEntity?
+
+    @Query("SELECT * FROM downloads")
+    suspend fun all(): List<DownloadEntity>
+
+    // Workers may update their own live request, never recreate a deleted/replaced task.
+    @Query("""UPDATE downloads SET state = :state, bytesDownloaded = :bytes,
+        totalBytes = :total, localUri = :uri, failureReason = :reason, updatedAt = :now
+        WHERE requestId = :requestId AND state IN ('QUEUED', 'DOWNLOADING')""")
+    suspend fun updateProgress(requestId: String, state: String, bytes: Long, total: Long?,
+        uri: String?, reason: String?, now: Long): Int
+
+    @Query("""UPDATE downloads SET state = :state, failureReason = :reason, updatedAt = :now
+        WHERE requestId = :requestId AND state = :previousState AND updatedAt = :previousTime""")
+    suspend fun reconcile(requestId: String, previousState: String, previousTime: Long,
+        state: String, reason: String?, now: Long): Int
+
+    @Query("UPDATE downloads SET state = 'PAUSED', failureReason = '已退出账号，重新登录后可继续下载' WHERE state IN ('QUEUED', 'DOWNLOADING')")
+    suspend fun pauseActiveDownloads()
+
     @Query("SELECT * FROM downloads ORDER BY updatedAt DESC")
     fun observeAll(): Flow<List<DownloadEntity>>
 

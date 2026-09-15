@@ -1,8 +1,8 @@
 package com.cleartune.app.di
 
 import android.content.Context
-import com.cleartune.core.database.ClearTuneDatabase
-import com.cleartune.core.database.DatabaseFactory
+import com.cleartune.app.auth.AccountSession
+import com.cleartune.app.auth.AccountSessions
 import com.cleartune.core.datastore.CredentialsStore
 import com.cleartune.core.datastore.PlaybackPreferences
 import com.cleartune.core.datastore.AppPreferences
@@ -18,6 +18,11 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+    @Provides
+    @Singleton
+    fun provideDownloadScheduler(@ApplicationContext context: Context): com.cleartune.app.download.DownloadScheduler =
+        com.cleartune.app.download.WorkDownloadScheduler(context)
+
     @Provides
     @Singleton
     fun provideCredentialsStore(
@@ -45,8 +50,5 @@ object AppModule {
     fun provideOpenSubsonicApiFactory(): OpenSubsonicApiFactory = OpenSubsonicApiFactory()
 
     @Provides
-    @Singleton
-    fun provideDatabase(
-        @ApplicationContext context: Context,
-    ): ClearTuneDatabase = DatabaseFactory.create(context)
+    fun provideAccountSession(sessions: AccountSessions): AccountSession = sessions.requireCurrent()
 }

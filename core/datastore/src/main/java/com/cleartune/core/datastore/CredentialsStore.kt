@@ -11,6 +11,7 @@ import com.cleartune.core.model.ServerProfile
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 
 private val Context.credentialsDataStore by preferencesDataStore(name = "server_credentials")
 
@@ -18,6 +19,16 @@ class CredentialsStore(
     private val context: Context,
     private val cipher: CredentialCipher = CredentialCipher(),
 ) {
+    val sessionToken: Flow<String?> = context.credentialsDataStore.data
+        .map { it[Keys.SESSION_TOKEN] }
+
+    suspend fun ensureSessionToken(): String {
+        val preferences = context.credentialsDataStore.edit {
+            if (it[Keys.SESSION_TOKEN] == null) it[Keys.SESSION_TOKEN] = UUID.randomUUID().toString()
+        }
+        return checkNotNull(preferences[Keys.SESSION_TOKEN])
+    }
+
     val credentials: Flow<ServerCredentials?> = context.credentialsDataStore.data
         .map { preferences ->
             val baseUrl = preferences[Keys.BASE_URL] ?: return@map null
@@ -62,6 +73,7 @@ class CredentialsStore(
     suspend fun save(credentials: ServerCredentials, profile: ServerProfile) {
         val encrypted = cipher.encrypt(credentials.password)
         context.credentialsDataStore.edit { preferences ->
+            preferences[Keys.SESSION_TOKEN] = UUID.randomUUID().toString()
             preferences[Keys.BASE_URL] = profile.baseUrl
             preferences[Keys.USERNAME] = credentials.username
             preferences[Keys.PASSWORD_CIPHER] = Base64.encodeToString(
@@ -86,6 +98,7 @@ class CredentialsStore(
     }
 
     private object Keys {
+        val SESSION_TOKEN = stringPreferencesKey("session_token")
         val BASE_URL = stringPreferencesKey("base_url")
         val USERNAME = stringPreferencesKey("username")
         val PASSWORD_CIPHER = stringPreferencesKey("password_cipher")

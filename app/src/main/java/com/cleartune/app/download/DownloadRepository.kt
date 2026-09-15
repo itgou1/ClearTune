@@ -1,136 +1,182 @@
 package com.cleartune.app.download
 
 import android.content.Context
-import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import androidx.work.Constraints
-import androidx.work.Data
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
-import com.cleartune.core.database.ClearTuneDatabase
+import android.net.Uri
+import androidx.work.*
+import com.cleartune.app.auth.AccountSession
 import com.cleartune.core.database.DownloadEntity
+import com.cleartune.core.datastore.AppPreferences
 import com.cleartune.core.model.DownloadItem
 import com.cleartune.core.model.DownloadState
 import com.cleartune.core.model.Song
-import com.cleartune.core.datastore.AppPreferences
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
-import javax.inject.Singleton
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
-data class DownloadEnqueueResult(
-    val queuedCount: Int,
-    val alreadyDownloadedCount: Int,
-    val waitingForWifi: Boolean,
-)
+data class DownloadEnqueueResult(val queuedCount: Int, val alreadyDownloadedCount: Int,
+    val waitingForWifi: Boolean, val failedCount: Int = 0)
 
-@Singleton
 class DownloadRepository @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    database: ClearTuneDatabase,
+    private val session: AccountSession,
     private val preferences: AppPreferences,
+    private val scheduler: DownloadScheduler,
 ) {
-    private val dao = database.downloadDao()
-    private val workManager = WorkManager.getInstance(context)
-
-    val downloads: Flow<List<DownloadItem>> = dao.observeAll().map { entities ->
-        entities.map { entity ->
-            DownloadItem(
-                requestId = entity.requestId,
-                songId = entity.songId,
-                state = runCatching { DownloadState.valueOf(entity.state) }.getOrDefault(DownloadState.FAILED),
-                bytesDownloaded = entity.bytesDownloaded,
-                totalBytes = entity.totalBytes,
-                localUri = entity.localUri,
-                failureReason = entity.failureReason,
-            )
-        }
+    private val dao = session.database.downloadDao()
+    private val operations = Mutex()
+    private val sessionTag = "download-session:${session.token}"
+    val downloads: Flow<List<DownloadItem>> = dao.observeAll().map { rows ->
+        rows.map { row -> DownloadItem(row.requestId, row.songId,
+            runCatching { DownloadState.valueOf(row.state) }.getOrDefault(DownloadState.FAILED),
+            row.bytesDownloaded, row.totalBytes, row.localUri, row.failureReason) }
     }
 
-    suspend fun enqueue(songs: List<Song>): DownloadEnqueueResult {
-        val settings = preferences.settings.first()
-        var queuedCount = 0
-        var alreadyDownloadedCount = 0
-        val waitingForWifi = settings.wifiOnlyDownloads && !hasUnmeteredNetwork()
-        songs.forEach { song ->
-            val existing = dao.forSong(song.id)
-            if (existing?.state == DownloadState.COMPLETED.name && valid(existing.localUri)) {
-                alreadyDownloadedCount += 1
-                return@forEach
+    /** Observe the scheduler even while the downloads page is closed. */
+    suspend fun monitor() = coroutineScope {
+        launch {
+            preferences.settings.map { it.wifiOnlyDownloads }.distinctUntilChanged()
+                .onEach { applyNetworkPolicy(it) }
+                .retryWhen { _, _ -> delay(2_000); true }
+                .collect()
+        }
+        launch {
+            val network = flow {
+                while (currentCoroutineContext().isActive) { emit(networkState()); delay(2_000) }
             }
-            existing?.requestId?.toUuid()?.let(workManager::cancelWorkById)
-            val requestId = UUID.randomUUID()
-            dao.upsert(
-                DownloadEntity(
-                    requestId = requestId.toString(),
-                    songId = song.id,
-                    state = DownloadState.QUEUED.name,
-                    bytesDownloaded = existing?.bytesDownloaded ?: 0,
-                    totalBytes = existing?.totalBytes,
-                    localUri = null,
-                    failureReason = if (waitingForWifi) "等待 Wi-Fi 连接" else null,
-                    updatedAt = System.currentTimeMillis(),
-                ),
-            )
-            val request = OneTimeWorkRequestBuilder<DownloadWorker>()
-                .setId(requestId)
-                .setInputData(Data.Builder().putString(DownloadWorker.KEY_SONG_ID, song.id).build())
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(
-                            if (settings.wifiOnlyDownloads) NetworkType.UNMETERED else NetworkType.CONNECTED,
-                        )
-                        .build(),
-                )
-                .build()
-            workManager.enqueue(request)
-            queuedCount += 1
+            combine(dao.observeAll(), scheduler.observe(), network,
+                preferences.settings.map { it.wifiOnlyDownloads }.distinctUntilChanged()) { rows, work, net, wifi ->
+                MonitorSnapshot(rows, work, net, wifi)
+            }.onEach { reconcile(it) }.retryWhen { _, _ -> delay(2_000); true }.collect()
         }
-        return DownloadEnqueueResult(
-            queuedCount = queuedCount,
-            alreadyDownloadedCount = alreadyDownloadedCount,
-            waitingForWifi = waitingForWifi && queuedCount > 0,
-        )
     }
 
-    suspend fun pause(item: DownloadItem) {
-        item.requestId.toUuid()?.let(workManager::cancelWorkById)
-        dao.upsert(item.toEntity(DownloadState.PAUSED))
+    suspend fun enqueue(songs: List<Song>): DownloadEnqueueResult = operations.withLock {
+        if (!session.active) return@withLock DownloadEnqueueResult(0, 0, false)
+        val wifiOnly = preferences.settings.first().wifiOnlyDownloads
+        val waitingForWifi = wifiOnly && !networkState().unmetered
+        var queued = 0
+        var already = 0
+        var failed = 0
+        for (song in songs) {
+            if (!session.active) break
+            val existing = dao.forSong(song.id)
+            if (existing?.state == "COMPLETED" && valid(existing.localUri)) { already++; continue }
+            try {
+                if (existing != null) {
+                    pauseRecord(existing, "正在重新安排下载")
+                    existing.requestId.toUuid()?.let { scheduler.cancel(it) }
+                }
+                val id = UUID.randomUUID()
+                val row = DownloadEntity(id.toString(), song.id, "QUEUED", 0,
+                    song.sizeBytes, null, "正在提交下载任务", System.currentTimeMillis())
+                dao.upsert(row)
+                try {
+                    scheduler.enqueue(request(id, song.id, wifiOnly, existing?.requestId))
+                    if (!session.active) { pauseRecord(row, "已退出账号"); scheduler.cancel(id) } else queued++
+                } catch (cancelled: CancellationException) { throw cancelled
+                } catch (_: Exception) {
+                    dao.updateProgress(row.requestId, "FAILED", 0, row.totalBytes, null,
+                        "无法提交后台下载任务，请点击继续重试", System.currentTimeMillis())
+                    failed++
+                }
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (_: Exception) { failed++ }
+        }
+        DownloadEnqueueResult(queued, already, waitingForWifi && queued > 0, failed)
     }
 
-    suspend fun retry(item: DownloadItem, song: Song) = enqueue(listOf(song))
-
-    suspend fun delete(item: DownloadItem) {
-        item.requestId.toUuid()?.let(workManager::cancelWorkById)
-        item.localUri?.let(Uri::parse)?.path?.let(::File)?.takeIf(File::exists)?.delete()
-        dao.delete(item.requestId)
+    suspend fun pause(item: DownloadItem) = operations.withLock {
+        val row = dao.forRequest(item.requestId) ?: return@withLock
+        pauseRecord(row, "已暂停，可点击继续下载")
+        row.requestId.toUuid()?.let { scheduler.cancel(it) }
     }
 
-    private fun DownloadItem.toEntity(newState: DownloadState) = DownloadEntity(
-        requestId = requestId,
-        songId = songId,
-        state = newState.name,
-        bytesDownloaded = bytesDownloaded,
-        totalBytes = totalBytes,
-        localUri = localUri,
-        failureReason = failureReason,
-        updatedAt = System.currentTimeMillis(),
-    )
+    suspend fun retry(item: DownloadItem, song: Song): DownloadEnqueueResult {
+        if (dao.forRequest(item.requestId)?.songId != song.id) return DownloadEnqueueResult(0, 0, false)
+        return enqueue(listOf(song))
+    }
 
+    suspend fun delete(item: DownloadItem) = operations.withLock {
+        val row = dao.forRequest(item.requestId) ?: return@withLock
+        pauseRecord(row, "正在取消下载")
+        row.requestId.toUuid()?.let { scheduler.cancel(it) }
+        dao.delete(row.requestId)
+        withContext(Dispatchers.IO) {
+            row.localUri?.let(Uri::parse)?.path?.let(::File)?.delete()
+            row.requestId.toUuid()?.let {
+                File(context.filesDir, "accounts/${session.accountKey}/offline_music/$it.part").delete()
+            }
+        }
+    }
+
+    private suspend fun pauseRecord(row: DownloadEntity, reason: String) {
+        dao.updateProgress(row.requestId, "PAUSED", row.bytesDownloaded, row.totalBytes,
+            row.localUri, reason, System.currentTimeMillis())
+    }
+
+    internal suspend fun applyNetworkPolicy(wifiOnly: Boolean) = operations.withLock {
+        if (!session.active) return@withLock
+        val work = scheduler.observe().first().associateBy { it.id.toString() }
+        for (row in dao.all().filter { it.state in ACTIVE }) {
+            val info = work[row.requestId] ?: continue
+            if (info.state.isFinished) continue
+            try {
+                if (sessionTag !in info.tags) {
+                    pauseRecord(row, "旧任务需要重新安排，请点击继续")
+                    scheduler.cancel(info.id)
+                } else scheduler.update(request(info.id, row.songId, wifiOnly,
+                    info.tags.firstOrNull { it.startsWith("download-resume:") }?.removePrefix("download-resume:")))
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (_: Exception) { pauseRecord(row, "网络限制更新失败，请点击继续重试") }
+        }
+    }
+
+    private suspend fun reconcile(snapshot: MonitorSnapshot) = operations.withLock {
+        if (!session.active) return@withLock
+        val work = snapshot.work.associateBy { it.id.toString() }
+        for (candidate in snapshot.rows.filter { it.state in ACTIVE }) {
+            // A worker may have completed after either observer snapshot was emitted.
+            val row = dao.forRequest(candidate.requestId) ?: continue
+            val info = work[row.requestId]
+            val now = System.currentTimeMillis()
+            if (row.state == "DOWNLOADING" && info?.state == WorkInfo.State.ENQUEUED && now - row.updatedAt < 2_000) continue
+            val status = downloadStatus(row, info?.state, info?.runAttemptCount ?: 0,
+                info?.outputData?.getString(DownloadWorker.KEY_ERROR), snapshot.network.connected,
+                snapshot.network.unmetered, snapshot.wifiOnly, now) ?: continue
+            dao.reconcile(row.requestId, row.state, row.updatedAt, status.state, status.reason, now)
+        }
+    }
+
+    private fun request(id: UUID, songId: String, wifiOnly: Boolean, resumeFrom: String? = null): OneTimeWorkRequest =
+        OneTimeWorkRequestBuilder<DownloadWorker>().setId(id).addTag(sessionTag)
+            .apply { resumeFrom?.let { addTag("download-resume:$it") } }
+            .setInputData(Data.Builder().putString(DownloadWorker.KEY_SONG_ID, songId)
+                .putString(DownloadWorker.KEY_ACCOUNT, session.accountKey)
+                .putString(DownloadWorker.KEY_SESSION, session.token)
+                .putString(DownloadWorker.KEY_RESUME, resumeFrom).build())
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(
+                if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS).build()
+
+    private fun networkState(): DownloadNetwork {
+        val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val capabilities = manager.getNetworkCapabilities(manager.activeNetwork)
+        return DownloadNetwork(capabilities != null,
+            capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true)
+    }
     private fun valid(uri: String?): Boolean = uri?.let(Uri::parse)?.path?.let(::File)
-        ?.let { it.exists() && it.length() > 0 } == true
-
-    private fun hasUnmeteredNetwork(): Boolean {
-        val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-    }
-
+        ?.let { it.isFile && it.length() > 0 } == true
     private fun String.toUuid(): UUID? = runCatching { UUID.fromString(this) }.getOrNull()
+    private data class DownloadNetwork(val connected: Boolean, val unmetered: Boolean)
+    private data class MonitorSnapshot(val rows: List<DownloadEntity>, val work: List<WorkInfo>,
+        val network: DownloadNetwork, val wifiOnly: Boolean)
+    private companion object { val ACTIVE = setOf("QUEUED", "DOWNLOADING") }
 }

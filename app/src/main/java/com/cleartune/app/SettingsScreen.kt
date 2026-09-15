@@ -201,6 +201,7 @@ internal fun FullSettingsScreen(
                 SettingsRow(
                     icon = Icons.Rounded.Download,
                     title = stringResource(R.string.wifi_only_downloads),
+                    subtitle = stringResource(R.string.wifi_only_downloads_explanation),
                     trailing = {
                         ClearTuneAccessibleSwitch(
                             label = stringResource(R.string.wifi_only_downloads),

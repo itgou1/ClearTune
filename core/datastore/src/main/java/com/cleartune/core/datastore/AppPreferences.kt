@@ -58,7 +58,7 @@ data class EqualizerSettings(
 val EQUALIZER_FREQUENCIES_HZ = listOf(60, 230, 910, 3_600, 14_000)
 val DEFAULT_EQUALIZER_LEVELS_DB = listOf(2, 1, 0, 1, 2)
 const val DEFAULT_PLAYBACK_CACHE_SIZE_MB = 512
-val PLAYBACK_CACHE_SIZE_OPTIONS_MB = listOf(128, 256, 512, 1_024, 2_048)
+val PLAYBACK_CACHE_SIZE_OPTIONS_MB = listOf(512, 1_024, 2_048, 4_096)
 
 fun normalizedPlaybackCacheSizeMb(value: Int?): Int =
     value?.takeIf(PLAYBACK_CACHE_SIZE_OPTIONS_MB::contains) ?: DEFAULT_PLAYBACK_CACHE_SIZE_MB
@@ -76,8 +76,6 @@ data class AppSettings(
     val playbackCacheSizeMb: Int = DEFAULT_PLAYBACK_CACHE_SIZE_MB,
     val mobileAudioQuality: MobileAudioQuality = MobileAudioQuality.RATE_192,
     val checkUpdates: Boolean = true,
-    val recentSearches: List<String> = emptyList(),
-    val lastLibrarySyncEpochMs: Long = 0L,
     val favoriteSongSort: String = DEFAULT_FAVORITE_SONG_SORT,
 )
 
@@ -86,6 +84,15 @@ const val DEFAULT_FAVORITE_SONG_SORT = "TITLE"
 private val Context.appSettingsDataStore by preferencesDataStore(name = "app_settings")
 
 class AppPreferences(private val context: Context) {
+    fun accountLibrarySettings(accountKey: String): Flow<AccountLibrarySettings> =
+        context.appSettingsDataStore.data.map { preferences ->
+            AccountLibrarySettings(
+                recentSearches = preferences[recentSearchesKey(accountKey)]
+                    ?.split(SEARCH_SEPARATOR)?.filter(String::isNotBlank).orEmpty(),
+                lastLibrarySyncEpochMs = preferences[lastLibrarySyncKey(accountKey)] ?: 0L,
+            )
+        }
+
     val settings: Flow<AppSettings> = context.appSettingsDataStore.data.map { preferences ->
         AppSettings(
             themeMode = preferences[THEME]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
@@ -108,11 +115,6 @@ class AppPreferences(private val context: Context) {
                 ?.let { runCatching { MobileAudioQuality.valueOf(it) }.getOrNull() }
                 ?: MobileAudioQuality.fromLegacyBitRate(preferences[MOBILE_BIT_RATE]),
             checkUpdates = preferences[CHECK_UPDATES] ?: true,
-            recentSearches = preferences[RECENT_SEARCHES]
-                ?.split(SEARCH_SEPARATOR)
-                ?.filter(String::isNotBlank)
-                .orEmpty(),
-            lastLibrarySyncEpochMs = preferences[LAST_LIBRARY_SYNC_EPOCH_MS] ?: 0L,
             favoriteSongSort = preferences[FAVORITE_SONG_SORT] ?: DEFAULT_FAVORITE_SONG_SORT,
         )
     }
@@ -150,31 +152,33 @@ class AppPreferences(private val context: Context) {
         it[IGNORED_UPDATE_VERSION] = value.trim()
     }
 
-    suspend fun addRecentSearch(query: String) = edit { preferences ->
+    suspend fun addRecentSearch(accountKey: String, query: String) = edit { preferences ->
+        val key = recentSearchesKey(accountKey)
         val normalized = query.trim().replace(SEARCH_SEPARATOR, " ")
         if (normalized.isNotBlank()) {
-            val current = preferences[RECENT_SEARCHES]
+            val current = preferences[key]
                 ?.split(SEARCH_SEPARATOR)
                 .orEmpty()
-            preferences[RECENT_SEARCHES] = (listOf(normalized) + current)
+            preferences[key] = (listOf(normalized) + current)
                 .distinctBy { it.lowercase() }
                 .take(MAX_RECENT_SEARCHES)
                 .joinToString(SEARCH_SEPARATOR)
         }
     }
 
-    suspend fun removeRecentSearch(query: String) = edit { preferences ->
-        preferences[RECENT_SEARCHES] = preferences[RECENT_SEARCHES]
+    suspend fun removeRecentSearch(accountKey: String, query: String) = edit { preferences ->
+        val key = recentSearchesKey(accountKey)
+        preferences[key] = preferences[key]
             ?.split(SEARCH_SEPARATOR)
             .orEmpty()
             .filterNot { it.equals(query, ignoreCase = true) }
             .joinToString(SEARCH_SEPARATOR)
     }
 
-    suspend fun clearRecentSearches() = edit { it.remove(RECENT_SEARCHES) }
+    suspend fun clearRecentSearches(accountKey: String) = edit { it.remove(recentSearchesKey(accountKey)) }
 
-    suspend fun setLastLibrarySyncEpochMs(value: Long) = edit {
-        it[LAST_LIBRARY_SYNC_EPOCH_MS] = value.coerceAtLeast(0L)
+    suspend fun setLastLibrarySyncEpochMs(accountKey: String, value: Long) = edit {
+        it[lastLibrarySyncKey(accountKey)] = value.coerceAtLeast(0L)
     }
 
     suspend fun setFavoriteSongSort(value: String) = edit {
@@ -198,11 +202,16 @@ class AppPreferences(private val context: Context) {
         val CHECK_UPDATES = booleanPreferencesKey("check_updates")
         val LAST_UPDATE_CHECK_EPOCH_MS = longPreferencesKey("last_update_check_epoch_ms")
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
-        val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
-        val LAST_LIBRARY_SYNC_EPOCH_MS = longPreferencesKey("last_library_sync_epoch_ms")
+        fun recentSearchesKey(accountKey: String) = stringPreferencesKey("account_${accountKey}_recent_searches")
+        fun lastLibrarySyncKey(accountKey: String) = longPreferencesKey("account_${accountKey}_last_library_sync")
         val FAVORITE_SONG_SORT = stringPreferencesKey("favorite_song_sort")
         const val SEARCH_SEPARATOR = "\u001F"
         const val EQUALIZER_SEPARATOR = ","
         const val MAX_RECENT_SEARCHES = 8
     }
 }
+
+data class AccountLibrarySettings(
+    val recentSearches: List<String> = emptyList(),
+    val lastLibrarySyncEpochMs: Long = 0L,
+)

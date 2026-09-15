@@ -47,6 +47,7 @@ class AuthViewModel @Inject constructor(
         password: String,
         allowHttp: Boolean,
     ) {
+        if ((_state.value as? AuthUiState.Login)?.isConnecting == true || _state.value is AuthUiState.Connected) return
         if (address.isBlank() || username.isBlank() || password.isBlank()) {
             _state.value = AuthUiState.Login(
                 address = address,
@@ -77,9 +78,12 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    fun logout() {
+    fun logout(clearSessionUi: suspend () -> Unit) {
+        if (_state.value !is AuthUiState.Connected) return
+        _state.value = AuthUiState.Restoring
         viewModelScope.launch {
             repository.logout()
+            clearSessionUi()
             _state.value = AuthUiState.Login()
         }
     }

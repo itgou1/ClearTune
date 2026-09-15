@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelChildren
 
 @OptIn(FlowPreview::class)
 @HiltViewModel
@@ -193,6 +194,12 @@ class PlayerViewModel @Inject constructor(
     fun persistNow() {
         if (!restored || state.value.queue.isEmpty()) return
         viewModelScope.launch { repository.persistQueue(state.value) }
+    }
+
+    suspend fun endSession() {
+        restored = false
+        viewModelScope.coroutineContext.cancelChildren()
+        connection.endSession()
     }
 
     fun cycleMode() {

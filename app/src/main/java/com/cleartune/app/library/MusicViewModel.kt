@@ -144,7 +144,10 @@ data class FolderUiState(
 class MusicViewModel @Inject constructor(
     private val repository: MusicRepository,
     private val appPreferences: AppPreferences,
+    session: com.cleartune.app.auth.AccountSession,
 ) : ViewModel() {
+    private val accountKey = session.accountKey
+    private val accountSettings = appPreferences.accountLibrarySettings(accountKey)
     private val refreshing = MutableStateFlow(false)
     private val libraryError = MutableStateFlow<String?>(null)
     private val syncStage = MutableStateFlow(LibrarySyncStage.IDLE)
@@ -166,7 +169,7 @@ class MusicViewModel @Inject constructor(
         refreshing,
         libraryError,
         syncStage,
-        appPreferences.settings.map { it.lastLibrarySyncEpochMs },
+        accountSettings.map { it.lastLibrarySyncEpochMs },
     ) { snapshot, isRefreshing, errorMessage, currentSyncStage, lastSync ->
         withContext(Dispatchers.Default) {
             val resolvedAlbums = snapshot.albums.withResolvedArtwork(snapshot.songs)
@@ -190,7 +193,7 @@ class MusicViewModel @Inject constructor(
     private val _searchState = MutableStateFlow(SearchUiState())
     private var searchPaging = SearchPagingState()
     val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
-    val recentSearches: StateFlow<List<String>> = appPreferences.settings
+    val recentSearches: StateFlow<List<String>> = accountSettings
         .map { it.recentSearches }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -242,7 +245,7 @@ class MusicViewModel @Inject constructor(
                 val refreshError = repository.refreshLibrary()
                 libraryError.value = refreshError?.userMessage
                 if (refreshError == null) {
-                    appPreferences.setLastLibrarySyncEpochMs(System.currentTimeMillis())
+                    appPreferences.setLastLibrarySyncEpochMs(accountKey, System.currentTimeMillis())
                 }
 
                 syncStage.value = LibrarySyncStage.GENRES
@@ -337,7 +340,7 @@ class MusicViewModel @Inject constructor(
     fun submitSearch() {
         val query = searchQuery.value.trim()
         if (query.isNotBlank()) {
-            viewModelScope.launch { appPreferences.addRecentSearch(query) }
+            viewModelScope.launch { appPreferences.addRecentSearch(accountKey, query) }
             explicitSearchRequests.tryEmit(SearchRequest(query, forceRemote = true))
         }
     }
@@ -399,11 +402,11 @@ class MusicViewModel @Inject constructor(
     }
 
     fun removeRecentSearch(query: String) {
-        viewModelScope.launch { appPreferences.removeRecentSearch(query) }
+        viewModelScope.launch { appPreferences.removeRecentSearch(accountKey, query) }
     }
 
     fun clearRecentSearches() {
-        viewModelScope.launch { appPreferences.clearRecentSearches() }
+        viewModelScope.launch { appPreferences.clearRecentSearches(accountKey) }
     }
 
     fun refreshRecommendations() {
@@ -619,7 +622,7 @@ class MusicViewModel @Inject constructor(
         val normalizedQuery = query.trim()
         val localResults = repository.localSearch(normalizedQuery)
         searchPaging = SearchPagingState(query = normalizedQuery)
-        val lastSync = appPreferences.settings.first().lastLibrarySyncEpochMs
+        val lastSync = accountSettings.first().lastLibrarySyncEpochMs
         val searchServer = shouldSearchServer(
             localResultCount = localResults.totalCount(),
             lastLibrarySyncEpochMs = lastSync,

@@ -20,6 +20,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -133,6 +135,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -246,6 +249,7 @@ fun ClearTuneApp(
     onLogout: () -> Unit,
 ) {
     val navController = rememberNavController()
+    var homeEntrancePlayed by rememberSaveable { mutableStateOf(false) }
     val libraryState by viewModel.libraryState.collectAsStateWithLifecycle()
     val searchState by viewModel.searchState.collectAsStateWithLifecycle()
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
@@ -466,6 +470,8 @@ fun ClearTuneApp(
                         onPlay = playerViewModel::play,
                         recommendations = recommendations,
                         onDiscovery = { navController.navigate("discovery") },
+                        animateEntrance = !homeEntrancePlayed,
+                        onEntranceStarted = { homeEntrancePlayed = true },
                     )
                 }
             }
@@ -761,8 +767,15 @@ private fun HomeScreen(
     onPlay: (List<Song>, Int) -> Unit,
     recommendations: List<RecommendationShelf>,
     onDiscovery: () -> Unit,
+    animateEntrance: Boolean,
+    onEntranceStarted: () -> Unit,
 ) {
     val isLibraryEmpty = state.albums.isEmpty() && state.artists.isEmpty() && state.songs.isEmpty()
+    val entranceProgress = rememberHomeEntranceProgress(
+        ready = !isLibraryEmpty,
+        shouldAnimate = animateEntrance,
+        onStarted = onEntranceStarted,
+    )
     val recommendationContent = remember(recommendations, state.songs.size) {
         recommendationSurfaces(recommendations, state.songs.size)
     }
@@ -798,35 +811,43 @@ private fun HomeScreen(
         } else {
             if (recommendationContent.discovery.isNotEmpty()) {
                 item {
-                    DiscoveryHeroCard(
-                        songs = heroSongs,
-                        viewModel = viewModel,
-                        onDiscovery = onDiscovery,
-                    )
+                    HomeEntranceSection(entranceProgress, section = 0) {
+                        DiscoveryHeroCard(
+                            songs = heroSongs,
+                            viewModel = viewModel,
+                            onDiscovery = onDiscovery,
+                        )
+                    }
                     Spacer(Modifier.height(16.dp))
                 }
             }
             item {
-                RecommendationSceneCards(
-                    rediscovery = recommendationContent.rediscovery,
-                    frequent = recommendationContent.frequent,
-                    viewModel = viewModel,
-                    onPlay = onPlay,
-                )
+                HomeEntranceSection(entranceProgress, section = 1) {
+                    RecommendationSceneCards(
+                        rediscovery = recommendationContent.rediscovery,
+                        frequent = recommendationContent.frequent,
+                        viewModel = viewModel,
+                        onPlay = onPlay,
+                    )
+                }
             }
             if (state.albums.isNotEmpty()) {
                 item {
-                    HomeSectionHeader(
-                        title = stringResource(R.string.recently_added),
-                        subtitle = stringResource(R.string.recently_added_subtitle),
-                    )
+                    HomeEntranceSection(entranceProgress, section = 2) {
+                        HomeSectionHeader(
+                            title = stringResource(R.string.recently_added),
+                            subtitle = stringResource(R.string.recently_added_subtitle),
+                        )
+                    }
                 }
                 item {
-                    AlbumShelf(
-                        albums = state.albums.take(20),
-                        viewModel = viewModel,
-                        onAlbum = onAlbum,
-                    )
+                    HomeEntranceSection(entranceProgress, section = 2) {
+                        AlbumShelf(
+                            albums = state.albums.take(20),
+                            viewModel = viewModel,
+                            onAlbum = onAlbum,
+                        )
+                    }
                 }
             }
         }
@@ -839,6 +860,8 @@ private fun DiscoveryHeroCard(
     viewModel: MusicViewModel,
     onDiscovery: () -> Unit,
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressScale = rememberHomePressScale(interactionSource)
     val gradient = Brush.linearGradient(
         listOf(
             MaterialTheme.colorScheme.primaryContainer,
@@ -849,7 +872,12 @@ private fun DiscoveryHeroCard(
         onClick = onDiscovery,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 4.dp),
+            .padding(horizontal = 20.dp, vertical = 4.dp)
+            .graphicsLayer {
+                scaleX = pressScale.value
+                scaleY = pressScale.value
+            },
+        interactionSource = interactionSource,
     ) {
         Row(
             modifier = Modifier
@@ -906,7 +934,7 @@ private fun RecommendationSceneCards(
             .padding(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        RecommendationSceneCard(
+        HomeRecommendationCard(
             modifier = Modifier.weight(1f),
             title = stringResource(
                 if (rediscovery?.id == "random") R.string.home_random else R.string.home_long_absent,
@@ -918,14 +946,14 @@ private fun RecommendationSceneCards(
                     else -> R.string.home_long_absent_subtitle
                 },
             ),
-            songs = rediscovery?.songs.orEmpty(),
-            viewModel = viewModel,
-            actionIcon = Icons.Rounded.PlayArrow,
-            actionDescription = stringResource(R.string.play_action),
-            actionEnabled = !rediscovery?.songs.isNullOrEmpty(),
-            onAction = { rediscovery?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
+            enabled = !rediscovery?.songs.isNullOrEmpty(),
+            hasRearCover = (rediscovery?.songs?.size ?: 0) > 1,
+            onPlay = { rediscovery?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
+            artwork = { index, artworkModifier ->
+                RecommendationCoverCell(rediscovery?.songs?.getOrNull(index), viewModel, artworkModifier)
+            },
         )
-        RecommendationSceneCard(
+        HomeRecommendationCard(
             modifier = Modifier.weight(1f),
             title = stringResource(R.string.home_frequent),
             description = stringResource(
@@ -935,65 +963,13 @@ private fun RecommendationSceneCards(
                     R.string.home_frequent_subtitle
                 },
             ),
-            songs = frequent?.songs.orEmpty(),
-            viewModel = viewModel,
-            actionIcon = Icons.Rounded.PlayArrow,
-            actionDescription = stringResource(R.string.play_action),
-            actionEnabled = !frequent?.songs.isNullOrEmpty(),
-            onAction = { frequent?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
+            enabled = !frequent?.songs.isNullOrEmpty(),
+            hasRearCover = (frequent?.songs?.size ?: 0) > 1,
+            onPlay = { frequent?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
+            artwork = { index, artworkModifier ->
+                RecommendationCoverCell(frequent?.songs?.getOrNull(index), viewModel, artworkModifier)
+            },
         )
-    }
-}
-
-@Composable
-private fun RecommendationSceneCard(
-    modifier: Modifier,
-    title: String,
-    description: String,
-    songs: List<Song>,
-    viewModel: MusicViewModel,
-    actionIcon: ImageVector,
-    actionDescription: String,
-    actionEnabled: Boolean,
-    onAction: () -> Unit,
-) {
-    ElevatedCard(
-        modifier = modifier.height(218.dp),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(14.dp),
-        ) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-            )
-            Spacer(Modifier.height(3.dp))
-            Text(
-                description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                minLines = 2,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(10.dp))
-            RecommendationCoverPair(songs = songs, viewModel = viewModel)
-            Spacer(Modifier.weight(1f))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Spacer(Modifier.width(1.dp))
-                FilledTonalIconButton(onClick = onAction, enabled = actionEnabled) {
-                    Icon(actionIcon, contentDescription = actionDescription)
-                }
-            }
-        }
     }
 }
 
@@ -1024,9 +1000,7 @@ private fun RecommendationCoverPair(songs: List<Song>, viewModel: MusicViewModel
             RecommendationCoverCell(
                 song = songs.getOrNull(index),
                 viewModel = viewModel,
-                modifier = Modifier
-                    .weight(1f)
-                    .aspectRatio(1f),
+                modifier = Modifier.weight(1f).aspectRatio(1f),
             )
         }
     }
@@ -3484,10 +3458,18 @@ private fun AlbumShelf(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         items(albums, key = { it.id }) { album ->
+            val interactionSource = remember(album.id) { MutableInteractionSource() }
+            val pressScale = rememberHomePressScale(interactionSource)
             Column(
                 modifier = Modifier
                     .width(96.dp)
-                    .clickable { onAlbum(album.id) },
+                    .graphicsLayer {
+                        scaleX = pressScale.value
+                        scaleY = pressScale.value
+                    }
+                    .clickable(interactionSource = interactionSource, indication = LocalIndication.current) {
+                        onAlbum(album.id)
+                    },
             ) {
                 CoverArt(
                     album.coverArtId,

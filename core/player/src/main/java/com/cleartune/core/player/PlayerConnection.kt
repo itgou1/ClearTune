@@ -21,6 +21,8 @@ import java.util.concurrent.Executor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 enum class PlaybackStatus { IDLE, BUFFERING, READY, PLAYING, PAUSED, ENDED, ERROR }
 
@@ -49,6 +51,7 @@ class PlayerConnection(context: Context) {
     private var pendingQueue: PendingQueue? = null
     private val queueUndoSnapshots = LinkedHashMap<Long, QueueUndoSnapshot>()
     private var nextQueueUndoToken = 1L
+    private var released = false
 
     private val _state = MutableStateFlow(PlayerUiState())
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
@@ -76,6 +79,7 @@ class PlayerConnection(context: Context) {
         controllerFuture = MediaController.Builder(appContext, token).buildAsync()
         controllerFuture.addListener(
             {
+                if (released) return@addListener
                 runCatching { controllerFuture.get() }.onSuccess { mediaController ->
                     controller = mediaController
                     mediaController.addListener(listener)
@@ -252,10 +256,32 @@ class PlayerConnection(context: Context) {
     }
 
     fun release() {
+        released = true
+        pendingQueue = null
+        songMap = emptyMap()
+        queueUndoSnapshots.clear()
         handler.removeCallbacks(progressTicker)
         controller?.removeListener(listener)
         MediaController.releaseFuture(controllerFuture)
         controller = null
+    }
+
+    suspend fun endSession() {
+        pendingQueue = null
+        songMap = emptyMap()
+        queueUndoSnapshots.clear()
+        // Wait for an in-flight service connection as well: clearing only a nullable
+        // controller leaves the previous account's background queue alive.
+        suspendCancellableCoroutine<Unit> { continuation ->
+            controllerFuture.addListener({
+                runCatching { controllerFuture.get() }.onSuccess { player ->
+                    player.stop()
+                    player.clearMediaItems()
+                }
+                _state.value = PlayerUiState()
+                if (continuation.isActive) continuation.resume(Unit)
+            }, mainExecutor)
+        }
     }
 
     private fun applyMode(player: Player, value: PlaybackMode) {
@@ -426,5 +452,6 @@ internal fun playbackCacheKey(songId: String, streamUrl: String): String? {
         .toMap()
     val bitRate = parameters["maxBitRate"] ?: "original"
     val format = parameters["format"] ?: "default"
-    return "cleartune:$endpoint:song=$songId:maxBitRate=$bitRate:format=$format"
+    val account = parameters["u"] ?: return null
+    return "cleartune:v2:$endpoint:user=$account:song=$songId:maxBitRate=$bitRate:format=$format"
 }

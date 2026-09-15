@@ -1,12 +1,11 @@
 package com.cleartune.app.library
 
-import com.cleartune.core.database.ClearTuneDatabase
+import com.cleartune.app.auth.AccountSession
 import com.cleartune.core.database.PlaylistSongEntity
 import com.cleartune.core.database.PendingMutationEntity
 import com.cleartune.core.database.toCacheWrite
 import com.cleartune.core.database.toEntity
 import com.cleartune.core.database.toModel
-import com.cleartune.core.datastore.CredentialsStore
 import com.cleartune.core.model.Album
 import com.cleartune.core.model.Artist
 import com.cleartune.core.model.ClearTuneError
@@ -21,7 +20,6 @@ import com.cleartune.core.network.OpenSubsonicApiFactory
 import com.cleartune.core.network.RemoteResult
 import com.cleartune.core.network.SearchResults
 import javax.inject.Inject
-import javax.inject.Singleton
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
@@ -38,12 +36,11 @@ data class PlaylistSongsAddResult(
     val refreshError: ClearTuneError? = null,
 )
 
-@Singleton
 class MusicRepository @Inject constructor(
-    private val credentialsStore: CredentialsStore,
-    private val database: ClearTuneDatabase,
+    private val session: AccountSession,
     private val apiFactory: OpenSubsonicApiFactory,
 ) {
+    private val database = session.database
     private val mediaDao = database.mediaDao()
     private val lyricsDao = database.lyricsDao()
     private val coverArtUrls = ConcurrentHashMap<String, String>()
@@ -391,7 +388,7 @@ class MusicRepository @Inject constructor(
         remote()?.musicDirectory(id) ?: RemoteResult.Failure(ClearTuneError.Authentication())
 
     suspend fun lyrics(song: Song): RemoteResult<Lyrics> {
-        val credentials = credentialsStore.credentials.first()
+        val credentials = session.credentials()
             ?: return RemoteResult.Failure(ClearTuneError.Authentication())
         val serverUrl = credentials.baseUrl.trimEnd('/')
         runCatching {
@@ -414,7 +411,7 @@ class MusicRepository @Inject constructor(
     }
 
     suspend fun coverArtUrl(id: String, size: Int = 512): String? {
-        val credentials = credentialsStore.credentials.first() ?: return null
+        val credentials = session.credentials() ?: return null
         val safeSize = size.coerceIn(96, 1_200)
         val key = "${credentials.baseUrl}|${credentials.username}|$id|$safeSize"
         coverArtUrls[key]?.let { return it }
@@ -503,7 +500,7 @@ class MusicRepository @Inject constructor(
     }
 
     private suspend fun remote(): LibraryRemoteDataSource? {
-        val credentials = credentialsStore.credentials.first() ?: return null
+        val credentials = session.credentials() ?: return null
         return runCatching {
             LibraryRemoteDataSource(apiFactory.authorized(credentials))
         }.getOrNull()

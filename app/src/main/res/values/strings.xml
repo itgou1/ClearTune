@@ -31,7 +31,7 @@
     <string name="refresh">刷新</string>
     <string name="all">全部</string>
     <string name="discover_music">发现音乐</string>
-    <string name="discover_music_subtitle">从喜欢出发，探索没怎么听过的歌曲</string>
+    <string name="discover_music_subtitle">从喜欢出发，遇见新歌</string>
     <string name="discover_page_subtitle">按心情慢慢挑选</string>
     <string name="go_discover">去发现</string>
     <string name="now_playing_compact">正在播放 · %1$s</string>
@@ -49,12 +49,12 @@
     <string name="home_listen_today">今天听什么</string>
     <string name="home_listen_today_subtitle">熟悉旋律，也重逢久违旧爱</string>
     <string name="home_long_absent">好久不见</string>
-    <string name="home_long_absent_subtitle">回到至少 30 天没听过的旧爱</string>
+    <string name="home_long_absent_subtitle">重逢久未听过的旧爱</string>
     <string name="home_long_absent_empty">还没有适合重温的歌曲</string>
     <string name="home_random">随便听听</string>
-    <string name="home_random_subtitle">从你的曲库随机挑选</string>
+    <string name="home_random_subtitle">从曲库随机挑选</string>
     <string name="home_frequent">常听精选</string>
-    <string name="home_frequent_subtitle">回到你反复播放过的熟悉旋律</string>
+    <string name="home_frequent_subtitle">重温熟悉的旋律</string>
     <string name="home_frequent_empty">还没有足够的播放记录</string>
     <string name="artists">艺术家</string>
     <string name="albums">专辑</string>
@@ -328,6 +328,7 @@
     <string name="volume_normalization_auto_mode">自动（推荐）· 歌单按单曲，连续专辑按专辑</string>
     <string name="settings_download_cache">下载与缓存</string>
     <string name="wifi_only_downloads">仅使用 Wi-Fi 下载</string>
+    <string name="wifi_only_downloads_explanation">等待非计费网络；被标记为计费的 Wi-Fi 不会下载。修改后对已有任务生效。</string>
     <string name="playback_cache">播放缓存</string>
     <string name="playback_cache_description">已使用 %1$s · 自动淘汰旧缓存</string>
     <string name="mobile_audio_quality">移动网络音质</string>
