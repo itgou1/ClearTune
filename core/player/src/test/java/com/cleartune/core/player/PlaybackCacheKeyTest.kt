@@ -48,4 +48,12 @@ class PlaybackCacheKeyTest {
         )
         assertNull(playbackCacheKey("song-1", "https://music.example/rest/stream?id=song-1"))
     }
+
+    @Test
+    fun serverSubpathsAndCaseSensitiveUsernamesRemainIsolated() {
+        val original = playbackCacheKey("song", "https://music.example/one/rest/stream?u=Alice")
+        assertNotEquals(original, playbackCacheKey("song", "https://music.example/two/rest/stream?u=Alice"))
+        assertNotEquals(original, playbackCacheKey("song", "https://music.example/one/rest/stream?u=alice"))
+        assertNotEquals(original, playbackCacheKey("song", "https://music.example/one/rest/stream?u=Alice%26u%3Dbob"))
+    }
 }

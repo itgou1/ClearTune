@@ -32,6 +32,7 @@ import kotlinx.coroutines.withContext
 
 data class PlaylistSongsAddResult(
     val addedCount: Int = 0,
+    val skippedCount: Int = 0,
     val error: ClearTuneError? = null,
     val refreshError: ClearTuneError? = null,
 )
@@ -43,7 +44,7 @@ class MusicRepository @Inject constructor(
     private val database = session.database
     private val mediaDao = database.mediaDao()
     private val lyricsDao = database.lyricsDao()
-    private val coverArtUrls = ConcurrentHashMap<String, String>()
+    val artworkAccountKey: String get() = session.accountKey
     private val remoteSearchCache = ConcurrentHashMap<RemoteSearchCacheKey, CachedRemoteSearch>()
     @Volatile
     private var searchIndexReady = false
@@ -146,10 +147,10 @@ class MusicRepository @Inject constructor(
         val remote = remote() ?: return ClearTuneError.Authentication()
         return when (val result = remote.playlist(id)) {
             is RemoteResult.Success -> {
-                mediaDao.upsertPlaylists(listOf(result.value.playlist.toEntity()))
+                val playlist = mediaDao.upsertPlaylistDetail(result.value.playlist.toEntity()).toModel()
                 mediaDao.upsertSongs(result.value.songs.map { it.toEntity() })
                 mediaDao.upsertSearchDocuments(
-                    listOf(searchDocument(result.value.playlist)) + result.value.songs.map(::searchDocument),
+                    listOf(searchDocument(playlist)) + result.value.songs.map(::searchDocument),
                 )
                 mediaDao.replacePlaylistSongs(
                     id,
@@ -185,6 +186,17 @@ class MusicRepository @Inject constructor(
         }
     }
 
+    suspend fun createPlaylistWithSongs(name: String, songIds: List<String>): PlaylistSongsAddResult {
+        val remote = remote() ?: return PlaylistSongsAddResult(error = ClearTuneError.Authentication())
+        val additions = songIds.distinct()
+        return when (val result = remote.createPlaylist(name.trim(), additions)) {
+            is RemoteResult.Failure -> PlaylistSongsAddResult(error = result.error)
+            is RemoteResult.Success -> PlaylistSongsAddResult(
+                addedCount = additions.size, refreshError = refreshPlaylists(remote),
+            )
+        }
+    }
+
     suspend fun addPlaylistSong(id: String, songId: String): ClearTuneError? {
         val remote = remote() ?: return ClearTuneError.Authentication()
         return when (val result = remote.addPlaylistSongs(id, listOf(songId))) {
@@ -202,12 +214,14 @@ class MusicRepository @Inject constructor(
         }
         val existingIds = current.songs.map(Song::id).toSet()
         val additions = songIds.distinct().filterNot { it in existingIds }
-        if (additions.isEmpty()) return PlaylistSongsAddResult(refreshError = loadPlaylist(id))
+        val skippedCount = songIds.distinct().size - additions.size
+        if (additions.isEmpty()) return PlaylistSongsAddResult(skippedCount = skippedCount, refreshError = loadPlaylist(id))
         return when (val result = remote.addPlaylistSongs(id, additions)) {
             is RemoteResult.Failure -> PlaylistSongsAddResult(error = cleanMissingPlaylist(id, result.error))
             // Once the server accepted the addition, a refresh failure must not invite resubmission.
             is RemoteResult.Success -> PlaylistSongsAddResult(
                 addedCount = additions.size,
+                skippedCount = skippedCount,
                 refreshError = loadPlaylist(id),
             )
         }
@@ -413,14 +427,12 @@ class MusicRepository @Inject constructor(
     suspend fun coverArtUrl(id: String, size: Int = 512): String? {
         val credentials = session.credentials() ?: return null
         val safeSize = size.coerceIn(96, 1_200)
-        val key = "${credentials.baseUrl}|${credentials.username}|$id|$safeSize"
-        coverArtUrls[key]?.let { return it }
-        val url = runCatching {
-            LibraryRemoteDataSource(apiFactory.authorized(credentials)).coverArtUrl(id, safeSize)
-        }.getOrNull() ?: return null
-        if (coverArtUrls.size >= MAX_COVER_URL_CACHE_ENTRIES) coverArtUrls.clear()
-        coverArtUrls[key] = url
-        return url
+        val key = com.cleartune.app.artwork.artworkCacheKey(session.accountKey, id, safeSize)
+        return runCatching {
+            com.cleartune.app.artwork.ArtworkCache.url("$key:${session.token}") {
+                LibraryRemoteDataSource(apiFactory.authorized(credentials)).coverArtUrl(id, safeSize)
+            }
+        }.getOrNull()
     }
 
     suspend fun setSongFavorite(song: Song, favorite: Boolean) =
@@ -592,7 +604,6 @@ class MusicRepository @Inject constructor(
         const val SEARCH_ARTIST_PAGE_SIZE = 30
         const val SEARCH_ALBUM_PAGE_SIZE = 30
         const val SEARCH_SONG_PAGE_SIZE = 50
-        const val MAX_COVER_URL_CACHE_ENTRIES = 2_048
         const val LOCAL_SEARCH_CANDIDATE_LIMIT = 500
         const val LOCAL_ARTIST_RESULT_LIMIT = 80
         const val LOCAL_ALBUM_RESULT_LIMIT = 120

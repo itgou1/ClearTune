@@ -93,7 +93,12 @@ class PlaybackRepository @Inject constructor(
         return PlaybackUrls(
             streams = streams,
             artwork = songs.mapNotNull { song ->
-                song.coverArtId.displayableArtworkId()?.let { song.id to remote.coverArtUrl(it, 768) }
+                song.coverArtId.displayableArtworkId()?.let {
+                    val local = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.cleartune.app.artwork.ArtworkCache.localFile(context, session.accountKey, it)
+                    }
+                    song.id to (local?.let { file -> Uri.fromFile(file).toString() } ?: remote.coverArtUrl(it, 768))
+                }
             }.toMap(),
         )
     }

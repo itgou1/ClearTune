@@ -8,6 +8,8 @@ import android.os.StatFs
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.cleartune.app.displayableArtworkId
+import com.cleartune.app.artwork.ArtworkCache
 import com.cleartune.core.database.ClearTuneDatabase
 import com.cleartune.core.database.DatabaseFactory
 import com.cleartune.core.database.DownloadDao
@@ -134,13 +136,25 @@ class DownloadWorker(appContext: Context, params: WorkerParameters) : CoroutineW
             checkActive()
             if (downloaded == 0L) throw DownloadProblem("服务器返回了空文件")
             if (total != null && temporary.length() != total) throw IOException("Incomplete response")
+            var artworkWarning: String? = null
+            song.coverArtId.displayableArtworkId()?.let { coverId ->
+                try {
+                    ArtworkCache.saveOffline(applicationContext, credentials, coverId, ::checkActive)
+                } catch (cancelled: CancellationException) { throw cancelled
+                } catch (_: Exception) { artworkWarning = OfflineArtworkWorker.ARTWORK_WARNING }
+            }
+            checkActive()
             if (!temporary.renameTo(target)) throw DownloadProblem("无法完成文件写入，请检查存储空间")
             total = downloaded
-            if (!update("COMPLETED", uri = Uri.fromFile(target).toString())) {
+            if (!update("COMPLETED", reason = artworkWarning, uri = Uri.fromFile(target).toString())) {
                 target.delete()
                 throw TaskObsolete()
             }
             source?.delete()
+            if (artworkWarning != null) runCatching {
+                OfflineArtworkWorker.enqueue(applicationContext, account, token,
+                    preferences.settings.first().wifiOnlyDownloads)
+            }
             Result.success()
         } catch (_: TaskObsolete) {
             failure("任务已取消或替换")

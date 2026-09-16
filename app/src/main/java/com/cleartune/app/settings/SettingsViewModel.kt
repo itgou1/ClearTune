@@ -153,11 +153,10 @@ class SettingsViewModel @Inject constructor(
     fun clearCache() {
         viewModelScope.launch {
             _cacheState.value = _cacheState.value.copy(clearing = true, message = null)
-            val cleared = withContext(Dispatchers.IO) {
-                context.cacheDir.listFiles()?.all { it.deleteRecursively() } ?: true
-            }
+            val cleared = com.cleartune.app.artwork.ArtworkCache.clearTemporary(context)
+            val remaining = withContext(Dispatchers.IO) { cacheSize() }
             _cacheState.value = CacheUiState(
-                sizeBytes = if (cleared) 0 else cacheSize(),
+                sizeBytes = remaining,
                 playbackSizeBytes = _cacheState.value.playbackSizeBytes,
                 message = if (cleared) "缓存已清理" else "部分缓存暂时无法清理",
             )

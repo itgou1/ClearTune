@@ -84,6 +84,16 @@ const val DEFAULT_FAVORITE_SONG_SORT = "TITLE"
 private val Context.appSettingsDataStore by preferencesDataStore(name = "app_settings")
 
 class AppPreferences(private val context: Context) {
+    suspend fun consumeSongBatchHint(): Boolean {
+        var shouldShow = false
+        edit { preferences ->
+            if (preferences[SONG_BATCH_HINT_SHOWN] != true) {
+                preferences[SONG_BATCH_HINT_SHOWN] = true
+                shouldShow = true
+            }
+        }
+        return shouldShow
+    }
     fun accountLibrarySettings(accountKey: String): Flow<AccountLibrarySettings> =
         context.appSettingsDataStore.data.map { preferences ->
             AccountLibrarySettings(
@@ -190,6 +200,7 @@ class AppPreferences(private val context: Context) {
     }
 
     private companion object {
+        val SONG_BATCH_HINT_SHOWN = booleanPreferencesKey("song_batch_hint_shown")
         val THEME = stringPreferencesKey("theme")
         val VOLUME_NORMALIZATION = booleanPreferencesKey("volume_normalization")
         val EQUALIZER_ENABLED = booleanPreferencesKey("equalizer_enabled")

@@ -87,6 +87,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -144,6 +145,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
@@ -168,6 +172,8 @@ import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.cleartune.app.library.DetailUiState
+import com.cleartune.app.library.DetailKind
+import com.cleartune.app.library.DetailTarget
 import com.cleartune.app.library.LibraryUiState
 import com.cleartune.app.library.LibrarySyncStage
 import com.cleartune.app.library.FolderUiState
@@ -176,6 +182,7 @@ import com.cleartune.app.library.SearchUiState
 import com.cleartune.app.library.SearchCategory
 import com.cleartune.app.library.genreLabelsMatch
 import com.cleartune.app.library.recommendationSurfaces
+import com.cleartune.app.library.recentlyAddedSongIds
 import com.cleartune.app.library.resultCount
 import com.cleartune.app.player.PlayerViewModel
 import com.cleartune.app.download.DownloadViewModel
@@ -253,7 +260,6 @@ fun ClearTuneApp(
     val libraryState by viewModel.libraryState.collectAsStateWithLifecycle()
     val searchState by viewModel.searchState.collectAsStateWithLifecycle()
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
-    val detailState by viewModel.detailState.collectAsStateWithLifecycle()
     val genres by viewModel.genres.collectAsStateWithLifecycle()
     val folderState by viewModel.folderState.collectAsStateWithLifecycle()
     val recommendations by viewModel.recommendations.collectAsStateWithLifecycle()
@@ -267,13 +273,28 @@ fun ClearTuneApp(
     val snackbarHostState = remember { SnackbarHostState() }
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
+    val batchSelection = rememberSaveable(backStack?.id, saver = SongBatchSelection.Saver) { SongBatchSelection() }
+    var showBatchPicker by rememberSaveable(backStack?.id) { mutableStateOf(false) }
+    var batchSubmitted by rememberSaveable(backStack?.id) { mutableStateOf(false) }
+    val batchSubmission by viewModel.playlistSongAddState.collectAsStateWithLifecycle()
+    LaunchedEffect(batchSubmitted, batchSubmission) {
+        if (batchSubmitted) {
+            batchSelection.busy = batchSubmission.isAdding
+            if (batchSubmission.completed) {
+                showBatchPicker = false
+                batchSelection.clear()
+                batchSubmitted = false
+                viewModel.resetPlaylistSongAddState()
+            }
+        }
+    }
     val openNowPlaying = {
         if (!navController.popBackStack("now-playing", inclusive = false)) {
             navController.navigate("now-playing") { launchSingleTop = true }
         }
     }
-    val showNavigationBar = currentRoute in mainDestinations.map { it.route }
-    val showMiniPlayer = playerState.currentSong != null && currentRoute !in setOf("now-playing", "queue")
+    val showNavigationBar = !batchSelection.active && currentRoute in mainDestinations.map { it.route }
+    val showMiniPlayer = !batchSelection.active && playerState.currentSong != null && currentRoute !in setOf("now-playing", "queue")
     val viewDownloadsLabel = stringResource(R.string.view_downloads)
     val viewUpdateLabel = stringResource(R.string.update_available_action)
     val updateAvailableMessage = updateState.release
@@ -326,6 +347,13 @@ fun ClearTuneApp(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
+            if (batchSelection.active) {
+                SongSelectionBottomBar(batchSelection.ids.size, batchSelection.busy || batchSubmission.isAdding) {
+                    batchSubmitted = false
+                    viewModel.resetPlaylistSongAddState()
+                    showBatchPicker = true
+                }
+            } else {
             AnimatedVisibility(
                 visible = showNavigationBar || showMiniPlayer,
                 enter = slideInVertically(
@@ -405,12 +433,13 @@ fun ClearTuneApp(
                     }
                 }
             }
+            }
         },
     ) { padding ->
         NavHost(
             navController = navController,
             startDestination = "home",
-            modifier = if (showNavigationBar || showMiniPlayer) {
+            modifier = if (showNavigationBar || showMiniPlayer || batchSelection.active) {
                 Modifier.padding(padding)
             } else {
                 Modifier
@@ -493,6 +522,7 @@ fun ClearTuneApp(
             composable("library") {
                 MainDestinationContent {
                     LibraryScreen(
+                        selection = batchSelection,
                         state = libraryState,
                         genres = genres,
                         folderState = folderState,
@@ -581,13 +611,11 @@ fun ClearTuneApp(
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
                 val id = entry.arguments?.getString("id").orEmpty()
-                LaunchedEffect(id) { viewModel.loadAlbum(id) }
-                LaunchedEffect(id) {
-                    viewModel.detailInvalidations.collect { route ->
-                        if (route == "album/$id") navController.popBackStack()
-                    }
-                }
+                val detail = entryDetailViewModel(entry, viewModel, DetailTarget(DetailKind.ALBUM, id))
+                val detailState by detail.state.collectAsStateWithLifecycle()
+                DetailInvalidationEffect(entry, navController, detail, viewModel::reportMissingDetail)
                 AlbumDetailScreen(
+                    selection = detailSelection(entry.id, backStack?.id, batchSelection),
                     state = detailState,
                     playlists = libraryState.playlists,
                     viewModel = viewModel,
@@ -601,13 +629,11 @@ fun ClearTuneApp(
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
                 val id = entry.arguments?.getString("id").orEmpty()
-                LaunchedEffect(id) { viewModel.loadArtist(id) }
-                LaunchedEffect(id) {
-                    viewModel.detailInvalidations.collect { route ->
-                        if (route == "artist/$id") navController.popBackStack()
-                    }
-                }
+                val detail = entryDetailViewModel(entry, viewModel, DetailTarget(DetailKind.ARTIST, id))
+                val detailState by detail.state.collectAsStateWithLifecycle()
+                DetailInvalidationEffect(entry, navController, detail, viewModel::reportMissingDetail)
                 ArtistDetailScreen(
+                    selection = detailSelection(entry.id, backStack?.id, batchSelection),
                     state = detailState,
                     albums = libraryState.albums.filter { it.artistId == id },
                     playlists = libraryState.playlists,
@@ -623,12 +649,9 @@ fun ClearTuneApp(
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
                 val id = entry.arguments?.getString("id").orEmpty()
-                LaunchedEffect(id) { viewModel.loadPlaylist(id) }
-                LaunchedEffect(id) {
-                    viewModel.detailInvalidations.collect { route ->
-                        if (route == "playlist/$id") navController.popBackStack()
-                    }
-                }
+                val detail = entryDetailViewModel(entry, viewModel, DetailTarget(DetailKind.PLAYLIST, id))
+                val detailState by detail.state.collectAsStateWithLifecycle()
+                DetailInvalidationEffect(entry, navController, detail, viewModel::reportMissingDetail)
                 PlaylistDetailScreen(
                     state = detailState,
                     viewModel = viewModel,
@@ -638,7 +661,9 @@ fun ClearTuneApp(
                     allSongs = libraryState.songs,
                     onRename = viewModel::renamePlaylist,
                     onRemoveSongs = viewModel::removePlaylistSongs,
-                    onDelete = viewModel::deletePlaylist,
+                    onDelete = { playlistId, _ ->
+                        viewModel.deletePlaylist(playlistId, detail::markDeleted)
+                    },
                 )
             }
             composable("settings") {
@@ -745,6 +770,32 @@ fun ClearTuneApp(
             }
         }
     }
+    if (showBatchPicker && batchSelection.active) {
+        BatchPlaylistSheet(
+            playlists = libraryState.playlists,
+            count = batchSelection.ids.size,
+            busy = batchSelection.busy || batchSubmission.isAdding,
+            error = batchSubmission.errorMessage,
+            onSelect = { id ->
+                if (batchSelection.ids.isNotEmpty() && !batchSubmission.isAdding) {
+                    batchSelection.busy = true
+                    batchSubmitted = true
+                    viewModel.addPlaylistSongs(id, batchSelection.ids.toList())
+                }
+            },
+            onCreate = { name ->
+                if (batchSelection.ids.isNotEmpty() && !batchSubmission.isAdding) {
+                    batchSelection.busy = true
+                    batchSubmitted = true
+                    viewModel.createPlaylistWithSongs(name, batchSelection.ids.toList())
+                }
+            },
+            onDismiss = { showBatchPicker = false },
+            cover = { playlist -> PlaylistCover(playlist.coverArtId, playlist.name, viewModel, Modifier.size(44.dp)) },
+        )
+    }
+    // Register after NavHost so Back exits selection before it can pop the destination.
+    BackHandler(enabled = batchSelection.active && !showBatchPicker) { batchSelection.clear() }
 }
 
 @Composable
@@ -831,7 +882,7 @@ private fun HomeScreen(
                     )
                 }
             }
-            if (state.albums.isNotEmpty()) {
+            if (state.recentlyAddedAlbums.isNotEmpty()) {
                 item {
                     HomeEntranceSection(entranceProgress, section = 2) {
                         HomeSectionHeader(
@@ -843,7 +894,7 @@ private fun HomeScreen(
                 item {
                     HomeEntranceSection(entranceProgress, section = 2) {
                         AlbumShelf(
-                            albums = state.albums.take(20),
+                            albums = state.recentlyAddedAlbums,
                             viewModel = viewModel,
                             onAlbum = onAlbum,
                         )
@@ -1377,7 +1428,7 @@ private fun MyDownloadEntry(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FavoriteSongsScreen(
+internal fun FavoriteSongsScreen(
     songs: List<Song>,
     viewModel: MusicViewModel,
     savedSortName: String,
@@ -1459,7 +1510,7 @@ private fun FavoriteSongsScreen(
                         song = song,
                         onClick = { onPlay(sortedSongs, index) },
                         onFavorite = { viewModel.toggleSongFavorite(song) },
-                        useTrackNumberPlaceholder = true,
+                        leadingArtwork = { SongListCover(song, viewModel) },
                     )
                 }
             }
@@ -1815,7 +1866,8 @@ private fun SearchLoadMoreButton(
 }
 
 @Composable
-private fun LibraryScreen(
+internal fun LibraryScreen(
+    selection: SongBatchSelection,
     state: LibraryUiState,
     genres: List<String>,
     folderState: FolderUiState,
@@ -1846,6 +1898,14 @@ private fun LibraryScreen(
     val indexedSongs = remember(state.songs, songSort) {
         buildLibrarySongIndex(state.songs, songSort)
     }
+    val selectableIds = remember(indexedSongs.songs) { indexedSongs.songs.map(Song::id).toSet() }
+    LaunchedEffect(selectedTab, selectableIds) {
+        if (selectedTab != 0) selection.clear() else selection.retain(selectableIds)
+    }
+    val batchHint = stringResource(R.string.batch_long_press)
+    LaunchedEffect(selectedTab, selectableIds.isNotEmpty()) {
+        if (selectedTab == 0 && selectableIds.isNotEmpty()) viewModel.showSongBatchHint(batchHint)
+    }
     val songListState = rememberLazyListState()
     val songListScope = rememberCoroutineScope()
     val showSongScrollToTop by remember {
@@ -1872,7 +1932,7 @@ private fun LibraryScreen(
         }
     }
     Column(Modifier.fillMaxSize()) {
-        ClearTunePageHeader(
+        if (selection.active) SongSelectionHeader(selection, selectableIds) else ClearTunePageHeader(
             title = stringResource(R.string.nav_library),
             subtitle = state.librarySyncSubtitle(),
         ) {
@@ -1883,7 +1943,7 @@ private fun LibraryScreen(
         if (state.isRefreshing || state.errorMessage != null) {
             LibrarySyncBanner(state = state, onRefresh = onRefresh)
         }
-        PrimaryTabRow(selectedTabIndex = selectedTab) {
+        if (!selection.active) PrimaryTabRow(selectedTabIndex = selectedTab) {
             labels.forEachIndexed { index, label ->
                 Tab(
                     selected = selectedTab == index,
@@ -1950,7 +2010,7 @@ private fun LibraryScreen(
                         ),
                     ) {
                         item {
-                            Column(
+                            if (!selection.active) Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -2053,7 +2113,12 @@ private fun LibraryScreen(
                             LibrarySongRow(
                                 song = song,
                                 viewModel = viewModel,
-                                onClick = { onPlay(indexedSongs.songs, index) },
+                                selected = if (selection.active) song.id in selection.ids else null,
+                                enabled = !selection.busy,
+                                onLongClick = { selection.start(song.id) },
+                                onClick = {
+                                    if (selection.active) selection.toggle(song.id) else onPlay(indexedSongs.songs, index)
+                                },
                                 actions = {
                                     LibrarySongActions(
                                         song = song,
@@ -2467,21 +2532,29 @@ private fun buildLibrarySongIndex(
     return IndexedLibrarySongs(songs = sortedSongs, anchors = anchors)
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LibrarySongRow(
     song: Song,
     viewModel: MusicViewModel,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    selected: Boolean? = null,
+    enabled: Boolean = true,
     actions: @Composable RowScope.() -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(enabled = enabled, onClick = onClick,
+                onLongClick = if (selected == null) onLongClick else null,
+                onLongClickLabel = stringResource(R.string.batch_long_press))
+            .semantics { if (selected != null) { this.selected = selected; role = Role.Checkbox } }
             .padding(start = 20.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CoverArt(
+        if (selected != null) Checkbox(checked = selected, onCheckedChange = null, enabled = enabled,
+            modifier = Modifier.size(50.dp)) else CoverArt(
             id = song.displayCoverArtId(),
             description = song.title,
             viewModel = viewModel,
@@ -2512,7 +2585,7 @@ private fun LibrarySongRow(
                 song.suffix?.takeIf(String::isNotBlank)?.let { SongFormatBadge(it) }
             }
         }
-        actions()
+        if (selected == null) actions()
     }
     HorizontalDivider(modifier = Modifier.padding(start = 82.dp), color = MaterialTheme.colorScheme.outlineVariant)
 }
@@ -2576,7 +2649,8 @@ private fun FolderBrowser(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AlbumDetailScreen(
+internal fun AlbumDetailScreen(
+    selection: SongBatchSelection,
     state: DetailUiState,
     playlists: List<Playlist>,
     viewModel: MusicViewModel,
@@ -2584,7 +2658,14 @@ private fun AlbumDetailScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onDownload: (List<Song>) -> Unit,
 ) {
-    DetailScaffold(title = "", onBack = onBack) {
+    val recentSongIds = recentlyAddedSongIds(state.songs)
+    val batchHint = stringResource(R.string.batch_long_press)
+    LaunchedEffect(state.songs.isNotEmpty()) { if (state.songs.isNotEmpty()) viewModel.showSongBatchHint(batchHint) }
+    val selectableIds = remember(state.songs) { state.songs.map(Song::id).toSet() }
+    LaunchedEffect(selectableIds) { selection.retain(selectableIds) }
+    DetailScaffold(title = "", onBack = onBack,
+        selectionHeader = if (selection.active) ({ SongSelectionHeader(selection, selectableIds) }) else null,
+    ) {
         if (state.isLoading) {
             item { LoadingBlock() }
         } else {
@@ -2597,9 +2678,9 @@ private fun AlbumDetailScreen(
                         viewModel,
                         fallbackSeed = album.id,
                         favorite = album.starredAt != null,
-                        onFavorite = { viewModel.toggleAlbumFavorite(album) },
+                        onFavorite = if (selection.active) null else ({ viewModel.toggleAlbumFavorite(album) }),
                     )
-                    DetailActions(
+                    if (!selection.active) DetailActions(
                         onPlay = { onPlay(state.songs, 0) },
                         onDownload = { onDownload(state.songs) },
                     )
@@ -2609,7 +2690,13 @@ private fun AlbumDetailScreen(
             items(state.songs, key = { it.id }) { song ->
                 SongRow(
                     song = song,
-                    onClick = { onPlay(state.songs, state.songs.indexOf(song)) },
+                    recentlyAdded = song.id in recentSongIds,
+                    selected = if (selection.active) song.id in selection.ids else null,
+                    enabled = !selection.busy,
+                    onLongClick = { selection.start(song.id) },
+                    onClick = {
+                        if (selection.active) selection.toggle(song.id) else onPlay(state.songs, state.songs.indexOf(song))
+                    },
                     onFavorite = { viewModel.toggleSongFavorite(song) },
                     trailingContent = {
                         AddToPlaylistAction(
@@ -2628,7 +2715,8 @@ private fun AlbumDetailScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ArtistDetailScreen(
+internal fun ArtistDetailScreen(
+    selection: SongBatchSelection,
     state: DetailUiState,
     albums: List<Album>,
     playlists: List<Playlist>,
@@ -2638,7 +2726,13 @@ private fun ArtistDetailScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onDownload: (List<Song>) -> Unit,
 ) {
-    DetailScaffold(title = "", onBack = onBack) {
+    val batchHint = stringResource(R.string.batch_long_press)
+    LaunchedEffect(state.songs.isNotEmpty()) { if (state.songs.isNotEmpty()) viewModel.showSongBatchHint(batchHint) }
+    val selectableIds = remember(state.songs) { state.songs.map(Song::id).toSet() }
+    LaunchedEffect(selectableIds) { selection.retain(selectableIds) }
+    DetailScaffold(title = "", onBack = onBack,
+        selectionHeader = if (selection.active) ({ SongSelectionHeader(selection, selectableIds) }) else null,
+    ) {
         if (state.isLoading) item { LoadingBlock() } else {
             state.artist?.let { artist ->
                 item {
@@ -2648,7 +2742,7 @@ private fun ArtistDetailScreen(
                         artist.coverArtId,
                         viewModel,
                         favorite = artist.starredAt != null,
-                        onFavorite = { viewModel.toggleArtistFavorite(artist) },
+                        onFavorite = if (selection.active) null else ({ viewModel.toggleArtistFavorite(artist) }),
                     )
                 }
             }
@@ -2656,7 +2750,7 @@ private fun ArtistDetailScreen(
             if (state.songs.isNotEmpty()) {
                 item {
                     SectionTitle(stringResource(R.string.popular_songs))
-                    DetailActions(
+                    if (!selection.active) DetailActions(
                         onPlay = { onPlay(state.songs, 0) },
                         onDownload = { onDownload(state.songs) },
                     )
@@ -2664,7 +2758,12 @@ private fun ArtistDetailScreen(
                 items(state.songs, key = { "artist-song-${it.id}" }) { song ->
                     SongRow(
                         song = song,
-                        onClick = { onPlay(state.songs, state.songs.indexOf(song)) },
+                        selected = if (selection.active) song.id in selection.ids else null,
+                        enabled = !selection.busy,
+                        onLongClick = { selection.start(song.id) },
+                        onClick = {
+                            if (selection.active) selection.toggle(song.id) else onPlay(state.songs, state.songs.indexOf(song))
+                        },
                         onFavorite = { viewModel.toggleSongFavorite(song) },
                         trailingContent = {
                             AddToPlaylistAction(
@@ -2677,16 +2776,16 @@ private fun ArtistDetailScreen(
                         },
                     )
                 }
-                item { SectionTitle(stringResource(R.string.albums)) }
+                if (!selection.active) item { SectionTitle(stringResource(R.string.albums)) }
             }
-            items(albums, key = { it.id }) { AlbumListRow(it, viewModel, onAlbum) }
+            if (!selection.active) items(albums, key = { it.id }) { AlbumListRow(it, viewModel, onAlbum) }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PlaylistDetailScreen(
+internal fun PlaylistDetailScreen(
     state: DetailUiState,
     viewModel: MusicViewModel,
     onBack: () -> Unit,
@@ -2748,6 +2847,7 @@ private fun PlaylistDetailScreen(
                         stringResource(R.string.song_count, playlist.songCount),
                         playlist.coverArtId,
                         viewModel,
+                        previewSize = 192,
                     )
                     if (!isSelecting) {
                         PlaylistDetailActions(
@@ -2795,6 +2895,7 @@ private fun PlaylistDetailScreen(
                     }),
                     onFavorite = if (isSelecting) null else ({ viewModel.toggleSongFavorite(song) }),
                     showFileType = true,
+                    leadingArtwork = { SongListCover(song, viewModel) },
                     trailingContent = if (isSelecting) {
                         {
                             IconButton(
@@ -3178,11 +3279,12 @@ private fun DetailScaffold(
     onBack: () -> Unit,
     actions: @Composable RowScope.() -> Unit = {},
     bottomBar: @Composable () -> Unit = {},
+    selectionHeader: (@Composable () -> Unit)? = null,
     content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
 ) {
     Scaffold(
         topBar = {
-            ClearTuneTopAppBar(
+            if (selectionHeader != null) Column(Modifier.statusBarsPadding()) { selectionHeader() } else ClearTuneTopAppBar(
                 title = title,
                 onBack = onBack,
                 actions = actions,
@@ -3210,6 +3312,7 @@ private fun DetailHeader(
     favorite: Boolean = false,
     onFavorite: (() -> Unit)? = null,
     onEditTitle: (() -> Unit)? = null,
+    previewSize: Int? = null,
 ) {
     Column(
         modifier = Modifier
@@ -3224,6 +3327,7 @@ private fun DetailHeader(
                 modifier = Modifier.size(220.dp),
                 fallbackSeed = fallbackSeed,
                 requestSize = 768,
+                previewSize = previewSize,
             )
         }
         Spacer(Modifier.height(18.dp))
@@ -3629,7 +3733,7 @@ private fun PlaylistRow(playlist: Playlist, viewModel: MusicViewModel, onClick: 
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SongRow(
+internal fun SongRow(
     song: Song,
     onClick: () -> Unit,
     onFavorite: (() -> Unit)? = null,
@@ -3640,17 +3744,29 @@ private fun SongRow(
     useTrackNumberPlaceholder: Boolean = false,
     showFileType: Boolean = false,
     showDuration: Boolean = true,
+    recentlyAdded: Boolean = false,
+    selected: Boolean? = null,
+    enabled: Boolean = true,
+    leadingArtwork: (@Composable () -> Unit)? = null,
     trailingContent: (@Composable RowScope.() -> Unit)? = null,
 ) {
     val fileType = song.suffix
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .combinedClickable(enabled = enabled, onClick = onClick,
+                onLongClick = if (selected == null) onLongClick else null,
+                onLongClickLabel = stringResource(R.string.batch_long_press))
+            .semantics { if (selected != null) { this.selected = selected; role = Role.Checkbox } }
+            .padding(horizontal = 20.dp, vertical = if (leadingArtwork != null) 8.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (showTrackNumber) {
+        if (selected != null) {
+            Checkbox(checked = selected, onCheckedChange = null, enabled = enabled, modifier = Modifier.size(32.dp))
+        } else if (leadingArtwork != null) {
+            Box(Modifier.size(48.dp)) { leadingArtwork() }
+            Spacer(Modifier.width(12.dp))
+        } else if (showTrackNumber) {
             Text(
                 text = if (useTrackNumberPlaceholder) "♪" else song.trackNumber?.toString() ?: "♪",
                 modifier = Modifier.size(32.dp),
@@ -3658,12 +3774,32 @@ private fun SongRow(
             )
         }
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                song.title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.Medium,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    song.title,
+                    modifier = Modifier.weight(1f, fill = false),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.Medium,
+                )
+                if (recentlyAdded) {
+                    val description = stringResource(R.string.song_recently_added_description)
+                    Surface(
+                        modifier = Modifier.padding(start = 6.dp, end = 4.dp)
+                            .semantics { contentDescription = description },
+                        shape = RoundedCornerShape(4.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.song_recently_added),
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
             val subtitle = listOfNotNull(song.displayArtistName(), song.displayAlbumName()).joinToString(" · ")
             if (subtitle.isNotEmpty() || showFileType && !fileType.isNullOrBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
                 if (subtitle.isNotEmpty()) Text(
@@ -3682,7 +3818,7 @@ private fun SongRow(
         if (showDuration) {
             Text(formatDuration(song.durationSeconds), style = MaterialTheme.typography.bodySmall)
         }
-        onFavorite?.let {
+        onFavorite?.takeIf { selected == null }?.let {
             val isLiked = song.starredAt != null
             IconButton(onClick = it) {
                 Icon(
@@ -3696,12 +3832,28 @@ private fun SongRow(
                 )
             }
         }
-        if (trailingText != null && onTrailing != null) {
+        if (selected == null && trailingText != null && onTrailing != null) {
             TextButton(onClick = onTrailing) { Text(trailingText) }
         }
-        trailingContent?.invoke(this)
+        if (selected == null) trailingContent?.invoke(this)
     }
-    HorizontalDivider(modifier = Modifier.padding(start = if (showTrackNumber) 52.dp else 20.dp))
+    HorizontalDivider(modifier = Modifier.padding(start = when {
+        selected != null -> 52.dp
+        leadingArtwork != null -> 80.dp
+        showTrackNumber -> 52.dp
+        else -> 20.dp
+    }))
+}
+
+@Composable
+private fun SongListCover(song: Song, viewModel: MusicViewModel) {
+    CoverArt(
+        id = song.displayCoverArtId(),
+        description = stringResource(R.string.song_album_cover, song.title),
+        viewModel = viewModel,
+        modifier = Modifier.fillMaxSize(),
+        fallbackSeed = song.albumId ?: song.id,
+    )
 }
 
 @Composable
@@ -3954,12 +4106,31 @@ internal fun CoverArt(
     modifier: Modifier = Modifier,
     fallbackSeed: String = description,
     requestSize: Int = 192,
+    previewSize: Int? = null,
 ) {
     val displayableId = id.displayableArtworkId()
-    val url by produceState<String?>(initialValue = null, displayableId, requestSize) {
-        value = displayableId?.let { viewModel.coverArtUrl(it, requestSize) }
-    }
     val context = LocalPlatformContext.current
+    val account = viewModel.artworkAccountKey
+    val revision by com.cleartune.app.artwork.ArtworkCache.revision.collectAsStateWithLifecycle()
+    var source by remember(account, displayableId, requestSize) { mutableStateOf<Any?>(null) }
+    val thumbnailSize = previewSize?.takeIf { it < requestSize }
+    var thumbnail by remember(account, displayableId, thumbnailSize) { mutableStateOf<Any?>(null) }
+    LaunchedEffect(account, displayableId, thumbnailSize, revision) {
+        thumbnail = if (thumbnailSize == null) null else displayableId?.let { coverId ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.cleartune.app.artwork.ArtworkCache.localFile(context, account, coverId)
+                    ?: viewModel.coverArtUrl(coverId, thumbnailSize)
+            }
+        }
+    }
+    LaunchedEffect(account, displayableId, requestSize, revision) {
+        source = displayableId?.let { coverId ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.cleartune.app.artwork.ArtworkCache.localFile(context, account, coverId)
+                    ?: viewModel.coverArtUrl(coverId, requestSize)
+            }
+        }
+    }
     Box(
         modifier = modifier
             .aspectRatio(1f)
@@ -3968,19 +4139,37 @@ internal fun CoverArt(
     ) {
         val fallbackResource = remember(fallbackSeed) { clearTuneFallbackCover(fallbackSeed) }
         val fallbackPainter = painterResource(fallbackResource)
+        if (thumbnailSize != null) {
+            AsyncImage(
+                model = thumbnail?.let {
+                    val cacheKey = com.cleartune.app.artwork.artworkCacheKey(account, displayableId!!, thumbnailSize)
+                    ImageRequest.Builder(context).data(it).size(thumbnailSize)
+                        .memoryCacheKey("$cacheKey:${com.cleartune.app.artwork.ArtworkCache.generation}:${it is java.io.File}")
+                        .diskCacheKey(cacheKey).crossfade(false).build()
+                },
+                placeholder = fallbackPainter,
+                error = fallbackPainter,
+                fallback = fallbackPainter,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         AsyncImage(
-            model = url?.let {
+            model = source?.let {
+                val cacheKey = com.cleartune.app.artwork.artworkCacheKey(account, displayableId!!, requestSize)
                 ImageRequest.Builder(context)
                     .data(it)
                     .size(requestSize)
-                    .memoryCacheKey("cover-$displayableId-$requestSize")
-                    .diskCacheKey("cover-$displayableId-$requestSize")
+                    .memoryCacheKey("$cacheKey:${com.cleartune.app.artwork.ArtworkCache.generation}:${it is java.io.File}")
+                    .diskCacheKey(cacheKey)
                     .crossfade(false)
                     .build()
             },
-            placeholder = fallbackPainter,
-            error = fallbackPainter,
-            fallback = fallbackPainter,
+            // Leave the already loaded thumbnail visible while loading, or if HD fails.
+            placeholder = if (thumbnailSize == null) fallbackPainter else null,
+            error = if (thumbnailSize == null) fallbackPainter else null,
+            fallback = if (thumbnailSize == null) fallbackPainter else null,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             filterQuality = if (requestSize <= 384) FilterQuality.Low else FilterQuality.Medium,

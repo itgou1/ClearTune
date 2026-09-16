@@ -1,6 +1,8 @@
 package com.cleartune.app.download
 
 import android.media.MediaPlayer
+import android.graphics.Bitmap
+import com.cleartune.app.artwork.ArtworkCache
 import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -39,10 +41,15 @@ class DownloadPipelineTest {
             assertTrue(seen.any { it.state == DownloadState.DOWNLOADING && it.bytesDownloaded > 0 })
             val file = File(Uri.parse(done.localUri).path!!)
             assertArrayEquals(f.server.audio, file.readBytes())
+            val artwork = ArtworkCache.localFile(f.context, f.session.accountKey, "test-cover")!!
+            assertArrayEquals(f.server.cover, artwork.readBytes())
+            assertTrue(ArtworkCache.clearTemporary(f.context))
+            assertTrue(artwork.exists())
             f.server.close()
             val urls = PlaybackRepository(f.context, f.session, OpenSubsonicApiFactory(), f.preferences)
                 .urls(listOf(f.song))!!
             assertEquals(done.localUri, urls.streams[f.song.id])
+            assertEquals(Uri.fromFile(artwork).toString(), urls.artwork[f.song.id])
             val player = MediaPlayer()
             try {
                 player.setDataSource(f.context, Uri.parse(urls.streams[f.song.id]))
@@ -64,6 +71,46 @@ class DownloadPipelineTest {
             delay(500)
             assertEquals(1, f.server.requests.size)
             assertNull(row.localUri)
+        }
+    }
+
+    @Test fun missingCoverDoesNotFailAudioAndExistingDownloadIsBackfilled() = runBlocking {
+        fixture { f ->
+            f.server.coverResponseCode = 404
+            f.repository.enqueue(listOf(f.song))
+            val completed = f.awaitState("COMPLETED")
+            assertEquals(OfflineArtworkWorker.ARTWORK_WARNING, completed.failureReason)
+            assertNull(ArtworkCache.localFile(f.context, f.session.accountKey, "test-cover"))
+            f.server.coverResponseCode = 200
+            OfflineArtworkWorker.enqueue(f.context, f.session.accountKey, f.session.token, false, replace = true)
+            withTimeout(30_000) {
+                while (ArtworkCache.localFile(f.context, f.session.accountKey, "test-cover") == null ||
+                    f.dao.forSong(f.song.id)?.failureReason != null) delay(50)
+            }
+            assertEquals(1, f.server.requests.size)
+            assertEquals(completed.localUri, f.dao.forSong(f.song.id)?.localUri)
+        }
+    }
+
+    @Test fun invalidImageAndCancelledSessionNeverPublishOfflineArtwork() = runBlocking {
+        fixture { f ->
+            f.server.coverPayload = "<html>not an image</html>".toByteArray()
+            try {
+                ArtworkCache.saveOffline(f.context, f.credentials, "invalid") { }
+                fail("Invalid image was accepted")
+            } catch (_: java.io.IOException) { }
+            assertNull(ArtworkCache.localFile(f.context, f.session.accountKey, "invalid"))
+            f.server.coverPayload = f.server.cover
+            var checks = 0
+            try {
+                ArtworkCache.saveOffline(f.context, f.credentials, "cancelled") {
+                    if (++checks >= 2) throw CancellationException("Account revoked")
+                }
+                fail("Cancelled request was published")
+            } catch (_: CancellationException) { }
+            assertNull(ArtworkCache.localFile(f.context, f.session.accountKey, "cancelled"))
+            val folder = File(f.context.filesDir, "accounts/${f.session.accountKey}/offline_artwork")
+            assertTrue(folder.listFiles().orEmpty().none { it.extension == "part" })
         }
     }
 
@@ -174,7 +221,7 @@ class DownloadPipelineTest {
             store.save(credentials, profile)
             preferences.setWifiOnlyDownloads(false)
             val session = AccountSession(credentials, profile, store.sessionToken.first()!!, database)
-            val song = Song("test-audio", "Test audio", suffix = "wav", sizeBytes = server.audio.size.toLong())
+            val song = Song("test-audio", "Test audio", coverArtId = "test-cover", suffix = "wav", sizeBytes = server.audio.size.toLong())
             database.mediaDao().upsertSongs(listOf(song.toEntity()))
             val repository = DownloadRepository(context, session, preferences, scheduler)
             scope.launch { repository.monitor() }
@@ -183,6 +230,7 @@ class DownloadPipelineTest {
             scope.cancel()
             database.downloadDao().pauseActiveDownloads()
             database.downloadDao().all().forEach { scheduler.cancel(UUID.fromString(it.requestId)) }
+            WorkManager.getInstance(context).cancelAllWorkByTag(DownloadWorker::class.java.name).result.get()
             store.clear()
             server.close()
             delay(500)
@@ -219,6 +267,15 @@ class DownloadPipelineTest {
 
     private class AudioServer(code: Int) {
         @Volatile var responseCode = code
+        @Volatile var coverResponseCode = 200
+        val cover = java.io.ByteArrayOutputStream().use { bytes ->
+            val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(android.graphics.Color.BLUE)
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, bytes)
+            bitmap.recycle()
+            bytes.toByteArray()
+        }
+        @Volatile var coverPayload = cover
         private val socket = ServerSocket(0)
         val port = socket.localPort
         val requests = CopyOnWriteArrayList<Long>()
@@ -235,17 +292,24 @@ class DownloadPipelineTest {
                         runCatching {
                             client.use {
                                 val reader = it.getInputStream().bufferedReader()
+                                val requestLine = reader.readLine().orEmpty()
+                                val isCover = requestLine.contains("getCoverArt")
                                 var range = 0L
                                 while (true) {
                                     val line = reader.readLine() ?: break
                                     if (line.isEmpty()) break
                                     if (line.startsWith("Range:", true)) range = line.substringAfter("bytes=").substringBefore("-").toLong()
                                 }
-                                val code = responseCode
-                                requests.add(range)
+                                val code = if (isCover) coverResponseCode else responseCode
+                                if (!isCover) requests.add(range)
                                 val output = it.getOutputStream()
                                 if (code != 200) {
                                     output.write("HTTP/1.1 $code Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+                                } else if (isCover) {
+                                    val imageBytes = coverPayload
+                                    output.write(("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n" +
+                                        "Content-Length: ${imageBytes.size}\r\nConnection: close\r\n\r\n").toByteArray())
+                                    output.write(imageBytes)
                                 } else {
                                     val status = if (range > 0) 206 else 200
                                     val contentRange = if (range > 0) "Content-Range: bytes $range-${audio.lastIndex}/${audio.size}\r\n" else ""

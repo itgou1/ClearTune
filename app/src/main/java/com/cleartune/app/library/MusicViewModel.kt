@@ -41,6 +41,7 @@ import kotlinx.coroutines.withContext
 
 data class LibraryUiState(
     val albums: List<Album> = emptyList(),
+    val recentlyAddedAlbums: List<Album> = emptyList(),
     val artists: List<Artist> = emptyList(),
     val songs: List<Song> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
@@ -175,6 +176,7 @@ class MusicViewModel @Inject constructor(
             val resolvedAlbums = snapshot.albums.withResolvedArtwork(snapshot.songs)
             LibraryUiState(
                 albums = resolvedAlbums,
+                recentlyAddedAlbums = recentlyAddedAlbums(resolvedAlbums, snapshot.songs),
                 artists = snapshot.artists.withResolvedArtistArtwork(resolvedAlbums),
                 songs = snapshot.songs,
                 playlists = snapshot.playlists,
@@ -197,14 +199,10 @@ class MusicViewModel @Inject constructor(
         .map { it.recentSearches }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    private val _detailState = MutableStateFlow(DetailUiState())
-    val detailState: StateFlow<DetailUiState> = _detailState.asStateFlow()
-
     private val _genres = MutableStateFlow<List<String>>(emptyList())
     val genres: StateFlow<List<String>> = _genres.asStateFlow()
     private val _folderState = MutableStateFlow(FolderUiState())
     val folderState: StateFlow<FolderUiState> = _folderState.asStateFlow()
-    private var detailJob: Job? = null
     private val _lyricsState = MutableStateFlow(LyricsUiState())
     val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
     private val _actionMessage = MutableStateFlow<String?>(null)
@@ -458,6 +456,20 @@ class MusicViewModel @Inject constructor(
         }
     }
 
+    fun showSongBatchHint(message: String) {
+        viewModelScope.launch {
+            try {
+                if (_actionMessage.value == null && appPreferences.consumeSongBatchHint()) {
+                    _actionMessage.value = message
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // A one-time discovery hint must not interrupt library browsing.
+            }
+        }
+    }
+
     fun renamePlaylist(id: String, name: String) {
         if (name.isBlank()) return
         viewModelScope.launch {
@@ -476,18 +488,28 @@ class MusicViewModel @Inject constructor(
     }
 
     fun addPlaylistSongs(id: String, songIds: List<String>) {
+        submitPlaylistSongs(songIds, playlistId = id)
+    }
+
+    fun createPlaylistWithSongs(name: String, songIds: List<String>) {
+        if (name.isNotBlank()) submitPlaylistSongs(songIds, newName = name.trim())
+    }
+
+    private fun submitPlaylistSongs(songIds: List<String>, playlistId: String? = null, newName: String? = null) {
         if (songIds.isEmpty() || _playlistSongAddState.value.isAdding) return
         _playlistSongAddState.value = PlaylistSongAddUiState(isAdding = true)
         viewModelScope.launch {
             try {
-                val result = repository.addPlaylistSongs(id, songIds)
+                val result = if (playlistId != null) repository.addPlaylistSongs(playlistId, songIds)
+                    else repository.createPlaylistWithSongs(requireNotNull(newName), songIds)
                 if (result.error != null) {
                     _playlistSongAddState.value = PlaylistSongAddUiState(errorMessage = result.error.userMessage)
-                    if (result.error.isNotFound()) invalidateDetail("playlist/$id")
+                    if (playlistId != null && result.error.isNotFound()) invalidateDetail("playlist/$playlistId")
                 } else {
                     _actionMessage.value = when {
                         result.refreshError != null -> "歌曲已处理，歌单暂未刷新，请稍后刷新查看"
                         result.addedCount == 0 -> "所选歌曲已在歌单中"
+                        result.skippedCount > 0 -> "已添加 ${result.addedCount} 首，跳过 ${result.skippedCount} 首重复歌曲"
                         else -> "已添加 ${result.addedCount} 首歌曲到歌单"
                     }
                     _playlistSongAddState.value = PlaylistSongAddUiState(completed = true)
@@ -523,79 +545,18 @@ class MusicViewModel @Inject constructor(
         _actionMessage.value = null
     }
 
-    fun loadAlbum(id: String) {
-        _detailState.value = DetailUiState(isLoading = true)
-        detailJob?.cancel()
-        detailJob = viewModelScope.launch {
-            launch {
-                val error = repository.loadAlbum(id)
-                val missing = error.isNotFound()
-                _detailState.update {
-                    it.copy(isLoading = false, errorMessage = error?.userMessage.takeUnless { missing })
-                }
-                if (missing) invalidateDetail("album/$id")
-            }
-            combine(repository.album(id), repository.albumSongs(id)) { album, songs -> album to songs }
-                .collect { (album, songs) ->
-                    _detailState.update { current -> DetailUiState(
-                        isLoading = album == null && current.errorMessage == null,
-                        album = album?.withResolvedArtwork(songs),
-                        songs = songs,
-                        errorMessage = current.errorMessage,
-                    ) }
-                }
-        }
-    }
+    internal fun createDetailViewModel(target: DetailTarget) = DetailViewModel(
+        target, RepositoryDetailSource(repository), requireNotNull(viewModelScope.coroutineContext[Job]),
+        detailInvalidations,
+    )
 
-    fun loadArtist(id: String) {
-        _detailState.value = DetailUiState(isLoading = true)
-        detailJob?.cancel()
-        detailJob = viewModelScope.launch {
-            launch {
-                val error = repository.loadArtist(id)
-                val missing = error.isNotFound()
-                _detailState.update {
-                    it.copy(isLoading = false, errorMessage = error?.userMessage.takeUnless { missing })
-                }
-                if (missing) invalidateDetail("artist/$id")
-            }
-            combine(repository.artist(id), repository.artistSongs(id)) { artist, songs -> artist to songs }
-                .collect { (artist, songs) ->
-                    _detailState.update { current -> DetailUiState(
-                        isLoading = artist == null && current.errorMessage == null,
-                        artist = artist?.withResolvedArtistArtwork(songs),
-                        songs = songs,
-                        errorMessage = current.errorMessage,
-                    ) }
-                }
-        }
-    }
-
-    fun loadPlaylist(id: String) {
-        _detailState.value = DetailUiState(isLoading = true)
-        detailJob?.cancel()
-        detailJob = viewModelScope.launch {
-            launch {
-                val error = repository.loadPlaylist(id)
-                val missing = error.isNotFound()
-                _detailState.update {
-                    it.copy(isLoading = false, errorMessage = error?.userMessage.takeUnless { missing })
-                }
-                if (missing) invalidateDetail("playlist/$id")
-            }
-            combine(repository.playlist(id), repository.playlistSongs(id)) { playlist, songs -> playlist to songs }
-                .collect { (playlist, songs) ->
-                    _detailState.update { current -> DetailUiState(
-                        isLoading = playlist == null && current.errorMessage == null,
-                        playlist = playlist,
-                        songs = songs,
-                        errorMessage = current.errorMessage,
-                    ) }
-                }
-        }
+    internal fun reportMissingDetail() {
+        _actionMessage.value = "内容已从服务器移除，本地缓存已自动清理"
+        refresh()
     }
 
     suspend fun coverArtUrl(id: String, size: Int = 512): String? = repository.coverArtUrl(id, size)
+    val artworkAccountKey: String get() = repository.artworkAccountKey
 
     private suspend fun reportPlaylistAction(id: String, error: com.cleartune.core.model.ClearTuneError?, success: String) {
         if (error.isNotFound()) {

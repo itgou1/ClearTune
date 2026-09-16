@@ -37,6 +37,7 @@ class AccountSessions @Inject constructor(@param:ApplicationContext private val 
 
     fun activate(credentials: ServerCredentials, profile: ServerProfile, token: String) {
         current?.revoke()
+        com.cleartune.app.artwork.ArtworkCache.clearUrls()
         val key = accountStorageKey(credentials.baseUrl, credentials.username)
         // Keep old handles valid for cancelled operations that are still unwinding. They can
         // only write their original account DB, never the newly selected account's DB.
@@ -48,6 +49,7 @@ class AccountSessions @Inject constructor(@param:ApplicationContext private val 
         val previous = current
         previous?.revoke()
         current = null
+        com.cleartune.app.artwork.ArtworkCache.clearUrls()
         // Also cancels pre-isolation workers, whose input has no account/session identity.
         withContext(Dispatchers.IO) {
             WorkManager.getInstance(context).cancelAllWorkByTag("com.cleartune.app.download.DownloadWorker").result.get()

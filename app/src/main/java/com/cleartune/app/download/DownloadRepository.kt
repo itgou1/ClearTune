@@ -5,6 +5,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import androidx.work.*
+import com.cleartune.app.displayableArtworkId
+import com.cleartune.app.artwork.ArtworkCache
 import com.cleartune.app.auth.AccountSession
 import com.cleartune.core.database.DownloadEntity
 import com.cleartune.core.datastore.AppPreferences
@@ -43,7 +45,11 @@ class DownloadRepository @Inject constructor(
     suspend fun monitor() = coroutineScope {
         launch {
             preferences.settings.map { it.wifiOnlyDownloads }.distinctUntilChanged()
-                .onEach { applyNetworkPolicy(it) }
+                .onEach {
+                    applyNetworkPolicy(it)
+                    if (session.active) OfflineArtworkWorker.enqueue(context, session.accountKey, session.token,
+                        it, replace = true)
+                }
                 .retryWhen { _, _ -> delay(2_000); true }
                 .collect()
         }
@@ -114,6 +120,9 @@ class DownloadRepository @Inject constructor(
             row.requestId.toUuid()?.let {
                 File(context.filesDir, "accounts/${session.accountKey}/offline_music/$it.part").delete()
             }
+        }
+        ArtworkCache.pruneOffline(context, session.accountKey) {
+            dao.all().mapNotNull { session.database.mediaDao().song(it.songId)?.coverArtId.displayableArtworkId() }.toSet()
         }
     }
 

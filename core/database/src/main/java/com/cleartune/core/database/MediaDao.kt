@@ -164,6 +164,18 @@ interface MediaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPlaylists(items: List<PlaylistEntity>)
 
+    @Query("SELECT * FROM playlists WHERE id = :id LIMIT 1")
+    suspend fun playlist(id: String): PlaylistEntity?
+
+    /** A partial detail response must not erase artwork supplied by the playlist listing. */
+    @Transaction
+    suspend fun upsertPlaylistDetail(item: PlaylistEntity): PlaylistEntity {
+        val merged = item.copy(coverArtId = item.coverArtId?.takeIf { it.isNotBlank() }
+            ?: playlist(item.id)?.coverArtId)
+        upsertPlaylists(listOf(merged))
+        return merged
+    }
+
     @Query("DELETE FROM playlists")
     suspend fun clearPlaylists()
 
@@ -275,6 +287,9 @@ interface DownloadDao {
 
     @Query("SELECT * FROM downloads WHERE songId = :songId LIMIT 1")
     suspend fun forSong(songId: String): DownloadEntity?
+
+    @Query("UPDATE downloads SET failureReason = NULL WHERE songId = :songId AND state = 'COMPLETED' AND failureReason = :warning")
+    suspend fun clearArtworkWarning(songId: String, warning: String)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: DownloadEntity)
