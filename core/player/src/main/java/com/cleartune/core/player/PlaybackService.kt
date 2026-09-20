@@ -3,16 +3,17 @@ package com.cleartune.core.player
 import android.app.PendingIntent
 import android.content.Intent
 import android.media.audiofx.Equalizer
+import android.net.ConnectivityManager
 import android.util.Log
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
@@ -76,12 +77,14 @@ class PlaybackService : MediaLibraryService() {
             )
             cacheEvictor = evictor
             playbackCache = cache
+            val connectivity = getSystemService(ConnectivityManager::class.java)
             PlaybackDataSourceFactory(
-                cachedFactory = CacheDataSource.Factory()
-                    .setCache(cache)
-                    .setUpstreamDataSourceFactory(directDataSourceFactory)
-                    .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR),
+                cache = cache,
                 directFactory = directDataSourceFactory,
+                isOffline = {
+                    // A LAN music server can work without public Internet validation.
+                    connectivity.activeNetwork == null
+                },
             )
         }.onFailure {
             Log.w(TAG, "Playback cache is unavailable; continuing without disk cache", it)
@@ -100,9 +103,17 @@ class PlaybackService : MediaLibraryService() {
             setHandleAudioBecomingNoisy(true)
             addListener(playerListener)
         }
+        val sessionPlayer = object : ForwardingPlayer(player) {
+            // Headsets and system controls must skip tracks just like the in-app button,
+            // including doing nothing at the start of a non-looping queue.
+            override fun seekToPrevious() = seekToPreviousMediaItem()
+
+            // Keep controllers' predicted seek behavior consistent with the service.
+            override fun getMaxSeekToPreviousPosition(): Long = Long.MAX_VALUE
+        }
         val sessionBuilder = MediaLibraryService.MediaLibrarySession.Builder(
             this,
-            player,
+            sessionPlayer,
             object : MediaLibraryService.MediaLibrarySession.Callback {},
         )
         packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->

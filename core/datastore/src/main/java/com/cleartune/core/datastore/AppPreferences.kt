@@ -146,6 +146,13 @@ class AppPreferences(private val context: Context) {
         it[MOBILE_AUDIO_QUALITY] = value.name
         it.remove(MOBILE_BIT_RATE)
     }
+
+    suspend fun lastPlaybackUsedMobileQuality(accountKey: String): Boolean? =
+        context.appSettingsDataStore.data.first()[lastPlaybackMobileQualityKey(accountKey)]
+
+    suspend fun setLastPlaybackUsedMobileQuality(accountKey: String, value: Boolean) = edit {
+        it[lastPlaybackMobileQualityKey(accountKey)] = value
+    }
     suspend fun setCheckUpdates(value: Boolean) = edit { it[CHECK_UPDATES] = value }
 
     suspend fun lastUpdateCheckEpochMs(): Long =
@@ -215,6 +222,8 @@ class AppPreferences(private val context: Context) {
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
         fun recentSearchesKey(accountKey: String) = stringPreferencesKey("account_${accountKey}_recent_searches")
         fun lastLibrarySyncKey(accountKey: String) = longPreferencesKey("account_${accountKey}_last_library_sync")
+        fun lastPlaybackMobileQualityKey(accountKey: String) =
+            booleanPreferencesKey("account_${accountKey}_last_playback_mobile_quality")
         val FAVORITE_SONG_SORT = stringPreferencesKey("favorite_song_sort")
         const val SEARCH_SEPARATOR = "\u001F"
         const val EQUALIZER_SEPARATOR = ","

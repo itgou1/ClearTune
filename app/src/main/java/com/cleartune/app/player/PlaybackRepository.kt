@@ -36,6 +36,8 @@ data class PlaybackUrls(
     val artwork: Map<String, String>,
 )
 
+internal enum class PlaybackNetwork { MOBILE, OTHER, OFFLINE }
+
 class PlaybackRepository @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val session: AccountSession,
@@ -48,20 +50,37 @@ class PlaybackRepository @Inject constructor(
     private val activityDao = database.activityDao()
 
     suspend fun urls(songs: List<Song>): PlaybackUrls? {
-        val remote = remote() ?: return null
-        val cellular = (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
-            .getNetworkCapabilities(
-                (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).activeNetwork,
-            )
-            ?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+        val network = when {
+            capabilities == null -> PlaybackNetwork.OFFLINE
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> PlaybackNetwork.MOBILE
+            else -> PlaybackNetwork.OTHER
+        }
+        return urls(songs, network)
+    }
+
+    internal suspend fun urls(songs: List<Song>, network: PlaybackNetwork): PlaybackUrls? {
+        if (!session.active) return null
+        val remote = remote()
         val settings = preferences.settings.first()
+        // Losing the network must not change the selected cache variant. Persist the
+        // previous network policy per account so cold offline starts behave the same.
+        val useMobileQuality = when (network) {
+            PlaybackNetwork.MOBILE -> true
+            PlaybackNetwork.OTHER -> false
+            PlaybackNetwork.OFFLINE -> preferences.lastPlaybackUsedMobileQuality(session.accountKey) ?: true
+        }
         val serverProfile = session.profile
         val streams = mutableMapOf<String, String>()
+        var usesStreaming = false
         songs.forEach { song ->
             val download = database.downloadDao().forSong(song.id)
             val localFile = download?.localUri?.let(Uri::parse)?.path?.let(::File)
+            val localSize = localFile?.takeIf(File::isFile)?.length() ?: 0L
+            val expectedSize = download?.totalBytes?.takeIf { it > 0 }
             if (download?.state == com.cleartune.core.model.DownloadState.COMPLETED.name &&
-                localFile?.let { it.exists() && it.length() > 0 } == true
+                localSize > 0 && (expectedSize == null || localSize == expectedSize)
             ) {
                 streams[song.id] = download.localUri.orEmpty()
             } else {
@@ -75,11 +94,11 @@ class PlaybackRepository @Inject constructor(
                     )
                 }
                 val mobileQuality = settings.mobileAudioQuality
-                streams[song.id] = remote.streamUrl(
+                streams[song.id] = (remote ?: return null).streamUrl(
                     id = song.id,
-                    maxBitRate = if (cellular) mobileQuality.maxBitRate else null,
+                    maxBitRate = if (useMobileQuality) mobileQuality.maxBitRate else null,
                     format = if (
-                        cellular &&
+                        useMobileQuality &&
                         mobileQuality == MobileAudioQuality.ORIGINAL &&
                         serverProfile.supportsRawStreaming()
                     ) {
@@ -88,7 +107,11 @@ class PlaybackRepository @Inject constructor(
                         null
                     },
                 )
+                usesStreaming = true
             }
+        }
+        if (usesStreaming && network != PlaybackNetwork.OFFLINE) {
+            preferences.setLastPlaybackUsedMobileQuality(session.accountKey, useMobileQuality)
         }
         return PlaybackUrls(
             streams = streams,
@@ -97,7 +120,8 @@ class PlaybackRepository @Inject constructor(
                     val local = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                         com.cleartune.app.artwork.ArtworkCache.localFile(context, session.accountKey, it)
                     }
-                    song.id to (local?.let { file -> Uri.fromFile(file).toString() } ?: remote.coverArtUrl(it, 768))
+                    val url = local?.let { file -> Uri.fromFile(file).toString() } ?: remote?.coverArtUrl(it, 768)
+                    url?.let { song.id to it }
                 }
             }.toMap(),
         )

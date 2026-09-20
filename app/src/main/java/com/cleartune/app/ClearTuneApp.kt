@@ -162,7 +162,6 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
@@ -489,7 +488,7 @@ fun ClearTuneApp(
                 )
             },
         ) {
-            composable("home") {
+            committedBackComposable(navController, "home") {
                 MainDestinationContent {
                     HomeScreen(
                         state = libraryState,
@@ -504,7 +503,7 @@ fun ClearTuneApp(
                     )
                 }
             }
-            composable("search") {
+            committedBackComposable(navController, "search") {
                 MainDestinationContent {
                     SearchScreen(
                         state = searchState,
@@ -519,7 +518,7 @@ fun ClearTuneApp(
                     )
                 }
             }
-            composable("library") {
+            committedBackComposable(navController, "library", navigationEnabled = { !batchSelection.active }) {
                 MainDestinationContent {
                     LibraryScreen(
                         selection = batchSelection,
@@ -537,7 +536,8 @@ fun ClearTuneApp(
                     )
                 }
             }
-            composable(
+            committedBackComposable(
+                navController = navController,
                 route = "genre/{name}",
                 arguments = listOf(navArgument("name") { type = NavType.StringType }),
             ) { entry ->
@@ -551,7 +551,7 @@ fun ClearTuneApp(
                     onPlay = playerViewModel::play,
                 )
             }
-            composable("my") {
+            committedBackComposable(navController, "my") {
                 MainDestinationContent {
                     MyScreen(
                         profile = profile,
@@ -572,7 +572,7 @@ fun ClearTuneApp(
                     )
                 }
             }
-            composable("favorites") {
+            committedBackComposable(navController, "favorites") {
                 FavoriteSongsScreen(
                     songs = libraryState.songs.filter { it.starredAt != null },
                     viewModel = viewModel,
@@ -582,7 +582,7 @@ fun ClearTuneApp(
                     onPlay = playerViewModel::play,
                 )
             }
-            composable("listening-profile") {
+            committedBackComposable(navController, "listening-profile") {
                 ListeningProfileScreen(
                     username = profile.username,
                     songs = libraryState.songs,
@@ -591,7 +591,7 @@ fun ClearTuneApp(
                     onPlay = playerViewModel::play,
                 )
             }
-            composable("offline") {
+            committedBackComposable(navController, "offline") {
                 OfflineMusicScreen(
                     downloads = downloads,
                     songs = libraryState.songs,
@@ -606,9 +606,11 @@ fun ClearTuneApp(
                     },
                 )
             }
-            composable(
+            committedBackComposable(
+                navController = navController,
                 route = "album/{id}",
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
+                navigationEnabled = { !batchSelection.active },
             ) { entry ->
                 val id = entry.arguments?.getString("id").orEmpty()
                 val detail = entryDetailViewModel(entry, viewModel, DetailTarget(DetailKind.ALBUM, id))
@@ -624,9 +626,11 @@ fun ClearTuneApp(
                     onDownload = { downloadViewModel.download(it) },
                 )
             }
-            composable(
+            committedBackComposable(
+                navController = navController,
                 route = "artist/{id}",
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
+                navigationEnabled = { !batchSelection.active },
             ) { entry ->
                 val id = entry.arguments?.getString("id").orEmpty()
                 val detail = entryDetailViewModel(entry, viewModel, DetailTarget(DetailKind.ARTIST, id))
@@ -644,7 +648,8 @@ fun ClearTuneApp(
                     onDownload = { downloadViewModel.download(it) },
                 )
             }
-            composable(
+            committedBackComposable(
+                navController = navController,
                 route = "playlist/{id}",
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
@@ -666,7 +671,7 @@ fun ClearTuneApp(
                     },
                 )
             }
-            composable("settings") {
+            committedBackComposable(navController, "settings") {
                 FullSettingsScreen(
                     profile = profile,
                     viewModel = settingsViewModel,
@@ -675,7 +680,7 @@ fun ClearTuneApp(
                     onLogout = onLogout,
                 )
             }
-            composable("discovery") {
+            committedBackComposable(navController, "discovery") {
                 val discoveryShelves = recommendationSurfaces(
                     shelves = recommendations,
                     librarySongCount = libraryState.songs.size,
@@ -689,7 +694,8 @@ fun ClearTuneApp(
                     onBack = navController::popBackStack,
                 )
             }
-            composable(
+            committedBackComposable(
+                navController = navController,
                 route = "recommendation/{id}",
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
@@ -703,7 +709,7 @@ fun ClearTuneApp(
                     onBack = navController::popBackStack,
                 )
             }
-            composable("now-playing") {
+            committedBackComposable(navController, "now-playing") {
                 NowPlayingScreen(
                     state = playerState,
                     playerViewModel = playerViewModel,
@@ -719,7 +725,7 @@ fun ClearTuneApp(
                     onDownload = { song -> downloadViewModel.download(listOf(song)) },
                 )
             }
-            composable("queue") {
+            committedBackComposable(navController, "queue") {
                 QueueScreen(
                     state = playerState,
                     playerViewModel = playerViewModel,
@@ -738,13 +744,13 @@ fun ClearTuneApp(
                     },
                 )
             }
-            composable("equalizer") {
+            committedBackComposable(navController, "equalizer") {
                 EqualizerScreen(
                     viewModel = settingsViewModel,
                     onBack = navController::popBackStack,
                 )
             }
-            composable("downloads") {
+            committedBackComposable(navController, "downloads") {
                 DownloadsScreen(
                     downloads = downloads,
                     songs = libraryState.songs,
@@ -760,7 +766,7 @@ fun ClearTuneApp(
                     },
                 )
             }
-            composable("lyrics") {
+            committedBackComposable(navController, "lyrics") {
                 LyricsScreen(
                     state = lyricsState,
                     playerState = playerState,
@@ -794,7 +800,7 @@ fun ClearTuneApp(
             cover = { playlist -> PlaylistCover(playlist.coverArtId, playlist.name, viewModel, Modifier.size(44.dp)) },
         )
     }
-    // Register after NavHost so Back exits selection before it can pop the destination.
+    // Selection destinations disable navigation while this app-level handler is active.
     BackHandler(enabled = batchSelection.active && !showBatchPicker) { batchSelection.clear() }
 }
 

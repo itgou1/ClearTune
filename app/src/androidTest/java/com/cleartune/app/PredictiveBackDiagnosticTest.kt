@@ -33,7 +33,7 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 
-/** Uses real detail screens, production entry scoping, Room and unchanged transitions.
+/** Uses real detail screens, production navigation policy, entry scoping and Room.
  * Dispatcher events intentionally bypass the OEM's physical gesture thresholds.
  */
 class PredictiveBackDiagnosticTest {
@@ -43,6 +43,7 @@ class PredictiveBackDiagnosticTest {
     @Test fun rightCancelRepeatedKeepsAlbumAndActions() = simulate()
     @Test fun leftCancelRepeatedKeepsAlbum() = simulate(right = false)
     @Test fun rightCommitReturnsArtistAndReleasesAlbum() = simulate(commit = true)
+    @Test fun leftCommitReturnsArtistAndReleasesAlbum() = simulate(right = false, commit = true)
     @Test fun playlistCancelKeepsPlaylist() = simulate(destination = DetailKind.PLAYLIST)
     @Test fun twoAlbumEntriesDoNotShareState() = simulate(originKind = DetailKind.ALBUM)
     @Test fun invalidBackgroundCannotPopForegroundOnCancel() = simulate(invalidatePrevious = true)
@@ -96,9 +97,9 @@ class PredictiveBackDiagnosticTest {
                     popExitTransition = { fadeOut(ClearTuneMotion.quick()) + slideOutHorizontally(
                         targetOffsetX = { it / 16 }, animationSpec = ClearTuneMotion.standard()) },
                 ) {
-                    composable("home") { Text("Home") }
+                    committedBackComposable(nav, "home") { Text("Home") }
                     DetailKind.entries.forEach { kind ->
-                        composable("${kind.route}/{id}") { entry ->
+                        committedBackComposable(nav, "${kind.route}/{id}") { entry ->
                             val item = DetailTarget(kind, entry.arguments!!.getString("id")!!)
                             val detail = entryDetailViewModel(entry, music, item)
                             models[entry.id] = detail
@@ -145,19 +146,26 @@ class PredictiveBackDiagnosticTest {
             fun event(progress: Float) = BackEventCompat(
                 (if (right) width - 1 else 1f) + (if (right) -1 else 1) * width * progress * .5f,
                 500f, progress, edge)
-            for (progress in if (commit) listOf(.35f) else listOf(.15f, .35f, .8f)) {
+            repeat(if (commit) 1 else 3) {
                 val oldMounts = mounts.get()
                 ui.runOnIdle { ui.activity.onBackPressedDispatcher.dispatchOnBackStarted(event(0f)) }
                 ui.waitForIdle()
-                ui.runOnIdle { ui.activity.onBackPressedDispatcher.dispatchOnBackProgressed(event(progress)) }
-                ui.waitUntil(10_000) { mounts.get() > oldMounts }
-                ui.waitForIdle()
-                assertEquals(currentId, nav.currentBackStackEntry!!.id)
-                assertEquals(listOf("song-a"), current.state.value.songs.map(Song::id))
-                assertSame(previous, models[previousId])
-                assertSame(current, models[currentId])
-                assertTrue("Existing horizontal animation is preserved",
-                    ui.onNodeWithTag(target.route).fetchSemanticsNode().positionInRoot.x > initialX)
+                // Even full progress must not switch pages while the finger is held.
+                // Pull back again before cancelling, as on a physical edge gesture.
+                val progressSteps = if (commit) listOf(.15f, .35f, .8f, 1f)
+                    else listOf(.15f, .35f, .8f, 1f, .35f, 0f)
+                for (progress in progressSteps) {
+                    ui.runOnIdle { ui.activity.onBackPressedDispatcher.dispatchOnBackProgressed(event(progress)) }
+                    ui.waitForIdle()
+                    assertEquals(currentId, nav.currentBackStackEntry!!.id)
+                    assertEquals(listOf("song-a"), current.state.value.songs.map(Song::id))
+                    assertSame(previous, models[previousId])
+                    assertSame(current, models[currentId])
+                    assertEquals("Previous page must not mount before release", oldMounts, mounts.get())
+                    assertEquals("Current page must not move before release", initialX,
+                        ui.onNodeWithTag(target.route).fetchSemanticsNode().positionInRoot.x, .01f)
+                    ui.onNodeWithTag(origin.route).assertDoesNotExist()
+                }
                 ui.runOnIdle {
                     if (commit) ui.activity.onBackPressedDispatcher.onBackPressed()
                     else ui.activity.onBackPressedDispatcher.dispatchOnBackCancelled()

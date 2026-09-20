@@ -160,7 +160,16 @@ class PlayerConnection(context: Context) {
     }
 
     fun togglePlayPause() {
-        controller?.let { if (it.isPlaying || it.playWhenReady) it.pause() else it.play() }
+        controller?.let { player ->
+            if (player.playerError != null || player.playbackState == Player.STATE_IDLE) {
+                // A failed prepare can leave playWhenReady=true. Treat a play-button
+                // tap as a retry, rather than pausing an already failed player.
+                if (player.mediaItemCount > 0) {
+                    player.prepare()
+                    player.play()
+                }
+            } else if (player.isPlaying || player.playWhenReady) player.pause() else player.play()
+        }
     }
 
     fun seekTo(positionMs: Long) = controller?.seekTo(positionMs.coerceAtLeast(0)) ?: Unit
@@ -168,6 +177,7 @@ class PlayerConnection(context: Context) {
         controller?.let { player ->
             if (index !in 0 until player.mediaItemCount) return
             player.seekToDefaultPosition(index)
+            if (player.playbackState == Player.STATE_IDLE || player.playerError != null) player.prepare()
             player.play()
         }
     }
