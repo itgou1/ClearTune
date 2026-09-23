@@ -365,7 +365,7 @@
     <string name="update_version_ignored">已忽略</string>
     <string name="later_action">稍后</string>
     <string name="privacy_notice">隐私说明</string>
-    <string name="privacy_body">ClearTune 只连接你配置的 Navidrome。密码使用 Android Keystore 加密保存；播放、喜欢和下载数据保存在设备与 Navidrome 中。V1 不接入广告、统计 SDK 或大模型服务。更新检查只访问公开的 GitHub Releases 接口。</string>
+    <string name="privacy_body">ClearTune 连接你配置的音乐服务器。密码使用 Android Keystore 加密保存；播放、喜欢和下载数据保存在设备与音乐服务器中。配置 Music Tag 后，主动刮削会向该服务及所选元数据来源查询歌曲信息，确认应用后通过该服务修改音乐文件。不接入广告、统计 SDK 或大模型服务。更新检查只访问公开的 GitHub Releases 接口。</string>
     <string name="open_source_licenses">开源许可</string>
     <string name="licenses_body">ClearTune 是自由软件，采用 GNU General Public License v3.0 发布。你可以按照 GPL-3.0 使用、修改和分发本程序；本程序不提供任何担保。发布 APK 时必须向接收者提供完整对应源码。源码与完整许可：https://github.com/itgou1/ClearTune\n\nClearTune 使用 AndroidX、Jetpack Compose、Media3、Room、WorkManager、Hilt、Retrofit、OkHttp、Kotlin Coroutines、Coil 与 kotlinx.serialization。各依赖遵循其 Apache-2.0、MIT、BSD 或其他适用许可；完整版本清单随源码提供。ClearTune 名称、轻调名称与猫头鹰图标适用独立商标政策。</string>
     <string name="diagnostic_title">ClearTune 诊断信息</string>

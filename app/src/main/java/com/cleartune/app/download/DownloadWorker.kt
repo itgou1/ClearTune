@@ -54,6 +54,7 @@ class DownloadWorker(appContext: Context, params: WorkerParameters) : CoroutineW
                 throw DownloadProblem("登录状态已变化，请在当前账号重新下载")
             }
             val song = database.mediaDao().song(songId) ?: throw DownloadProblem("歌曲信息不存在，请先同步音乐库")
+            val fileRevision = com.cleartune.core.player.AudioFileRevision.get(applicationContext, account, songId)
             val folder = File(applicationContext.filesDir, "accounts/$account/offline_music")
             if (!folder.isDirectory && !folder.mkdirs()) throw DownloadProblem("无法创建下载目录")
             val suffix = song.suffix?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "audio"
@@ -61,7 +62,12 @@ class DownloadWorker(appContext: Context, params: WorkerParameters) : CoroutineW
             temporary = File(folder, "$requestId.part")
             val resumeId = inputData.getString(KEY_RESUME)?.let { runCatching { UUID.fromString(it) }.getOrNull() }
             val source = resumeId?.takeIf { it != id }?.let { File(folder, "$it.part") }
-            if (!temporary.exists() && source?.isFile == true) source.copyTo(temporary)
+            val revisionFile = File(folder, "$requestId.revision")
+            fun revisionOf(file: File): Long = file.takeIf(File::isFile)?.readText()?.toLongOrNull() ?: 0
+            if (revisionOf(revisionFile) != fileRevision) temporary.delete()
+            if (!temporary.exists() && source?.isFile == true &&
+                revisionOf(File(folder, "$resumeId.revision")) == fileRevision) source.copyTo(temporary)
+            revisionFile.writeText(fileRevision.toString())
             downloaded = temporary.length()
             total = song.sizeBytes
             if (StatFs(folder.path).availableBytes < ((total ?: 0) - downloaded).coerceAtLeast(0) + MIN_FREE_BYTES) {
@@ -70,6 +76,10 @@ class DownloadWorker(appContext: Context, params: WorkerParameters) : CoroutineW
             val preferences = AppPreferences(applicationContext)
             suspend fun checkActive() {
                 currentCoroutineContext().ensureActive()
+                if (com.cleartune.core.player.AudioFileRevision.get(applicationContext, account, songId) != fileRevision) {
+                    temporary.delete()
+                    throw DownloadProblem("服务器标签已更新，请重新下载")
+                }
                 if (isStopped) throw CancellationException("Worker stopped")
                 if (store.sessionToken.first() != token) throw DownloadProblem("登录状态已变化，请重新下载")
                 if (dao.forRequest(requestId)?.state !in ACTIVE) throw TaskObsolete()

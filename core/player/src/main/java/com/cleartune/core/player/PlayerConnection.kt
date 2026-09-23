@@ -187,6 +187,22 @@ class PlayerConnection(context: Context) {
     fun move(from: Int, to: Int) = controller?.moveMediaItem(from, to) ?: Unit
     fun clear() = controller?.clearMediaItems() ?: Unit
 
+    fun updateSongMetadata(song: Song, artworkUrl: String?) {
+        val player = controller ?: return
+        if (song.id !in songMap) return
+        songMap = songMap + (song.id to song)
+        for (index in 0 until player.mediaItemCount) {
+            val item = player.getMediaItemAt(index)
+            if (item.mediaId != song.id) continue
+            val extras = Bundle(item.mediaMetadata.extras ?: Bundle()).apply { SessionSongMetadata.write(this, song) }
+            val metadata = item.mediaMetadata.buildUpon().setTitle(song.title).setArtist(song.artistName)
+                .setAlbumTitle(song.albumName).setExtras(extras)
+                .setArtworkUri(artworkUrl?.let(Uri::parse)).build()
+            player.replaceMediaItem(index, item.buildUpon().setMediaMetadata(metadata).build())
+        }
+        publish(player)
+    }
+
     fun removeUndoable(index: Int): Long? {
         val player = controller ?: return null
         if (index !in 0 until player.mediaItemCount) return null

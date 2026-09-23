@@ -15,6 +15,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
@@ -53,6 +54,7 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.automirrored.rounded.Label
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.MoreVert
@@ -65,6 +67,8 @@ import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -201,10 +205,10 @@ internal fun MiniPlayer(
                 )
                 Spacer(Modifier.size(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        stringResource(R.string.now_playing_compact, song.title),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    PlaybackTitle(
+                        text = stringResource(R.string.now_playing_compact, song.title),
+                        songId = song.id,
+                        playing = state.status == PlaybackStatus.PLAYING,
                         fontWeight = FontWeight.Medium,
                     )
                     song.displayArtistName()?.let {
@@ -251,9 +255,13 @@ internal fun NowPlayingScreen(
     onFavorite: (com.cleartune.core.model.Song, Boolean) -> Unit,
     onDownload: (com.cleartune.core.model.Song) -> Unit,
 ) {
+    val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     val song = state.currentSong
     val displayCoverArtId = song?.displayCoverArtId()
     var showLyrics by remember(song?.id) { mutableStateOf(false) }
+    LaunchedEffect(showLyrics, song?.id) {
+        if (showLyrics) song?.let(musicViewModel::loadLyrics)
+    }
     var showDetails by remember(song?.id) { mutableStateOf(false) }
     var showMoreActions by remember(song?.id) { mutableStateOf(false) }
     Box(
@@ -367,6 +375,7 @@ internal fun NowPlayingScreen(
                                 LyricsArtwork(
                                     lyricsState = lyricsState,
                                     positionMs = state.positionMs,
+                                    onRefresh = { song?.let(musicViewModel::refreshLyrics) },
                                     modifier = Modifier.fillMaxSize(),
                                 )
                             } else if (hero.coverArtId == null) {
@@ -402,12 +411,17 @@ internal fun NowPlayingScreen(
                         label = "playerMetadata",
                     ) { metadata ->
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                metadata.title,
+                            PlaybackTitle(
+                                text = metadata.title,
+                                songId = metadata.songId,
+                                playing = state.status == PlaybackStatus.PLAYING && metadata.songId == song.id,
+                                modifier = Modifier.combinedClickable(
+                                    onClick = {},
+                                    onLongClickLabel = "查看歌曲信息",
+                                    onLongClick = { showDetails = true },
+                                ),
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
                             )
                             metadata.artist?.let {
                                 Text(
@@ -569,21 +583,17 @@ internal fun NowPlayingScreen(
                 fontWeight = FontWeight.SemiBold,
             )
             ListItem(
-                headlineContent = { Text(stringResource(R.string.playback_mode)) },
-                supportingContent = { Text(state.mode.label()) },
-                leadingContent = { Icon(state.mode.icon(), contentDescription = null) },
-                modifier = Modifier.clickable {
-                    playerViewModel.cycleMode()
-                    showMoreActions = false
-                },
-            )
-            ListItem(
                 headlineContent = { Text(stringResource(R.string.download_current_song)) },
                 leadingContent = { Icon(Icons.Rounded.Download, contentDescription = null) },
                 modifier = Modifier.clickable {
                     onDownload(song)
                     showMoreActions = false
                 },
+            )
+            ListItem(
+                headlineContent = { Text("音乐标签") },
+                leadingContent = { Icon(Icons.AutoMirrored.Rounded.Label, contentDescription = null) },
+                modifier = Modifier.clickable { showMoreActions = false; musicTagActions.open(song) },
             )
             ListItem(
                 headlineContent = { Text(stringResource(R.string.song_details)) },
@@ -841,6 +851,7 @@ private fun AmbientWaveform(
 private fun LyricsArtwork(
     lyricsState: LyricsUiState,
     positionMs: Long,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val lines = lyricsState.lyrics?.lines.orEmpty()
@@ -848,48 +859,88 @@ private fun LyricsArtwork(
         line.startMs?.let { it <= positionMs } == true
     }
     val listState = rememberLazyListState()
-    LaunchedEffect(activeIndex) {
+    LaunchedEffect(lyricsState.lyrics, activeIndex) {
         if (activeIndex >= 0) {
             listState.animateScrollToItem(activeIndex, scrollOffset = -160)
         }
     }
-    Box(modifier = modifier) {
-        when {
-            lyricsState.loading -> Column(
-                Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                CircularProgressIndicator()
-                Spacer(Modifier.height(12.dp))
-                Text(stringResource(R.string.loading_lyrics))
-            }
-            lines.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(lyricsState.message ?: stringResource(R.string.no_lyrics))
-            }
-            else -> LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 28.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                itemsIndexed(lines) { index, line ->
-                    Text(
-                        text = line.text,
-                        modifier = Modifier.fillMaxWidth(),
-                        style = if (index == activeIndex) {
-                            MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold)
-                        } else {
-                            MaterialTheme.typography.bodyLarge
-                        },
-                        textAlign = TextAlign.Center,
-                        color = if (index == activeIndex) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
+    Column(modifier = modifier) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            when {
+                lyricsState.loading -> Column(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text(stringResource(R.string.loading_lyrics))
                 }
+                lines.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(lyricsState.message ?: stringResource(R.string.no_lyrics))
+                }
+                else -> LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    itemsIndexed(lines) { index, line ->
+                        Text(
+                            text = line.text,
+                            modifier = Modifier.fillMaxWidth(),
+                            style = if (index == activeIndex) {
+                                MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold)
+                            } else {
+                                MaterialTheme.typography.bodyLarge
+                            },
+                            textAlign = TextAlign.Center,
+                            color = if (index == activeIndex) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        LyricsRefreshMenu(lyricsState, onRefresh)
+    }
+}
+
+@Composable
+internal fun LyricsRefreshMenu(state: LyricsUiState, onRefresh: () -> Unit) {
+    var expanded by remember(state.lyrics?.songId) { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val feedback = state.refreshMessage
+        if (feedback != null) {
+            Text(
+                feedback,
+                modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+                textAlign = TextAlign.End,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box {
+            IconButton(onClick = { expanded = true }, enabled = !state.refreshing) {
+                Icon(
+                    Icons.Rounded.MoreHoriz,
+                    contentDescription = "歌词选项",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                )
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                DropdownMenuItem(
+                    text = { Text("刷新歌词") },
+                    onClick = { expanded = false; onRefresh() },
+                    enabled = !state.refreshing,
+                )
             }
         }
     }
@@ -902,10 +953,35 @@ internal fun LyricsScreen(
     playerState: PlayerUiState,
     onSeek: (Long) -> Unit,
     onBack: () -> Unit,
+    onRefresh: () -> Unit,
 ) {
     Scaffold(
         topBar = {
-            ClearTuneTopAppBar(title = stringResource(R.string.lyrics), onBack = onBack)
+            TopAppBar(
+                title = {
+                    val song = playerState.currentSong
+                    if (song != null) {
+                        PlaybackTitle(
+                            text = song.title,
+                            songId = song.id,
+                            playing = playerState.status == PlaybackStatus.PLAYING,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    } else Text(stringResource(R.string.lyrics))
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back))
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                ),
+            )
+        },
+        bottomBar = {
+            Box(Modifier.navigationBarsPadding()) { LyricsRefreshMenu(state, onRefresh) }
         },
     ) { padding ->
         when {

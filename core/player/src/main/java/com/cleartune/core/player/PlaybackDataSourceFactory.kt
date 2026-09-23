@@ -14,6 +14,7 @@ import androidx.media3.datasource.cache.ContentMetadata
 internal class PlaybackDataSourceFactory(
     private val cache: Cache,
     private val directFactory: DataSource.Factory,
+    private val reviseKey: (String) -> String = { it },
     private val isOffline: () -> Boolean,
 ) : DataSource.Factory {
     private val cachedFactory = CacheDataSource.Factory().setCache(cache)
@@ -28,6 +29,7 @@ internal class PlaybackDataSourceFactory(
         offline = offlineFactory.createDataSource(),
         direct = directFactory.createDataSource(),
         isOffline = isOffline,
+        reviseKey = reviseKey,
     )
 }
 
@@ -38,6 +40,7 @@ private class RoutingDataSource(
     private val offline: DataSource,
     private val direct: DataSource,
     private val isOffline: () -> Boolean,
+    private val reviseKey: (String) -> String,
 ) : DataSource {
     private var active: DataSource? = null
     private var resolved = false
@@ -57,20 +60,22 @@ private class RoutingDataSource(
             active = direct
             return direct.open(dataSpec)
         }
+        val currentKey = dataSpec.key?.let(reviseKey)
         val disconnected = isOffline()
         if (!resolved || requestedKey != dataSpec.key) {
             requestedKey = dataSpec.key
             // Resolve once, before extraction. A seek/retry must never switch encoded
             // formats underneath an existing extractor or reuse another format's offsets.
             resolvedKey = if (disconnected && dataSpec.position == 0L) {
-                dataSpec.key?.let { offlinePlaybackCacheKey(cache, it) }
-            } else dataSpec.key
-            alternativeQuality = resolvedKey != requestedKey
+                currentKey?.let { offlinePlaybackCacheKey(cache, it) }
+            } else currentKey
+            alternativeQuality = resolvedKey != currentKey
             resolved = true
         }
         // An alternative has different bytes from the requested URL. Never refill its
         // cache holes from that URL, even if connectivity returns during playback.
         active = if (disconnected || alternativeQuality) offline else cached
+        if (!alternativeQuality && resolvedKey != currentKey) throw java.io.IOException("Audio file changed; reopen playback")
         return active!!.open(dataSpec.buildUpon().setKey(resolvedKey).build())
     }
 

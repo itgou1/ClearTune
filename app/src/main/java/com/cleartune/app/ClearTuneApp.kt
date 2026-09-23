@@ -73,6 +73,7 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.automirrored.rounded.Label
 import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MoreVert
@@ -111,6 +112,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SmallFloatingActionButton
@@ -331,6 +333,7 @@ fun ClearTuneApp(
             val result = snackbarHostState.showSnackbar(
                 message = message,
                 actionLabel = viewDownloadsLabel,
+                duration = SnackbarDuration.Short,
             )
             if (result == SnackbarResult.ActionPerformed && currentRoute != "downloads") {
                 navController.navigate("downloads")
@@ -772,6 +775,7 @@ fun ClearTuneApp(
                     playerState = playerState,
                     onSeek = playerViewModel::seekTo,
                     onBack = navController::popBackStack,
+                    onRefresh = { playerState.currentSong?.let(viewModel::refreshLyrics) },
                 )
             }
         }
@@ -3889,6 +3893,7 @@ private fun LibrarySongActions(
     onPlayNext: () -> Unit,
     onDownload: () -> Unit,
 ) {
+    val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     var expanded by remember { mutableStateOf(false) }
     var showPlaylistPicker by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
@@ -3902,6 +3907,11 @@ private fun LibrarySongActions(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
+            DropdownMenuItem(
+                text = { Text("音乐标签") },
+                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Label, contentDescription = null) },
+                onClick = { expanded = false; musicTagActions.open(song) },
+            )
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.add_to_playlist)) },
                 leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null) },

@@ -26,6 +26,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -401,27 +404,36 @@ class MusicRepository @Inject constructor(
     suspend fun musicDirectory(id: String): RemoteResult<MusicDirectory> =
         remote()?.musicDirectory(id) ?: RemoteResult.Failure(ClearTuneError.Authentication())
 
-    suspend fun lyrics(song: Song): RemoteResult<Lyrics> {
+    fun lyrics(song: Song, forceRefresh: Boolean = false): Flow<RemoteResult<Lyrics>> = flow {
         val credentials = session.credentials()
-            ?: return RemoteResult.Failure(ClearTuneError.Authentication())
+        if (credentials == null) {
+            emit(RemoteResult.Failure(ClearTuneError.Authentication()))
+            return@flow
+        }
         val serverUrl = credentials.baseUrl.trimEnd('/')
-        runCatching {
+        val cached = try {
             lyricsDao.lyrics(serverUrl, credentials.username, song.id)
-        }.getOrNull()?.let { cached ->
-            return RemoteResult.Success(cached.toModel())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
         }
-
-        val remote = runCatching {
-            LibraryRemoteDataSource(apiFactory.authorized(credentials))
-        }.getOrNull() ?: return RemoteResult.Failure(ClearTuneError.Authentication())
-        return when (val result = remote.lyrics(song)) {
-            is RemoteResult.Success -> {
-                val write = result.value.toCacheWrite(serverUrl, credentials.username)
-                runCatching { lyricsDao.replace(write.cache, write.lines) }
-                result
-            }
-            is RemoteResult.Failure -> result
-        }
+        emitAll(lyricsResults(
+            cached = cached?.toModel(),
+            updatedAt = cached?.cache?.updatedAt,
+            forceRefresh = forceRefresh,
+            fetch = { LibraryRemoteDataSource(apiFactory.authorized(credentials)).lyrics(song) },
+            save = { lyrics ->
+                val write = lyrics.toCacheWrite(serverUrl, credentials.username)
+                try {
+                    lyricsDao.replace(write.cache, write.lines)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // A cache write failure must not hide lyrics already fetched successfully.
+                }
+            },
+        ))
     }
 
     suspend fun coverArtUrl(id: String, size: Int = 512): String? {

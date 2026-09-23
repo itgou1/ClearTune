@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity() {
                             val musicViewModel = accountModels[MusicViewModel::class.java]
                             val playerViewModel = accountModels[PlayerViewModel::class.java]
                             val downloadViewModel = accountModels[DownloadViewModel::class.java]
+                            val musicTagViewModel = accountModels[com.cleartune.app.metadata.MusicTagViewModel::class.java]
                             activePlayerViewModel = playerViewModel
                             ConnectedScreen(
                                 profile = current.profile,
@@ -121,6 +122,7 @@ class MainActivity : ComponentActivity() {
                                 playerViewModel = playerViewModel,
                                 downloadViewModel = downloadViewModel,
                                 settingsViewModel = settingsViewModel,
+                                musicTagViewModel = musicTagViewModel,
                                 onLogout = {
                                     authViewModel.logout {
                                         try {
@@ -340,18 +342,24 @@ private fun ConnectedScreen(
     playerViewModel: PlayerViewModel,
     downloadViewModel: DownloadViewModel,
     settingsViewModel: SettingsViewModel,
+    musicTagViewModel: com.cleartune.app.metadata.MusicTagViewModel,
     onLogout: () -> Unit,
 ) {
     NotificationPermissionEffect()
-    ClearTuneApp(
-        profile,
-        restoredOffline,
-        musicViewModel,
-        playerViewModel,
-        downloadViewModel,
-        settingsViewModel,
-        onLogout,
-    )
+    com.cleartune.app.metadata.MusicTagHost(musicTagViewModel, onSynced = { song ->
+        musicViewModel.metadataChanged(song)
+        playerViewModel.metadataChanged(song)
+    }) {
+        ClearTuneApp(
+            profile,
+            restoredOffline,
+            musicViewModel,
+            playerViewModel,
+            downloadViewModel,
+            settingsViewModel,
+            onLogout,
+        )
+    }
 }
 
 @Composable

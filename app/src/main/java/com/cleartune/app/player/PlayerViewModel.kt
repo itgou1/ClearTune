@@ -190,6 +190,11 @@ class PlayerViewModel @Inject constructor(
     fun removeUndoable(index: Int): Long? = connection.removeUndoable(index)
     fun move(from: Int, to: Int) = connection.move(from, to)
     fun clearQueue() = connection.clear()
+
+    fun metadataChanged(song: Song) = viewModelScope.launch {
+        val urls = repository.urls(listOf(song)) ?: return@launch
+        connection.updateSongMetadata(song, urls.artwork[song.id])
+    }
     fun clearQueueUndoable(): Long? = connection.clearUndoable()
     fun undoQueueMutation(token: Long) = connection.undoQueueMutation(token)
     fun discardQueueUndo(token: Long) = connection.discardQueueUndo(token)

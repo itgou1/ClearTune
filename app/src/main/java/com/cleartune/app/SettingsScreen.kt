@@ -83,6 +83,7 @@ internal fun FullSettingsScreen(
     onLogout: () -> Unit,
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     val update by viewModel.updateState.collectAsStateWithLifecycle()
     val cache by viewModel.cacheState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -229,6 +230,11 @@ internal fun FullSettingsScreen(
                     value = if (cache.clearing) stringResource(R.string.clearing_cache) else formatBytes(cache.sizeBytes),
                     onClick = if (cache.clearing) null else viewModel::clearCache,
                 )
+            }
+
+            SettingsGroup("音乐标签") {
+                SettingsRow(icon = Icons.Rounded.Tune, title = "Music Tag 服务",
+                    subtitle = "配置服务、刮削歌曲标签", onClick = musicTagActions.settings)
             }
 
             SettingsGroup(stringResource(R.string.settings_about_updates)) {

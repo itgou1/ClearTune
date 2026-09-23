@@ -323,6 +323,9 @@ data class CachedLyrics(
 
 @Dao
 interface LyricsDao {
+    @Query("DELETE FROM lyrics_cache WHERE serverUrl = :serverUrl AND username = :username AND songId = :songId")
+    suspend fun invalidate(serverUrl: String, username: String, songId: String)
+
     @Query(
         """
         SELECT * FROM lyrics_cache

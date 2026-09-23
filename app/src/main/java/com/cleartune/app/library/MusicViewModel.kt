@@ -128,6 +128,8 @@ data class LyricsUiState(
     val loading: Boolean = false,
     val lyrics: Lyrics? = null,
     val message: String? = null,
+    val refreshing: Boolean = false,
+    val refreshMessage: String? = null,
 )
 
 data class FolderUiState(
@@ -204,6 +206,9 @@ class MusicViewModel @Inject constructor(
     private val _folderState = MutableStateFlow(FolderUiState())
     val folderState: StateFlow<FolderUiState> = _folderState.asStateFlow()
     private val _lyricsState = MutableStateFlow(LyricsUiState())
+    private var lyricsJob: Job? = null
+    private var lyricsSongId: String? = null
+    private var lyricsRequest = 0L
     val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
     private val _actionMessage = MutableStateFlow<String?>(null)
     private val _playlistSongAddState = MutableStateFlow(PlaylistSongAddUiState())
@@ -435,16 +440,58 @@ class MusicViewModel @Inject constructor(
         viewModelScope.launch { repository.setArtistFavorite(artist, artist.starredAt == null) }
     }
 
-    fun loadLyrics(song: Song) {
-        if (_lyricsState.value.lyrics?.songId == song.id) return
-        _lyricsState.value = LyricsUiState(loading = true)
-        viewModelScope.launch {
-            _lyricsState.value = when (val result = repository.lyrics(song)) {
-                is RemoteResult.Success -> LyricsUiState(
-                    lyrics = result.value,
-                    message = if (result.value.lines.isEmpty()) "暂无歌词" else null,
-                )
-                is RemoteResult.Failure -> LyricsUiState(message = "暂时无法获取歌词")
+    fun loadLyrics(song: Song) = requestLyrics(song, forceRefresh = false)
+
+    fun refreshLyrics(song: Song) = requestLyrics(song, forceRefresh = true)
+
+    fun metadataChanged(song: Song) {
+        lyricsJob?.cancel()
+        lyricsJob = null
+        refreshLyrics(song)
+        refresh()
+    }
+
+    private fun requestLyrics(song: Song, forceRefresh: Boolean) {
+        if (lyricsSongId == song.id && lyricsJob?.isActive == true) return
+        lyricsJob?.cancel()
+        lyricsSongId = song.id
+        val request = ++lyricsRequest
+        val previous = _lyricsState.value.lyrics?.takeIf { it.songId == song.id }
+        _lyricsState.value = LyricsUiState(
+            lyrics = previous, loading = previous == null, refreshing = true,
+            refreshMessage = if (forceRefresh) "正在刷新歌词…" else null,
+        )
+        lyricsJob = viewModelScope.launch {
+            var failed = false
+            try {
+                repository.lyrics(song, forceRefresh).collect { result ->
+                    if (request != lyricsRequest) return@collect
+                    when (result) {
+                        is RemoteResult.Success -> _lyricsState.value = LyricsUiState(
+                            lyrics = result.value,
+                            message = if (result.value.lines.isEmpty()) "暂无歌词" else null,
+                            refreshing = true,
+                            refreshMessage = if (forceRefresh) "正在刷新歌词…" else null,
+                        )
+                        is RemoteResult.Failure -> failed = true
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                failed = true
+            } finally {
+                if (request == lyricsRequest) {
+                    val current = _lyricsState.value
+                    _lyricsState.value = current.copy(
+                        loading = false,
+                        refreshing = false,
+                        message = if (failed && current.lyrics?.lines.isNullOrEmpty()) "暂时无法获取歌词" else current.message,
+                        refreshMessage = if (!forceRefresh) null else if (failed) {
+                            if (current.lyrics?.lines.isNullOrEmpty()) "刷新失败，请联网后重试" else "刷新失败，已保留本地歌词"
+                        } else if (current.lyrics?.lines.isNullOrEmpty()) "服务器暂无歌词" else "歌词已刷新",
+                    )
+                }
             }
         }
     }

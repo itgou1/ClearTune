@@ -128,4 +128,15 @@ object ArtworkCache {
         changes.update { it + 1 }
         success
     }
+
+    suspend fun invalidateAfterTagEdit(context: Context, account: String, ids: Set<String>) = withContext(Dispatchers.IO) {
+        offlineWrites.withLock {
+            ids.forEach { offlineFile(context, account, it).delete() }
+            context.imageLoader.memoryCache?.clear()
+            context.imageLoader.diskCache?.clear()
+            clearUrls()
+            clears.incrementAndGet()
+            changes.update { it + 1 }
+        }
+    }
 }

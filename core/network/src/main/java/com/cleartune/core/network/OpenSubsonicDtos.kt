@@ -33,7 +33,12 @@ data class SubsonicResponseDto(
     val starred2: Starred2Dto? = null,
     val lyricsList: LyricsListDto? = null,
     val lyrics: PlainLyricsDto? = null,
+    val song: SongDto? = null,
+    val scanStatus: ScanStatusDto? = null,
 )
+
+@Serializable
+data class ScanStatusDto(val scanning: Boolean = false, val count: Long = 0)
 
 @Serializable
 data class TopSongsDto(
@@ -142,6 +147,7 @@ data class SongDto(
     val starred: String? = null,
     val created: String? = null,
     val replayGain: ReplayGainDto? = null,
+    val path: String? = null,
 )
 
 @Serializable

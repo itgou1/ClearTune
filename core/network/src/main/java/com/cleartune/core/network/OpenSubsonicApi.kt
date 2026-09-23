@@ -6,6 +6,15 @@ import retrofit2.http.QueryMap
 import retrofit2.http.Query
 
 interface OpenSubsonicApi {
+    @GET("rest/getSong.view")
+    suspend fun getSong(@Query("id") id: String, @QueryMap auth: Map<String, String>): Response<SubsonicResponseRoot>
+
+    @GET("rest/startScan.view")
+    suspend fun startScan(@QueryMap auth: Map<String, String>): Response<SubsonicResponseRoot>
+
+    @GET("rest/getScanStatus.view")
+    suspend fun getScanStatus(@QueryMap auth: Map<String, String>): Response<SubsonicResponseRoot>
+
     @GET("rest/ping.view")
     suspend fun ping(
         @QueryMap auth: Map<String, String>,

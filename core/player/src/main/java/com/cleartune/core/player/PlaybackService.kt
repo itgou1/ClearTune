@@ -65,6 +65,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        activeService = this
         val directDataSourceFactory = DefaultDataSource.Factory(this)
         val playbackDataSourceFactory = runCatching<androidx.media3.datasource.DataSource.Factory> {
             val evictor = ResizableLeastRecentlyUsedCacheEvictor(
@@ -85,6 +86,7 @@ class PlaybackService : MediaLibraryService() {
                     // A LAN music server can work without public Internet validation.
                     connectivity.activeNetwork == null
                 },
+                reviseKey = { AudioFileRevision.cacheKey(this, it) },
             )
         }.onFailure {
             Log.w(TAG, "Playback cache is unavailable; continuing without disk cache", it)
@@ -154,6 +156,7 @@ class PlaybackService : MediaLibraryService() {
     ): MediaLibraryService.MediaLibrarySession = session
 
     override fun onDestroy() {
+        if (activeService === this) activeService = null
         playbackScope.cancel()
         cacheScope.cancel()
         releaseEqualizer()
@@ -288,7 +291,28 @@ class PlaybackService : MediaLibraryService() {
         applyOutputVolume()
     }
 
-    private companion object {
+    companion object {
+        private var activeService: PlaybackService? = null
+
+        /** Called on main. Release readers before changing tags, then reopen at the same position. */
+        fun suspendForTagWrite(): () -> Unit {
+            val service = activeService ?: return {}
+            val player = service.player
+            val item = player.currentMediaItem
+            val index = player.currentMediaItemIndex
+            val position = player.currentPosition
+            val resume = player.playWhenReady
+            player.pause()
+            player.stop()
+            return {
+                if (activeService === service && player.currentMediaItem == item && player.currentMediaItemIndex == index) {
+                    if (index >= 0) player.seekTo(index, position)
+                    player.prepare()
+                    player.playWhenReady = resume
+                }
+            }
+        }
+
         const val TAG = "ClearTunePlayback"
         const val BYTES_PER_MEGABYTE = 1_024L * 1_024L
         const val EQUALIZER_TRANSITION_STEPS = 8
