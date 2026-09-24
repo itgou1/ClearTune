@@ -53,15 +53,15 @@ class SongListCoverTest {
                     onBack = {}, onPlay = { _, _ -> plays++ }, onDownload = {}, allSongs = listOf(song),
                     onRename = { _, _ -> }, onRemoveSongs = { _, _ -> }, onDelete = { _, _ -> },
                     playlists = emptyList(), onPlayNext = {},
-                ) else FavoriteSongsScreen(listOf(song), viewModel, FavoriteSongSort.TITLE.name,
-                    {}, {}, { _, _ -> plays++ })
+                ) else FavoriteSongsScreen(listOf(song), viewModel,
+                    onBack = {}, onPlay = { _, _ -> plays++ })
             } }
-            val coverDescription = if (playlist) song.title else context.getString(R.string.song_album_cover, song.title)
-            ui.onNodeWithContentDescription(coverDescription, useUnmergedTree = true).assertIsDisplayed()
+            val coverDescription = song.title
+            ui.waitUntil(5_000) { ui.onAllNodesWithContentDescription(coverDescription, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription(coverDescription, useUnmergedTree = true).performScrollTo().assertIsDisplayed()
             ui.onNodeWithText("♪", useUnmergedTree = true).assertDoesNotExist()
             ui.onNodeWithText("17", useUnmergedTree = true).assertDoesNotExist()
-            ui.onNodeWithContentDescription(context.getString(
-                if (playlist) R.string.more_actions else R.string.unlike_song)).assertIsDisplayed()
+            ui.onNodeWithContentDescription(context.getString(R.string.more_actions)).assertIsDisplayed()
             ui.onNodeWithContentDescription(coverDescription, useUnmergedTree = true).performTouchInput { click() }
             ui.runOnIdle { assertEquals(1, plays) }
             if (playlist) {

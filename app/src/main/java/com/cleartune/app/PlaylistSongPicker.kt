@@ -43,8 +43,9 @@ internal fun PlaylistSongPicker(
     existingSongs: List<Song>,
     viewModel: MusicViewModel,
     onDismiss: () -> Unit,
+    favorites: Boolean = false,
 ) {
-    val submission by viewModel.playlistSongAddState.collectAsStateWithLifecycle()
+    val submission by (if (favorites) viewModel.favoriteSongAddState else viewModel.playlistSongAddState).collectAsStateWithLifecycle()
     var query by rememberSaveable(playlist.id) { mutableStateOf("") }
     var filter by rememberSaveable(playlist.id) { mutableStateOf(PlaylistSongFilter.ALL) }
     var selectedIds by rememberSaveable(playlist.id) { mutableStateOf(arrayListOf<String>()) }
@@ -116,7 +117,10 @@ internal fun PlaylistSongPicker(
                                 ) { Text(stringResource(R.string.clear_action)) }
                             }
                             Button(
-                                onClick = { viewModel.addPlaylistSongs(playlist.id, selection.toList()) },
+                                onClick = {
+                                    if (favorites) viewModel.addFavoriteSongs(selection.toList())
+                                    else viewModel.addPlaylistSongs(playlist.id, selection.toList())
+                                },
                                 enabled = selection.isNotEmpty() && !submission.isAdding,
                                 modifier = Modifier.heightIn(min = 48.dp),
                                 contentPadding = PaddingValues(horizontal = 28.dp, vertical = 12.dp),
@@ -152,7 +156,7 @@ internal fun PlaylistSongPicker(
                     contentPadding = PaddingValues(horizontal = 20.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(PlaylistSongFilter.entries) { option ->
+                    items(PlaylistSongFilter.entries.filterNot { favorites && it == PlaylistSongFilter.FAVORITES }) { option ->
                         FilterChip(
                             selected = filter == option,
                             onClick = { filter = option },
@@ -183,7 +187,7 @@ internal fun PlaylistSongPicker(
                 if (visibleSongs.isEmpty()) {
                     Box(Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                         Text(
-                            stringResource(when {
+                            if (favorites && candidates.isEmpty()) "暂无可添加歌曲，已喜欢的歌曲已自动隐藏" else stringResource(when {
                                 candidates.isEmpty() -> R.string.picker_empty_available
                                 query.isNotBlank() -> R.string.picker_no_matches
                                 filter == PlaylistSongFilter.RECENT -> R.string.picker_empty_recent

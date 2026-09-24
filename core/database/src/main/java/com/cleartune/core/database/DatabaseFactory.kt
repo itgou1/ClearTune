@@ -12,9 +12,15 @@ object DatabaseFactory {
             context.applicationContext,
             ClearTuneDatabase::class.java,
             "cleartune_account_$accountKey.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .enableMultiInstanceInvalidation()
             .build()
+    }
+
+    private val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS playlist_additions (playlistId TEXT NOT NULL, songId TEXT NOT NULL, addedAt INTEGER NOT NULL, PRIMARY KEY(playlistId, songId))")
+        }
     }
 
     private val MIGRATION_1_2 = object : Migration(1, 2) {

@@ -9,6 +9,18 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MediaDao {
+    @Query("SELECT * FROM playlist_additions WHERE playlistId = :playlistId")
+    fun observePlaylistAdditions(playlistId: String): Flow<List<PlaylistAdditionEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun recordPlaylistAdditions(items: List<PlaylistAdditionEntity>)
+
+    @Query("DELETE FROM playlist_additions WHERE playlistId = :playlistId AND songId NOT IN (:songIds)")
+    suspend fun prunePlaylistAdditions(playlistId: String, songIds: List<String>)
+
+    @Query("DELETE FROM playlist_additions WHERE playlistId = :playlistId")
+    suspend fun clearPlaylistAdditions(playlistId: String)
+
     @Query("SELECT (SELECT COUNT(*) FROM songs) + (SELECT COUNT(*) FROM albums) + (SELECT COUNT(*) FROM artists)")
     suspend fun libraryItemCount(): Int
 
@@ -308,6 +320,7 @@ interface MediaDao {
 
     @Transaction
     suspend fun replacePlaylistSongs(playlistId: String, items: List<PlaylistSongEntity>) {
+        prunePlaylistAdditions(playlistId, items.map { it.songId })
         clearPlaylistSongs(playlistId)
         upsertPlaylistSongs(items)
     }

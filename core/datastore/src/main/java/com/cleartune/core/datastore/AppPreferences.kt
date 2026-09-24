@@ -85,6 +85,19 @@ const val DEFAULT_FAVORITE_SONG_SORT = "TITLE"
 private val Context.appSettingsDataStore by preferencesDataStore(name = "app_settings")
 
 class AppPreferences(private val context: Context) {
+    fun favoritesSort(accountKey: String): Flow<String> = context.appSettingsDataStore.data.map {
+        it[stringPreferencesKey("account_${accountKey}_favorites_sort")] ?: "DEFAULT:false"
+    }
+    suspend fun setFavoritesSort(accountKey: String, value: String) = edit {
+        it[stringPreferencesKey("account_${accountKey}_favorites_sort")] = value
+    }
+    fun playlistSort(accountKey: String, playlistId: String): Flow<String> =
+        context.appSettingsDataStore.data.map { it[playlistSortKey(accountKey, playlistId)] ?: "DEFAULT:false" }
+
+    suspend fun setPlaylistSort(accountKey: String, playlistId: String, value: String) = edit {
+        it[playlistSortKey(accountKey, playlistId)] = value
+    }
+
     suspend fun consumeSongBatchHint(): Boolean {
         var shouldShow = false
         edit { preferences ->
@@ -224,6 +237,8 @@ class AppPreferences(private val context: Context) {
     }
 
     private companion object {
+        fun playlistSortKey(accountKey: String, playlistId: String) =
+            stringPreferencesKey("account_${accountKey}_playlist_${songStorageKey(playlistId)}_sort")
         val SONG_BATCH_HINT_SHOWN = booleanPreferencesKey("song_batch_hint_shown")
         val THEME = stringPreferencesKey("theme")
         val VOLUME_NORMALIZATION = booleanPreferencesKey("volume_normalization")

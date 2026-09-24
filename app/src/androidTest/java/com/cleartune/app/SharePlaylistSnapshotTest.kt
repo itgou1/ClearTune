@@ -24,9 +24,46 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SharePlaylistSnapshotTest {
+    @Test fun favoritesSnapshotSharesExplicitSongsWithoutLoadingPlaylist() = runBlocking {
+        Fixture(0).use { fixture ->
+            val target = fixture.openedTarget.copy(id = "favorites", title = "我喜欢的音乐",
+                snapshotSongIds = listOf("favorite-a", "favorite-b"), songCount = 2)
+            val result = fixture.repository().create(target, "", 7) as RemoteResult.Success
+            assertEquals(listOf("favorite-a", "favorite-b"), fixture.sharedIds.single())
+            assertEquals(2, result.value.songCount)
+            assertEquals("我喜欢的音乐", result.value.title)
+        }
+    }
+
     @Test fun removedSongsUseCreationSnapshotAfterReload() = checkSnapshot(2)
     @Test fun oneRemainingSongKeepsPlaylistKindAndCorrectCount() = checkSnapshot(1)
     @Test fun addedSongsUseCreationSnapshotAfterReload() = checkSnapshot(5)
+
+    @Test fun emptyDescriptionDoesNotBecomeServerGeneratedSongTitle() = runBlocking {
+        Fixture(1).use { fixture ->
+            val created = fixture.repository().create(fixture.openedTarget, "  ", 7) as RemoteResult.Success
+            assertEquals("", created.value.description)
+            assertFalse(shareMessage(created.value).contains("分享说明："))
+            val reloaded = fixture.repository().list() as RemoteResult.Success
+            assertEquals("", reloaded.value.single().description)
+            fixture.serverDescription = "Edited on server"
+            val edited = fixture.repository().list() as RemoteResult.Success
+            assertEquals("Edited on server", edited.value.single().description)
+        }
+    }
+
+    @Test fun explicitDescriptionMatchingSongTitleIsPreservedAndCanBeCleared() = runBlocking {
+        Fixture(1).use { fixture ->
+            val created = fixture.repository().create(fixture.openedTarget, "园游会", 7) as RemoteResult.Success
+            assertEquals("园游会", created.value.description)
+            assertTrue(fixture.repository().update(created.value.id, "", 7) is RemoteResult.Success)
+            val cleared = fixture.repository().list() as RemoteResult.Success
+            assertEquals("", cleared.value.single().description)
+            assertTrue(fixture.repository().update(created.value.id, "园游会", 7) is RemoteResult.Success)
+            val edited = fixture.repository().list() as RemoteResult.Success
+            assertEquals("园游会", edited.value.single().description)
+        }
+    }
 
     private fun checkSnapshot(actualCount: Int) = runBlocking {
         Fixture(actualCount).use { fixture ->
@@ -70,6 +107,7 @@ class SharePlaylistSnapshotTest {
         )
         val openedTarget = ShareTarget(ShareKind.PLAYLIST, "playlist", "Test playlist", "3 首歌曲", songCount = 3)
         val sharedIds = CopyOnWriteArrayList<List<String>>()
+        @Volatile var serverDescription = "Test note"
         fun repository() = ShareRepository(session, OpenSubsonicApiFactory(), context)
         private val share = JSONObject().put("id", "snapshot")
             .put("url", "https://example.com/share/snapshot")
@@ -98,6 +136,11 @@ class SharePlaylistSnapshotTest {
                         offset += read
                     }
                     val uri = Uri.parse("http://localhost" + request.split(' ')[1])
+                    val form = Uri.parse("http://localhost/?${String(body)}")
+                    if (uri.lastPathSegment in listOf("createShare.view", "updateShare.view")) {
+                        serverDescription = form.getQueryParameter("description").orEmpty().ifBlank { "园游会" }
+                    }
+                    share.put("description", serverDescription)
                     val response = JSONObject().put("status", "ok").put("version", "1.16.1")
                     when (uri.lastPathSegment) {
                         "getPlaylist.view" -> response.put("playlist", JSONObject()

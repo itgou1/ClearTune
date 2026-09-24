@@ -19,6 +19,7 @@ import com.cleartune.core.network.OpenSubsonicApiFactory
 import com.cleartune.core.network.SearchResults
 import java.util.UUID
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -37,6 +38,60 @@ class SongActionsConsistencyUiTest {
     @Test fun albumMenuTargetsSelectedSongAndKeepsTrackAndBadge() = checkScreen("album")
     @Test fun artistMenuTargetsSelectedSong() = checkScreen("artist")
     @Test fun playlistMenuTargetsSelectedSong() = checkScreen("playlist")
+
+    @Test fun playlistSortAppliesToPlaybackAndRemovalAndSurvivesPageReentry() = withModel { model ->
+        val id = "sort-${UUID.randomUUID()}"
+        var visible by mutableStateOf(true)
+        var queue = emptyList<String>()
+        var removed = emptyList<Int>()
+        ui.setContent {
+            ClearTuneTheme {
+                if (visible) PlaylistDetailScreen(
+                    state = DetailUiState(playlist = Playlist(id, "Sorting fixture", 2), songs = songs),
+                    viewModel = model, onBack = {}, onPlay = { list, _ -> queue = list.map { it.id } },
+                    onDownload = {}, allSongs = songs, playlists = emptyList(), onPlayNext = {},
+                    onRename = { _, _ -> }, onRemoveSongs = { _, indexes -> removed = indexes },
+                    onDelete = { _, _ -> },
+                )
+            }
+        }
+        ui.waitUntil(5_000) { ui.onAllNodes(hasContentDescription("排序") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithContentDescription("排序").performClick()
+        ui.onNodeWithText("歌曲名").performClick()
+        ui.onNodeWithText("歌曲名").assertDoesNotExist()
+        ui.onNodeWithContentDescription("排序").performClick()
+        ui.onNodeWithText("歌曲名").performClick()
+        ui.waitForIdle()
+        ui.onNodeWithContentDescription("排序").performClick()
+        ui.onNodeWithText("歌曲名").assertIsDisplayed()
+        ui.waitForIdle()
+        Thread.sleep(300) // Allow the popup window to draw before the device screenshot.
+        InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()?.let { bitmap ->
+            java.io.File(context.getExternalFilesDir(null), "playlist-sort-menu.png").outputStream().use {
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+            }
+            bitmap.recycle()
+        }
+        ui.onNode(isPopup()).performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Escape) }
+        ui.waitUntil(5_000) {
+            kotlinx.coroutines.runBlocking { model.playlistSort(id).first() }.descending
+        }
+        ui.onNodeWithText(context.getString(R.string.play_all)).performClick()
+        ui.runOnIdle { assertEquals(listOf("beta", "alpha"), queue); visible = false }
+        ui.waitForIdle()
+        ui.runOnIdle { visible = true }
+        ui.waitUntil(5_000) {
+            ui.onAllNodes(hasText(songs[1].title) and hasClickAction()).fetchSemanticsNodes().isNotEmpty()
+        }
+        ui.onNodeWithContentDescription("排序").performClick()
+        ui.onNodeWithText("歌曲名").assertIsSelected()
+        ui.onNodeWithText("歌曲名").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "降序"))
+        ui.onNode(isPopup()).performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Escape) }
+        ui.onNode(hasText(songs[1].title) and hasClickAction()).performScrollTo().performTouchInput { longClick() }
+        ui.onNodeWithText(context.getString(R.string.remove_from_playlist)).performClick()
+        ui.onNode(hasText(context.getString(R.string.remove_action)) and hasAnyAncestor(isDialog())).performClick()
+        ui.runOnIdle { assertEquals(listOf(1), removed) }
+    }
 
     private fun checkScreen(screen: String) = withModel { model ->
         val selection = SongBatchSelection()

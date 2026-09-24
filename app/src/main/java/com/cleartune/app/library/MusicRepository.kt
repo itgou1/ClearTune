@@ -3,6 +3,7 @@ package com.cleartune.app.library
 import android.os.SystemClock
 import com.cleartune.app.auth.AccountSession
 import com.cleartune.core.database.PlaylistSongEntity
+import com.cleartune.core.database.PlaylistAdditionEntity
 import com.cleartune.core.database.PendingMutationEntity
 import com.cleartune.core.database.toCacheWrite
 import com.cleartune.core.database.toEntity
@@ -221,6 +222,7 @@ class MusicRepository @Inject constructor(
             is RemoteResult.Failure -> {
                 if (result.error.isNotFound()) {
                     mediaDao.clearPlaylistSongs(id)
+                    mediaDao.clearPlaylistAdditions(id)
                     mediaDao.deletePlaylist(id)
                 }
                 result.error
@@ -279,18 +281,16 @@ class MusicRepository @Inject constructor(
         val additions = songIds.distinct()
         return when (val result = remote.createPlaylist(name.trim(), additions)) {
             is RemoteResult.Failure -> PlaylistSongsAddResult(error = result.error)
-            is RemoteResult.Success -> PlaylistSongsAddResult(
-                addedCount = additions.size, refreshError = refreshPlaylists(remote),
-            )
+            is RemoteResult.Success -> {
+                result.value?.let { recordPlaylistAdditions(it, additions) }
+                PlaylistSongsAddResult(addedCount = additions.size, refreshError = refreshPlaylists(remote))
+            }
         }
     }
 
     suspend fun addPlaylistSong(id: String, songId: String): ClearTuneError? {
-        val remote = remote() ?: return ClearTuneError.Authentication()
-        return when (val result = remote.addPlaylistSongs(id, listOf(songId))) {
-            is RemoteResult.Success -> loadPlaylist(id)
-            is RemoteResult.Failure -> cleanMissingPlaylist(id, result.error)
-        }
+        val result = addPlaylistSongs(id, listOf(songId))
+        return result.error ?: result.refreshError
     }
 
     suspend fun addPlaylistSongs(id: String, songIds: List<String>): PlaylistSongsAddResult {
@@ -307,11 +307,14 @@ class MusicRepository @Inject constructor(
         return when (val result = remote.addPlaylistSongs(id, additions)) {
             is RemoteResult.Failure -> PlaylistSongsAddResult(error = cleanMissingPlaylist(id, result.error))
             // Once the server accepted the addition, a refresh failure must not invite resubmission.
-            is RemoteResult.Success -> PlaylistSongsAddResult(
-                addedCount = additions.size,
-                skippedCount = skippedCount,
-                refreshError = loadPlaylist(id),
-            )
+            is RemoteResult.Success -> {
+                recordPlaylistAdditions(id, additions)
+                PlaylistSongsAddResult(
+                    addedCount = additions.size,
+                    skippedCount = skippedCount,
+                    refreshError = loadPlaylist(id),
+                )
+            }
         }
     }
 
@@ -329,6 +332,7 @@ class MusicRepository @Inject constructor(
         return when (val result = remote.deletePlaylist(id)) {
             is RemoteResult.Success -> {
                 mediaDao.clearPlaylistSongs(id)
+                mediaDao.clearPlaylistAdditions(id)
                 mediaDao.deletePlaylist(id)
                 null
             }
@@ -350,6 +354,14 @@ class MusicRepository @Inject constructor(
     fun artistSongs(id: String): Flow<List<Song>> = mediaDao.observeSongsForArtist(id)
         .map { list -> list.map { it.toModel() } }
     fun playlistSongs(id: String): Flow<List<Song>> = mediaDao.observePlaylistSongs(id).map { list -> list.map { it.toModel() } }
+
+    fun playlistAdditions(id: String): Flow<Map<String, Long>> =
+        mediaDao.observePlaylistAdditions(id).map { entries -> entries.associate { it.songId to it.addedAt } }
+
+    private suspend fun recordPlaylistAdditions(id: String, songIds: List<String>) {
+        val now = System.currentTimeMillis()
+        mediaDao.recordPlaylistAdditions(songIds.map { PlaylistAdditionEntity(id, it, now) })
+    }
 
     suspend fun localSearch(query: String): SearchResults = withContext(Dispatchers.Default) {
         val plan = buildSearchQueryPlan(query)
@@ -615,6 +627,7 @@ class MusicRepository @Inject constructor(
 
     private suspend fun removeLocalPlaylist(id: String) {
         mediaDao.clearPlaylistSongs(id)
+        mediaDao.clearPlaylistAdditions(id)
         mediaDao.deletePlaylist(id)
     }
 

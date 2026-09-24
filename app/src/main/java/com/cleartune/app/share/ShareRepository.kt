@@ -22,6 +22,7 @@ data class ShareTarget(
     val subtitle: String,
     val coverArtId: String? = null,
     val songCount: Int = 0,
+    val snapshotSongIds: List<String>? = null,
 )
 
 data class MusicShare(
@@ -67,7 +68,7 @@ class ShareRepository @Inject constructor(
 
     suspend fun create(target: ShareTarget, description: String, days: Int): RemoteResult<MusicShare> {
         val remote = remote() ?: return RemoteResult.Failure(ClearTuneError.Authentication())
-        val ids = if (target.kind == ShareKind.PLAYLIST) {
+        val ids = target.snapshotSongIds ?: if (target.kind == ShareKind.PLAYLIST) {
             when (val result = remote.playlist(target.id)) {
                 is RemoteResult.Failure -> return result
                 is RemoteResult.Success -> {
@@ -80,6 +81,7 @@ class ShareRepository @Inject constructor(
                 }
             }
         } else listOf(target.id)
+        if (ids.isEmpty()) return RemoteResult.Failure(ClearTuneError.Server(userMessage = "还没有可分享的歌曲"))
         if (session.credentials() == null) return RemoteResult.Failure(ClearTuneError.Authentication())
         val expires = System.currentTimeMillis() + days * 86_400_000L
         return when (val result = remote.createShare(ids, description.trim().takeIf(String::isNotEmpty), expires)) {
@@ -91,6 +93,7 @@ class ShareRepository @Inject constructor(
                     target.copy(songCount = ids.size)
                 } else target
                 remember(result.value.id, snapshot)
+                rememberDescription(result.value.id, description, result.value.description)
                 RemoteResult.Success(toModel(result.value))
             }
         }
@@ -99,7 +102,20 @@ class ShareRepository @Inject constructor(
     suspend fun update(id: String, description: String, days: Int): RemoteResult<Unit> {
         val remote = remote() ?: return RemoteResult.Failure(ClearTuneError.Authentication())
         val expires = System.currentTimeMillis() + days * 86_400_000L
-        return remote.updateShare(id, description.trim(), expires)
+        val result = remote.updateShare(id, description.trim(), expires)
+        if (result is RemoteResult.Success && session.credentials() != null) {
+            // Clear the old fallback before accepting a new, explicit description.
+            rememberDescription(id, description, null)
+            if (description.isBlank()) {
+                val shares = remote.shares()
+                if (shares is RemoteResult.Success && session.credentials() != null) {
+                    shares.value.firstOrNull { it.id == id }?.let {
+                        rememberDescription(id, description, it.description)
+                    }
+                }
+            }
+        }
+        return result
     }
 
     suspend fun delete(id: String): RemoteResult<Unit> {
@@ -125,6 +141,19 @@ class ShareRepository @Inject constructor(
 
     private fun key(id: String) = "${session.accountKey}:$id"
 
+    private fun rememberDescription(id: String, submitted: String, returned: String?) {
+        if (submitted.isBlank() && returned == null) return
+        val metadata = preferences.getString(key(id), null)
+            ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject()
+        // Navidrome returns share contents as description when the actual note is empty.
+        // Match the observed fallback exactly so later server-side edits remain visible.
+        metadata.remove("emptyDescriptionFallback")
+        if (submitted.isBlank() && returned != null) {
+            metadata.put("emptyDescriptionFallback", returned)
+        }
+        preferences.edit().putString(key(id), metadata.toString()).apply()
+    }
+
     private fun toModel(share: ShareDto): MusicShare {
         val metadata = preferences.getString(key(share.id), null)?.let { runCatching { JSONObject(it) }.getOrNull() }
         // The standard response does not identify the original resource type.
@@ -138,7 +167,8 @@ class ShareRepository @Inject constructor(
             id = share.id,
             url = share.url.takeIf(::isPublicUrl).orEmpty(),
             title = metadata?.optString("title")?.takeIf(String::isNotBlank) ?: fallbackTitle,
-            description = share.description,
+            description = if (metadata?.has("emptyDescriptionFallback") == true &&
+                metadata.optString("emptyDescriptionFallback") == share.description) "" else share.description,
             kind = kind,
             coverArtId = metadata?.optString("coverArtId")?.takeIf(String::isNotBlank)
                 ?: share.entry.firstOrNull()?.coverArt,

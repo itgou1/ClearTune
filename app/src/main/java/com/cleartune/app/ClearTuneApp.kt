@@ -1,4 +1,5 @@
 package com.cleartune.app
+import com.cleartune.app.library.PlaylistSort
 
 import android.icu.text.AlphabeticIndex
 import android.net.Uri
@@ -603,8 +604,11 @@ fun ClearTuneApp(
                 FavoriteSongsScreen(
                     songs = libraryState.songs.filter { it.starredAt != null },
                     viewModel = viewModel,
-                    savedSortName = settings.favoriteSongSort,
-                    onSortChange = { settingsViewModel.setFavoriteSongSort(it.name) },
+                    allSongs = libraryState.songs,
+                    playlists = libraryState.playlists,
+                    onDownload = { downloadViewModel.download(it) },
+                    onPlayNext = playerViewModel::playNext,
+                    onShare = shareViewModel::open,
                     onBack = navController::popBackStack,
                     onPlay = playerViewModel::play,
                 )
@@ -1495,98 +1499,6 @@ private fun MyDownloadEntry(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun FavoriteSongsScreen(
-    songs: List<Song>,
-    viewModel: MusicViewModel,
-    savedSortName: String,
-    onSortChange: (FavoriteSongSort) -> Unit,
-    onBack: () -> Unit,
-    onPlay: (List<Song>, Int) -> Unit,
-) {
-    var sort by remember(savedSortName) {
-        mutableStateOf(
-            FavoriteSongSort.entries.firstOrNull { it.name == savedSortName }
-                ?: FavoriteSongSort.TITLE,
-        )
-    }
-    val sortedSongs = remember(songs, sort) { sortFavoriteSongs(songs, sort) }
-    var showSortMenu by remember { mutableStateOf(false) }
-    Scaffold(
-        topBar = {
-            ClearTuneTopAppBar(
-                title = stringResource(R.string.favorites),
-                onBack = onBack,
-                actions = {
-                    Box {
-                        IconButton(onClick = { showSortMenu = true }) {
-                            Icon(
-                                Icons.AutoMirrored.Rounded.Sort,
-                                contentDescription = stringResource(R.string.sort_current, sort.label()),
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false },
-                        ) {
-                            FavoriteSongSort.entries.forEach { option ->
-                                val selected = option == sort
-                                DropdownMenuItem(
-                                    text = { Text(option.label()) },
-                                    leadingIcon = {
-                                        Icon(
-                                            if (selected) {
-                                                Icons.Rounded.CheckCircle
-                                            } else {
-                                                Icons.Rounded.RadioButtonUnchecked
-                                            },
-                                            contentDescription = null,
-                                            tint = if (selected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
-                                        )
-                                    },
-                                    onClick = {
-                                        sort = option
-                                        onSortChange(option)
-                                        showSortMenu = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                },
-            )
-        },
-    ) { padding ->
-        if (sortedSongs.isEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(stringResource(R.string.no_favorite_songs), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        } else {
-            LazyColumn(modifier = Modifier.padding(padding)) {
-                itemsIndexed(sortedSongs, key = { _, song -> song.id }) { index, song ->
-                    SongRow(
-                        song = song,
-                        onClick = { onPlay(sortedSongs, index) },
-                        onFavorite = { viewModel.toggleSongFavorite(song) },
-                        leadingArtwork = { SongListCover(song, viewModel) },
-                    )
-                }
-            }
         }
     }
 }
@@ -2923,10 +2835,23 @@ internal fun PlaylistDetailScreen(
     playlists: List<Playlist>,
     onPlayNext: (Song) -> Unit,
 ) {
+    val playlistId = state.playlist?.id.orEmpty()
+    val sortFlow = remember(viewModel, playlistId) { viewModel.playlistSort(playlistId) }
+    val savedSort by androidx.compose.runtime.key(viewModel, playlistId) {
+        sortFlow.collectAsStateWithLifecycle(initialValue = null)
+    }
+    var pendingSort by remember(playlistId) { mutableStateOf<com.cleartune.app.library.PlaylistSort?>(null) }
+    LaunchedEffect(savedSort) { if (savedSort == pendingSort) pendingSort = null }
+    val sort = pendingSort ?: savedSort ?: com.cleartune.app.library.PlaylistSort()
+    val sortedEntries = remember(state.songs, state.playlistAddedAt, sort) {
+        com.cleartune.app.library.sortedPlaylistEntries(state.songs, state.playlistAddedAt, sort)
+    }
+    val sortedSongs = remember(sortedEntries) { sortedEntries.map { it.value } }
     var showRename by remember { mutableStateOf(false) }
     var showAdd by rememberSaveable(state.playlist?.id) { mutableStateOf(false) }
     var isSelecting by remember(state.playlist?.id) { mutableStateOf(false) }
     var selectedIndexes by remember(state.playlist?.id) { mutableStateOf(emptySet<Int>()) }
+    LaunchedEffect(state.songs.map { it.id }) { selectedIndexes = emptySet() }
     var showRemoveSelectedConfirmation by remember { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showMoreActions by remember { mutableStateOf(false) }
@@ -2986,9 +2911,11 @@ internal fun PlaylistDetailScreen(
                     )
                     if (!isSelecting) {
                         PlaylistDetailActions(
-                            hasSongs = state.songs.isNotEmpty(),
-                            onPlay = { onPlay(state.songs, 0) },
-                            onDownload = { onDownload(state.songs) },
+                            hasSongs = state.songs.isNotEmpty() && savedSort != null,
+                            onPlay = { onPlay(sortedSongs, 0) },
+                            onDownload = { onDownload(sortedSongs) },
+                            sort = sort,
+                            onSortChange = { pendingSort = it; viewModel.setPlaylistSort(playlistId, it) },
                             onAdd = {
                                 viewModel.resetPlaylistSongAddState()
                                 showAdd = true
@@ -3013,7 +2940,11 @@ internal fun PlaylistDetailScreen(
                 }
             }
             state.errorMessage?.let { message -> item { EmptyBlock(message) } }
-            itemsIndexed(state.songs, key = { index, song -> "${song.id}-$index" }) { index, song ->
+            if (savedSort == null) item { LoadingBlock() }
+            itemsIndexed(if (savedSort == null) emptyList() else sortedEntries,
+                key = { _, entry -> "${entry.value.id}-${entry.index}" }) { displayIndex, entry ->
+                val index = entry.index
+                val song = entry.value
                 val isSelected = index in selectedIndexes
                 MusicSongRow(
                     song = song,
@@ -3023,7 +2954,7 @@ internal fun PlaylistDetailScreen(
                         if (isSelecting) {
                             selectedIndexes = if (isSelected) selectedIndexes - index else selectedIndexes + index
                         } else {
-                            onPlay(state.songs, index)
+                            onPlay(sortedSongs, displayIndex)
                         }
                     },
                     onLongClick = if (isSelecting) null else ({
@@ -3608,7 +3539,7 @@ private fun CompactSongShelf(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DetailScaffold(
+internal fun DetailScaffold(
     title: String,
     onBack: () -> Unit,
     actions: @Composable RowScope.() -> Unit = {},
@@ -3637,7 +3568,7 @@ private fun DetailScaffold(
 }
 
 @Composable
-private fun DetailHeader(
+internal fun DetailHeader(
     title: String,
     subtitle: String,
     coverArtId: String?,
@@ -3714,17 +3645,21 @@ private fun DetailActions(onPlay: () -> Unit, onDownload: () -> Unit) {
 }
 
 @Composable
-private fun PlaylistDetailActions(
+internal fun PlaylistDetailActions(
     hasSongs: Boolean,
     onPlay: () -> Unit,
     onDownload: () -> Unit,
+    sort: PlaylistSort,
+    onSortChange: (PlaylistSort) -> Unit,
     onAdd: () -> Unit,
     moreExpanded: Boolean,
     onMoreExpandedChange: (Boolean) -> Unit,
     onManage: () -> Unit,
-    onRename: () -> Unit,
-    onDelete: () -> Unit,
+    onRename: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+    favorites: Boolean = false,
 ) {
+    var sortExpanded by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -3743,12 +3678,15 @@ private fun PlaylistDetailActions(
             Spacer(Modifier.width(6.dp))
             Text(stringResource(R.string.play_all), maxLines = 1)
         }
-        PlaylistCompactAction(
-            icon = Icons.Rounded.Download,
-            label = stringResource(R.string.download_action),
-            enabled = hasSongs,
-            onClick = onDownload,
-        )
+        Box {
+            PlaylistCompactAction(
+                icon = Icons.AutoMirrored.Rounded.Sort,
+                label = "排序",
+                enabled = hasSongs,
+                onClick = { sortExpanded = true },
+            )
+            PlaylistSortMenu(sortExpanded, sort, onSortChange, { sortExpanded = false }, favorites)
+        }
         PlaylistCompactAction(
             icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
             label = stringResource(R.string.add_short),
@@ -3764,6 +3702,12 @@ private fun PlaylistDetailActions(
                 expanded = moreExpanded,
                 onDismissRequest = { onMoreExpandedChange(false) },
             ) {
+                DropdownMenuItem(
+                    text = { Text("下载全部") },
+                    leadingIcon = { Icon(Icons.Rounded.Download, contentDescription = null) },
+                    enabled = hasSongs,
+                    onClick = { onMoreExpandedChange(false); onDownload() },
+                )
                 if (hasSongs) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.manage_playlist_songs)) },
@@ -3771,12 +3715,12 @@ private fun PlaylistDetailActions(
                         onClick = onManage,
                     )
                 }
-                DropdownMenuItem(
+                if (onRename != null) DropdownMenuItem(
                     text = { Text(stringResource(R.string.rename_playlist)) },
                     leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
                     onClick = onRename,
                 )
-                DropdownMenuItem(
+                if (onDelete != null) DropdownMenuItem(
                     text = {
                         Text(
                             stringResource(R.string.delete_playlist),
@@ -3825,11 +3769,12 @@ private fun PlaylistCompactAction(
 }
 
 @Composable
-private fun PlaylistSelectionBar(
+internal fun PlaylistSelectionBar(
     allSelected: Boolean,
     removeEnabled: Boolean,
     onSelectAll: () -> Unit,
     onRemove: () -> Unit,
+    removeLabel: String? = null,
 ) {
     Surface(tonalElevation = 3.dp, shadowElevation = 3.dp) {
         Row(
@@ -3848,7 +3793,7 @@ private fun PlaylistSelectionBar(
             ) {
                 Icon(Icons.Rounded.Delete, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.remove_from_playlist))
+                Text(removeLabel ?: stringResource(R.string.remove_from_playlist))
             }
         }
     }

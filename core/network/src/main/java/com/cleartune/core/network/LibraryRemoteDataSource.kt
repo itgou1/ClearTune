@@ -240,7 +240,7 @@ class LibraryRemoteDataSource(
     }
 
     suspend fun createPlaylist(name: String, songIds: List<String> = emptyList()) =
-        execute { api.createPlaylist(name, songIds, authQuery()) }.map { Unit }
+        execute { api.createPlaylist(name, songIds, authQuery()) }.map { it.playlist?.id }
 
     suspend fun renamePlaylist(id: String, name: String) =
         execute { api.updatePlaylist(id, name, emptyList(), emptyList(), authQuery()) }.map { Unit }

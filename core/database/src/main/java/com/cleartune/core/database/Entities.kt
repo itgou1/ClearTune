@@ -104,6 +104,14 @@ data class PlaylistSongEntity(
     val position: Int,
 )
 
+/** Only confirmed additions made by this client; never song library creation times. */
+@Entity(tableName = "playlist_additions", primaryKeys = ["playlistId", "songId"])
+data class PlaylistAdditionEntity(
+    val playlistId: String,
+    val songId: String,
+    val addedAt: Long,
+)
+
 @Entity(
     tableName = "queue_items",
     primaryKeys = ["queueId", "songId"],

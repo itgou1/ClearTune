@@ -39,8 +39,9 @@ internal class RepositoryDetailSource(private val repository: MusicRepository) :
         DetailKind.ARTIST -> combine(repository.artist(target.id), repository.artistSongs(target.id)) { artist, songs ->
             DetailUiState(artist = artist?.withResolvedArtistArtwork(songs), songs = songs)
         }
-        DetailKind.PLAYLIST -> combine(repository.playlist(target.id), repository.playlistSongs(target.id)) { playlist, songs ->
-            DetailUiState(playlist = playlist, songs = songs)
+        DetailKind.PLAYLIST -> combine(repository.playlist(target.id), repository.playlistSongs(target.id),
+            repository.playlistAdditions(target.id)) { playlist, songs, addedAt ->
+            DetailUiState(playlist = playlist, songs = songs, playlistAddedAt = addedAt)
         }
     }
 

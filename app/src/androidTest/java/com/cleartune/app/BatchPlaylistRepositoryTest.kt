@@ -18,6 +18,46 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BatchPlaylistRepositoryTest {
+    @Test fun creationRecordsSongsAgainstReturnedPlaylistId() = runBlocking {
+        Fixture().use { fixture ->
+            assertNull(fixture.repository.createPlaylistWithSongs("New", listOf("b", "c")).error)
+            assertEquals(setOf("b", "c"), fixture.repository.playlistAdditions("created").first().keys)
+            assertTrue(fixture.repository.playlistAdditions("p").first().isEmpty())
+        }
+    }
+
+    @Test fun successfulAdditionRefreshAndRepeatedAddKeepOriginalMembershipTime() = runBlocking {
+        Fixture().use { fixture ->
+            assertNull(fixture.repository.addPlaylistSongs("p", listOf("b", "c")).error)
+            val original = fixture.repository.playlistAdditions("p").first()
+            assertEquals(setOf("b", "c"), original.keys)
+            assertNull(fixture.repository.loadPlaylist("p"))
+            assertEquals(original, fixture.repository.playlistAdditions("p").first())
+            assertEquals(0, fixture.repository.addPlaylistSongs("p", listOf("b")).addedCount)
+            assertEquals(original, fixture.repository.playlistAdditions("p").first())
+            assertNull(fixture.repository.removePlaylistSongs("p", listOf(1)))
+            assertFalse(fixture.repository.playlistAdditions("p").first().containsKey("b"))
+        }
+    }
+
+    @Test fun onlyConfirmedNewMembershipsReceiveAdditionTimesEvenIfRefreshFails() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.failWrite = true
+            fixture.repository.addPlaylistSongs("p", listOf("b"))
+            assertTrue(fixture.repository.playlistAdditions("p").first().isEmpty())
+            fixture.failWrite = false
+            fixture.failRefresh = true
+            // Reset captured failed writes so the initial membership read still succeeds.
+            fixture.mutations.clear()
+            val result = fixture.repository.addPlaylistSongs("p", listOf("existing", "b", "c"))
+            assertNull(result.error)
+            assertNotNull(result.refreshError)
+            val times = fixture.repository.playlistAdditions("p").first()
+            assertEquals(setOf("b", "c"), times.keys)
+            assertTrue(times.values.all { it > 0 })
+        }
+    }
+
     @Test fun openingPlaylistReusesRecentListRefreshAndStillLoadsMembers() = runBlocking {
         Fixture().use { fixture ->
             assertNull(fixture.repository.refreshPlaylists())
@@ -117,6 +157,7 @@ class BatchPlaylistRepositoryTest {
         private val database = DatabaseFactory.create(context, key)
         val requests = CopyOnWriteArrayList<Uri>()
         val mutations = CopyOnWriteArrayList<Uri>()
+        val members = CopyOnWriteArrayList<String>().apply { add("existing") }
         @Volatile var failWrite = false
         @Volatile var failRefresh = false
         @Volatile var coverArt: String? = null
@@ -140,13 +181,20 @@ class BatchPlaylistRepositoryTest {
                     val write = uri.path?.contains("updatePlaylist") == true || uri.path?.contains("createPlaylist") == true
                     if (write) mutations += uri
                     val failed = write && failWrite || !write && failRefresh && mutations.isNotEmpty()
+                    if (write && !failed) {
+                        uri.getQueryParameters("songIndexToRemove").map(String::toInt).sortedDescending()
+                            .forEach { members.removeAt(it) }
+                        members.addAll(uri.getQueryParameters("songIdToAdd"))
+                    }
                     val payload = if (failed) {
                         """{"status":"failed","version":"1.16.1","error":{"code":50,"message":"Test failure"}}"""
                     } else when {
+                        uri.path?.contains("createPlaylist") == true ->
+                            """{"status":"ok","version":"1.16.1","playlist":{"id":"created","name":"New"}}"""
                         uri.path?.contains("getPlaylists") == true ->
                             """{"status":"ok","version":"1.16.1","playlists":{"playlist":[{"id":"p","name":"Target","songCount":1}]}}"""
                         uri.path?.contains("getPlaylist") == true ->
-                            """{"status":"ok","version":"1.16.1","playlist":{"id":"p","name":"Target","songCount":1,${coverArt?.let { "\"coverArt\":\"$it\"," }.orEmpty()}"entry":[{"id":"existing","title":"Existing"}]}}"""
+                            """{"status":"ok","version":"1.16.1","playlist":{"id":"p","name":"Target","songCount":${members.size},${coverArt?.let { "\"coverArt\":\"$it\"," }.orEmpty()}"entry":[${members.joinToString(",") { """{"id":"$it","title":"$it"}""" }}]}}"""
                         else -> """{"status":"ok","version":"1.16.1"}"""
                     }
                     val bytes = """{"subsonic-response":$payload}""".toByteArray()

@@ -174,7 +174,7 @@ internal fun ShareCreateSheet(
                         modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
                     ) {
                         Text(
-                            "以生成链接时读取到的歌曲为准，后续修改不会同步。",
+                            "分享内容为歌曲快照，后续修改不会同步。",
                             modifier = Modifier.padding(12.dp),
                             style = MaterialTheme.typography.bodySmall,
                         )

@@ -10,6 +10,7 @@ import androidx.room.RoomDatabase
         SongEntity::class,
         PlaylistEntity::class,
         PlaylistSongEntity::class,
+        PlaylistAdditionEntity::class,
         QueueItemEntity::class,
         DownloadEntity::class,
         PlayEventEntity::class,
@@ -19,7 +20,7 @@ import androidx.room.RoomDatabase
         LyricsCacheEntity::class,
         LyricLineEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class ClearTuneDatabase : RoomDatabase() {

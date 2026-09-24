@@ -127,6 +127,7 @@ data class DetailUiState(
     val playlist: Playlist? = null,
     val songs: List<Song> = emptyList(),
     val errorMessage: String? = null,
+    val playlistAddedAt: Map<String, Long> = emptyMap(),
 )
 
 data class LyricsUiState(
@@ -500,6 +501,42 @@ class MusicViewModel @Inject constructor(
         setSongFavorite(song, song.starredAt == null)
     }
 
+    private val _favoriteSongAddState = MutableStateFlow(PlaylistSongAddUiState())
+    val favoriteSongAddState = _favoriteSongAddState.asStateFlow()
+
+    fun resetFavoriteSongAddState() {
+        if (!_favoriteSongAddState.value.isAdding) _favoriteSongAddState.value = PlaylistSongAddUiState()
+    }
+
+    fun addFavoriteSongs(ids: List<String>) {
+        if (ids.isEmpty() || _favoriteSongAddState.value.isAdding) return
+        _favoriteSongAddState.value = PlaylistSongAddUiState(isAdding = true)
+        viewModelScope.launch {
+            try {
+                val additions = repository.songs.first().filter { it.id in ids && it.starredAt == null }
+                additions.forEach { song ->
+                    repository.setSongFavorite(song, true)
+                    _searchState.update { state -> state.copy(
+                        results = state.results.withSongFavorite(song.id, System.currentTimeMillis())) }
+                }
+                _favoriteSongAddState.value = PlaylistSongAddUiState(completed = true)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _favoriteSongAddState.value = PlaylistSongAddUiState(errorMessage = "添加失败，请重试")
+            }
+        }
+    }
+
+    fun removeFavoriteSongs(songs: List<Song>) {
+        songs.distinctBy { it.id }.forEach { setSongFavorite(it, false) }
+    }
+
+    internal fun favoritesSort() = appPreferences.favoritesSort(accountKey).map(PlaylistSort::decode)
+    internal fun setFavoritesSort(sort: PlaylistSort) {
+        viewModelScope.launch { appPreferences.setFavoritesSort(accountKey, sort.encode()) }
+    }
+
     fun setSongFavorite(song: Song, favorite: Boolean) {
         val starredAt = System.currentTimeMillis().takeIf { favorite }
         _searchState.update { state ->
@@ -680,6 +717,13 @@ class MusicViewModel @Inject constructor(
 
     suspend fun coverArtUrl(id: String, size: Int = 512): String? = repository.coverArtUrl(id, size)
     val artworkAccountKey: String get() = repository.artworkAccountKey
+
+    internal fun playlistSort(id: String) = appPreferences.playlistSort(accountKey, id)
+        .map(PlaylistSort::decode)
+
+    internal fun setPlaylistSort(id: String, sort: PlaylistSort) {
+        viewModelScope.launch { appPreferences.setPlaylistSort(accountKey, id, sort.encode()) }
+    }
 
     private suspend fun reportPlaylistAction(id: String, error: com.cleartune.core.model.ClearTuneError?, success: String) {
         if (error.isNotFound()) {
