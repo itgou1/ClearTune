@@ -1,5 +1,6 @@
 package com.cleartune.app.library
 
+import android.os.SystemClock
 import com.cleartune.app.auth.AccountSession
 import com.cleartune.core.database.PlaylistSongEntity
 import com.cleartune.core.database.PendingMutationEntity
@@ -31,6 +32,8 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class PlaylistSongsAddResult(
@@ -49,6 +52,9 @@ class MusicRepository @Inject constructor(
     private val lyricsDao = database.lyricsDao()
     val artworkAccountKey: String get() = session.accountKey
     private val remoteSearchCache = ConcurrentHashMap<RemoteSearchCacheKey, CachedRemoteSearch>()
+    private val playlistRefreshMutex = Mutex()
+    private var lastPlaylistRefreshAtMs = -PLAYLIST_REFRESH_COALESCE_MS
+    private var lastPlaylistRefreshError: ClearTuneError? = null
     @Volatile
     private var searchIndexReady = false
 
@@ -56,6 +62,8 @@ class MusicRepository @Inject constructor(
     val artists: Flow<List<Artist>> = mediaDao.observeArtists().map { items -> items.map { it.toModel() } }
     val songs: Flow<List<Song>> = mediaDao.observeSongs().map { items -> items.map { it.toModel() } }
     val playlists: Flow<List<Playlist>> = mediaDao.observePlaylists().map { items -> items.map { it.toModel() } }
+
+    suspend fun hasLocalLibraryData(): Boolean = mediaDao.libraryItemCount() > 0
 
     suspend fun refreshLibrary(): ClearTuneError? = coroutineScope {
         val remote = remote() ?: return@coroutineScope ClearTuneError.Authentication()
@@ -90,10 +98,13 @@ class MusicRepository @Inject constructor(
         }
         when (val result = favoritesRequest.await()) {
             is RemoteResult.Success -> {
-                mediaDao.clearStarredFlags(System.currentTimeMillis())
-                mediaDao.upsertSongs(result.value.songs.map { it.toEntity() })
-                mediaDao.upsertAlbums(result.value.albums.map { it.toEntity() })
-                mediaDao.upsertArtists(result.value.artists.map { it.toEntity() })
+                val now = System.currentTimeMillis()
+                mediaDao.replaceFavoritesIfChanged(
+                    songs = result.value.songs.map { it.toEntity(now) },
+                    albums = result.value.albums.map { it.toEntity(now) },
+                    artists = result.value.artists.map { it.toEntity(now) },
+                    now = now,
+                )
             }
             is RemoteResult.Failure -> Unit
         }
@@ -101,6 +112,40 @@ class MusicRepository @Inject constructor(
         rebuildSearchIndex()
         remoteSearchCache.clear()
         errors.firstOrNull()
+    }
+
+    /** Update the edited song and its related list entries without loading the whole library. */
+    suspend fun refreshTagSong(previous: Song, song: Song) {
+        mediaDao.upsertSongs(listOf(song.toEntity()))
+        mediaDao.upsertSearchDocuments(listOf(searchDocument(song)))
+        remoteSearchCache.clear()
+        val (albumIds, artistIds) = tagRelatedIds(previous, song)
+        if (albumIds.isEmpty() && artistIds.isEmpty()) return
+        val source = remote() ?: return
+        albumIds.forEach { id ->
+            val result = try { source.album(id) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { return@forEach }
+            when (result) {
+                is RemoteResult.Success -> {
+                    mediaDao.upsertAlbums(listOf(result.value.album.toEntity()))
+                    mediaDao.upsertSearchDocuments(listOf(searchDocument(result.value.album)))
+                }
+                is RemoteResult.Failure -> if (result.error.isNotFound()) mediaDao.deleteAlbum(id)
+            }
+        }
+        artistIds.forEach { id ->
+            val result = try { source.artist(id) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { return@forEach }
+            when (result) {
+                is RemoteResult.Success -> {
+                    mediaDao.upsertArtists(listOf(result.value.artist.toEntity()))
+                    mediaDao.upsertSearchDocuments(listOf(searchDocument(result.value.artist)))
+                }
+                is RemoteResult.Failure -> if (result.error.isNotFound()) mediaDao.deleteArtist(id)
+            }
+        }
     }
 
     suspend fun loadAlbum(id: String): ClearTuneError? {
@@ -119,6 +164,11 @@ class MusicRepository @Inject constructor(
                 result.error
             }
         }
+    }
+
+    suspend fun loadAlbumIfStale(id: String): ClearTuneError? {
+        val cached = mediaDao.albumsByIds(listOf(id)).firstOrNull()
+        return if (shouldRefreshDetail(cached?.updatedAt)) loadAlbum(id) else null
     }
 
     suspend fun loadArtist(id: String): ClearTuneError? {
@@ -146,6 +196,11 @@ class MusicRepository @Inject constructor(
         }
     }
 
+    suspend fun loadArtistIfStale(id: String): ClearTuneError? {
+        val cached = mediaDao.artistsByIds(listOf(id)).firstOrNull()
+        return if (shouldRefreshDetail(cached?.updatedAt)) loadArtist(id) else null
+    }
+
     suspend fun loadPlaylist(id: String): ClearTuneError? {
         val remote = remote() ?: return ClearTuneError.Authentication()
         return when (val result = remote.playlist(id)) {
@@ -171,6 +226,36 @@ class MusicRepository @Inject constructor(
                 result.error
             }
         }
+    }
+
+    suspend fun openPlaylist(id: String): ClearTuneError? {
+        refreshPlaylists()
+        return loadPlaylist(id)
+    }
+
+    suspend fun refreshPlaylists(): ClearTuneError? {
+        val remote = remote() ?: return ClearTuneError.Authentication()
+        return refreshPlaylists(remote, coalesceRecent = true)
+    }
+
+    suspend fun refreshFavorites(): ClearTuneError? {
+        val remote = remote() ?: return ClearTuneError.Authentication()
+        val result = remote.favorites()
+        val error = when (result) {
+            is RemoteResult.Success -> {
+                val now = System.currentTimeMillis()
+                mediaDao.replaceFavoritesIfChanged(
+                    songs = result.value.songs.map { it.toEntity(now) },
+                    albums = result.value.albums.map { it.toEntity(now) },
+                    artists = result.value.artists.map { it.toEntity(now) },
+                    now = now,
+                )
+                null
+            }
+            is RemoteResult.Failure -> result.error
+        }
+        syncPendingFavorites(remote)
+        return error
     }
 
     suspend fun createPlaylist(name: String): ClearTuneError? {
@@ -502,15 +587,25 @@ class MusicRepository @Inject constructor(
         }
     }
 
-    private suspend fun refreshPlaylists(remote: LibraryRemoteDataSource): ClearTuneError? {
-        return when (val result = remote.playlists()) {
+    private suspend fun refreshPlaylists(
+        remote: LibraryRemoteDataSource,
+        coalesceRecent: Boolean = false,
+    ): ClearTuneError? = playlistRefreshMutex.withLock {
+        if (coalesceRecent && SystemClock.elapsedRealtime() - lastPlaylistRefreshAtMs < PLAYLIST_REFRESH_COALESCE_MS) {
+            return@withLock lastPlaylistRefreshError
+        }
+        val error = when (val result = remote.playlists()) {
             is RemoteResult.Success -> {
-                mediaDao.replacePlaylists(result.value.map { it.toEntity() })
-                rebuildSearchIndex()
+                if (mediaDao.replacePlaylistsIfChanged(result.value.map { it.toEntity() })) {
+                    rebuildSearchIndex()
+                }
                 null
             }
             is RemoteResult.Failure -> result.error
         }
+        lastPlaylistRefreshAtMs = SystemClock.elapsedRealtime()
+        lastPlaylistRefreshError = error
+        error
     }
 
     private suspend fun cleanMissingPlaylist(id: String, error: ClearTuneError): ClearTuneError {
@@ -612,6 +707,7 @@ class MusicRepository @Inject constructor(
     }
 
     private companion object {
+        const val PLAYLIST_REFRESH_COALESCE_MS = 5_000L
         const val PAGE_SIZE = 500
         const val SEARCH_ARTIST_PAGE_SIZE = 30
         const val SEARCH_ALBUM_PAGE_SIZE = 30
@@ -644,3 +740,18 @@ class MusicRepository @Inject constructor(
 
 internal fun ClearTuneError?.isNotFound(): Boolean =
     this is ClearTuneError.Server && code in setOf(70, 404)
+
+internal fun tagRelatedIds(previous: Song, current: Song): Pair<Set<String>, Set<String>> {
+    val albums = when {
+        previous.albumId != current.albumId -> setOfNotNull(previous.albumId, current.albumId)
+        previous.albumName != current.albumName || previous.year != current.year ||
+            previous.coverArtId != current.coverArtId -> setOfNotNull(current.albumId)
+        else -> emptySet()
+    }
+    val artists = when {
+        previous.artistId != current.artistId -> setOfNotNull(previous.artistId, current.artistId)
+        previous.artistName != current.artistName || previous.coverArtId != current.coverArtId -> setOfNotNull(current.artistId)
+        else -> emptySet()
+    }
+    return albums to artists
+}

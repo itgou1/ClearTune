@@ -7,8 +7,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -26,23 +28,42 @@ val LocalMusicTagActions = staticCompositionLocalOf { MusicTagActions() }
 fun MusicTagHost(viewModel: MusicTagViewModel, onSynced: (Song) -> Unit, content: @Composable () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val syncs by viewModel.syncs.collectAsStateWithLifecycle()
+    val dismissedSyncs = remember(viewModel) { mutableStateMapOf<String, Pair<Long, Boolean>>() }
     val actions = remember(viewModel) { MusicTagActions(viewModel::open, viewModel::showSettings) }
     val currentOnSynced by rememberUpdatedState(onSynced)
     LaunchedEffect(viewModel) { viewModel.syncCompleted.collect { currentOnSynced(it) } }
     CompositionLocalProvider(LocalMusicTagActions provides actions) {
         Box(Modifier.fillMaxSize()) {
             content()
-            if (state.song == null && !state.settingsShown) syncs.values.firstOrNull()?.let { sync ->
-                Snackbar(modifier = Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 16.dp, bottom = 100.dp),
-                    action = { TextButton(onClick = { viewModel.open(sync.song) }) { Text("查看") } }) {
-                    Text(if (sync.running) "标签已保存，曲库后台同步中（${sync.song.title}）"
-                        else "标签已保存，曲库同步未完成（${sync.song.title}），可进入重试")
+            if (state.song == null && !state.settingsShown) visibleSyncNotice(syncs.values, dismissedSyncs)?.let { sync ->
+                LaunchedEffect(sync.song.id, sync.attempt, sync.running) {
+                    delay(8_000)
+                    dismissedSyncs[sync.song.id] = sync.attempt to sync.running
                 }
+                MusicTagSyncNotice(sync, onView = { viewModel.open(sync.song) },
+                    onDismiss = { dismissedSyncs[sync.song.id] = sync.attempt to sync.running },
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 16.dp, bottom = 100.dp))
             }
         }
         if (state.song != null || state.settingsShown) {
             MusicTagDialog(state, viewModel)
         }
+    }
+}
+
+internal fun visibleSyncNotice(syncs: Collection<MusicTagSyncStatus>, dismissed: Map<String, Pair<Long, Boolean>>): MusicTagSyncStatus? =
+    syncs.firstOrNull { dismissed[it.song.id] != (it.attempt to it.running) }
+
+@Composable
+internal fun MusicTagSyncNotice(sync: MusicTagSyncStatus, onView: () -> Unit, onDismiss: () -> Unit,
+    modifier: Modifier = Modifier) {
+    Snackbar(modifier = modifier,
+        action = { TextButton(onClick = onView) { Text("查看") } },
+        dismissAction = { IconButton(onClick = onDismiss) {
+            Icon(Icons.Rounded.Close, contentDescription = "关闭同步提示")
+        } }) {
+        Text(if (sync.running) "标签已保存，曲库后台同步中（${sync.song.title}）"
+            else "标签已保存，曲库同步未完成（${sync.song.title}），可进入重试")
     }
 }
 

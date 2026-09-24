@@ -33,7 +33,7 @@ class SongListCoverTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Test fun favoritesUseCoverFallbackInsteadOfNoteAndTrackNumber() = checkScreen(false)
-    @Test fun playlistKeepsCoverWhenLongPressSelecting() = checkScreen(true)
+    @Test fun playlistCoverOpensPlaybackAndLongPressSelects() = checkScreen(true)
 
     private fun checkScreen(playlist: Boolean) {
         val key = accountStorageKey("https://${UUID.randomUUID()}.example/", "cover-ui")
@@ -45,30 +45,32 @@ class SongListCoverTest {
         val song = Song("a", "Cover test song", albumId = "album-a", artistName = "Artist",
             albumName = "Album", trackNumber = 17, starredAt = 1)
         var plays = 0
-        ui.runOnIdle { viewModel = MusicViewModel(MusicRepository(session, OpenSubsonicApiFactory()), AppPreferences(context), session) }
+        ui.runOnIdle { viewModel = MusicViewModel(MusicRepository(session, OpenSubsonicApiFactory()), AppPreferences(context), session, context) }
         try {
             ui.setContent { ClearTuneTheme {
                 if (playlist) PlaylistDetailScreen(
                     state = DetailUiState(songs = listOf(song)), viewModel = viewModel,
                     onBack = {}, onPlay = { _, _ -> plays++ }, onDownload = {}, allSongs = listOf(song),
                     onRename = { _, _ -> }, onRemoveSongs = { _, _ -> }, onDelete = { _, _ -> },
+                    playlists = emptyList(), onPlayNext = {},
                 ) else FavoriteSongsScreen(listOf(song), viewModel, FavoriteSongSort.TITLE.name,
                     {}, {}, { _, _ -> plays++ })
             } }
-            val coverDescription = context.getString(R.string.song_album_cover, song.title)
+            val coverDescription = if (playlist) song.title else context.getString(R.string.song_album_cover, song.title)
             ui.onNodeWithContentDescription(coverDescription, useUnmergedTree = true).assertIsDisplayed()
             ui.onNodeWithText("♪", useUnmergedTree = true).assertDoesNotExist()
             ui.onNodeWithText("17", useUnmergedTree = true).assertDoesNotExist()
-            ui.onNodeWithContentDescription(context.getString(R.string.unlike_song)).assertIsDisplayed()
+            ui.onNodeWithContentDescription(context.getString(
+                if (playlist) R.string.more_actions else R.string.unlike_song)).assertIsDisplayed()
             ui.onNodeWithContentDescription(coverDescription, useUnmergedTree = true).performTouchInput { click() }
             ui.runOnIdle { assertEquals(1, plays) }
             if (playlist) {
                 ui.onNodeWithContentDescription(coverDescription, useUnmergedTree = true).performTouchInput { longClick() }
-                ui.onNodeWithContentDescription(coverDescription, useUnmergedTree = true).assertIsDisplayed()
-                ui.onNodeWithContentDescription(context.getString(R.string.unselect_song)).assertIsDisplayed()
+                ui.onNode(hasText(song.title) and hasClickAction()).assertIsSelected()
+                ui.onNodeWithContentDescription(context.getString(R.string.more_actions)).assertDoesNotExist()
                 ui.onNodeWithContentDescription(context.getString(R.string.unlike_song)).assertDoesNotExist()
                 ui.onNode(hasText(song.title) and hasClickAction()).performClick()
-                ui.onNodeWithContentDescription(context.getString(R.string.select_song)).assertIsDisplayed()
+                ui.onNode(hasText(song.title) and hasClickAction()).assertIsNotSelected()
                 ui.runOnIdle { assertEquals(1, plays) }
             }
         } finally {

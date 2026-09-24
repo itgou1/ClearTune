@@ -26,6 +26,17 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelChildren
 
+internal enum class SelectedSongAction { START, KEEP, RESUME }
+
+internal fun selectedSongAction(currentId: String?, status: PlaybackStatus, selectedId: String): SelectedSongAction {
+    if (currentId != selectedId) return SelectedSongAction.START
+    return when (status) {
+        PlaybackStatus.PLAYING, PlaybackStatus.BUFFERING, PlaybackStatus.READY -> SelectedSongAction.KEEP
+        PlaybackStatus.PAUSED -> SelectedSongAction.RESUME
+        else -> SelectedSongAction.START
+    }
+}
+
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
@@ -110,9 +121,23 @@ class PlayerViewModel @Inject constructor(
                 }
         }
         viewModelScope.launch {
-            state.map { it.currentSong?.id }.distinctUntilChanged().collect { songId ->
-                submittedSongId = null
-                songId?.let { repository.recordStarted(it) }
+            var observedSongId: String? = null
+            var started = false
+            state.map { it.currentSong?.id to it.status }.distinctUntilChanged().collect { (songId, status) ->
+                if (songId != observedSongId) {
+                    observedSongId = songId
+                    submittedSongId = null
+                    started = false
+                }
+                if (songId != null && status == PlaybackStatus.PLAYING && !started) {
+                    started = true
+                    viewModelScope.launch { repository.recordStarted(songId) }
+                    viewModelScope.launch {
+                        val updated = repository.refreshPlayedSong(songId) ?: return@launch
+                        val artwork = repository.urls(listOf(updated))?.artwork?.get(songId)
+                        connection.updateSongMetadata(updated, artwork)
+                    }
+                }
             }
         }
         viewModelScope.launch {
@@ -128,13 +153,29 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun play(songs: List<Song>, startIndex: Int = 0) {
+        val selected = songs.getOrNull(startIndex) ?: return
+        if (continueCurrentSongIfSelected(selected.id)) return
         viewModelScope.launch {
             val urls = repository.urls(songs)
             if (urls == null) {
                 _message.value = "无法获取播放地址，请重新登录"
                 return@launch
             }
+            // URL resolution is asynchronous: another tap may have started this song meanwhile.
+            if (continueCurrentSongIfSelected(selected.id)) return@launch
             connection.setQueue(songs, startIndex, urls.streams, urls.artwork)
+        }
+    }
+
+    private fun continueCurrentSongIfSelected(songId: String): Boolean {
+        val snapshot = state.value
+        return when (selectedSongAction(snapshot.currentSong?.id, snapshot.status, songId)) {
+            SelectedSongAction.KEEP -> true
+            SelectedSongAction.RESUME -> {
+                connection.togglePlayPause()
+                true
+            }
+            SelectedSongAction.START -> false
         }
     }
 
@@ -146,18 +187,13 @@ class PlayerViewModel @Inject constructor(
                 _message.value = "《${song.title}》正在播放"
                 return@launch
             }
-            if (existingIndex == snapshot.currentIndex + 1) {
-                _message.value = "《${song.title}》已经是下一首"
-                return@launch
-            }
             if (existingIndex >= 0) {
-                val targetIndex = if (existingIndex < snapshot.currentIndex) {
-                    snapshot.currentIndex
+                connection.playNext(song)
+                _message.value = if (existingIndex == snapshot.currentIndex + 1) {
+                    "《${song.title}》已经是下一首"
                 } else {
-                    (snapshot.currentIndex + 1).coerceAtMost(snapshot.queue.lastIndex)
+                    "《${song.title}》将在下一首播放"
                 }
-                connection.move(existingIndex, targetIndex)
-                _message.value = "《${song.title}》将在下一首播放"
                 return@launch
             }
             val urls = repository.urls(listOf(song))

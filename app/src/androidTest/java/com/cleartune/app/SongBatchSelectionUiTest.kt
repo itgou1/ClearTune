@@ -40,17 +40,17 @@ class SongBatchSelectionUiTest {
         lateinit var viewModel: MusicViewModel
         val selection = SongBatchSelection()
         var plays = 0
-        ui.runOnIdle { viewModel = MusicViewModel(MusicRepository(session, OpenSubsonicApiFactory()), AppPreferences(context), session) }
+        ui.runOnIdle { viewModel = MusicViewModel(MusicRepository(session, OpenSubsonicApiFactory()), AppPreferences(context), session, context) }
         try {
             ui.setContent {
                 ClearTuneTheme {
                     when (screen) {
                         "library" -> LibraryScreen(selection, LibraryUiState(songs = songs, isInitializing = false),
-                            emptyList(), FolderUiState(), viewModel, {}, {}, {}, { _, _ -> plays++ }, {}, {}, {})
+                            emptyList(), FolderUiState(), viewModel, {}, {}, {}, { _, _ -> plays++ }, {}, {}, {}, {})
                         "album" -> AlbumDetailScreen(selection, DetailUiState(songs = songs), emptyList(), viewModel,
-                            {}, { _, _ -> plays++ }, {})
+                            {}, { _, _ -> plays++ }, {}, {})
                         else -> ArtistDetailScreen(selection, DetailUiState(songs = songs), emptyList(), emptyList(), viewModel,
-                            {}, {}, { _, _ -> plays++ }, {})
+                            {}, {}, { _, _ -> plays++ }, {}, {}, {})
                     }
                 }
             }
@@ -70,6 +70,7 @@ class SongBatchSelectionUiTest {
             ui.onNodeWithText(context.getString(R.string.select_all)).performClick()
             ui.runOnIdle { assertEquals(2, selection.ids.size) }
             ui.onNodeWithContentDescription(context.getString(R.string.add_to_playlist)).assertDoesNotExist()
+            ui.onNodeWithContentDescription(context.getString(R.string.more_actions)).assertDoesNotExist()
             ui.onNodeWithText(context.getString(R.string.cancel)).performClick()
             ui.runOnIdle { assertFalse(selection.active); assertTrue(selection.ids.isEmpty()) }
         } finally {

@@ -49,6 +49,11 @@ class LyricsCachePolicyTest {
         assertEquals(2, results.size)
     }
 
+    @Test fun unchangedServerLyricsAreNotReportedAsUpdated() {
+        assertEquals("Navidrome 返回的歌词未变化", lyricsRefreshFeedback(true, false, old, old))
+        assertEquals("已从 Navidrome 重新读取歌词", lyricsRefreshFeedback(true, false, old, fresh))
+    }
+
     @Test fun networkFailureKeepsCacheAndNeverWritesEmptyLyrics() = runBlocking {
         val failure = RemoteResult.Failure(ClearTuneError.Authentication())
         val results = lyricsResults(old, 0, true, now,

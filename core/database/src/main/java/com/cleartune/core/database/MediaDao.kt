@@ -9,6 +9,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MediaDao {
+    @Query("SELECT (SELECT COUNT(*) FROM songs) + (SELECT COUNT(*) FROM albums) + (SELECT COUNT(*) FROM artists)")
+    suspend fun libraryItemCount(): Int
+
     @Query("SELECT COUNT(*) FROM search_documents")
     suspend fun searchDocumentCount(): Int
 
@@ -82,6 +85,9 @@ interface MediaDao {
     @Query("SELECT * FROM playlists ORDER BY name COLLATE NOCASE")
     fun observePlaylists(): Flow<List<PlaylistEntity>>
 
+    @Query("SELECT * FROM playlists")
+    suspend fun allPlaylists(): List<PlaylistEntity>
+
     @Query("SELECT * FROM playlists WHERE id = :id LIMIT 1")
     fun observePlaylist(id: String): Flow<PlaylistEntity?>
 
@@ -130,11 +136,64 @@ interface MediaDao {
     @Query("UPDATE artists SET starredAt = NULL, updatedAt = :updatedAt WHERE starredAt IS NOT NULL")
     suspend fun clearArtistStars(updatedAt: Long)
 
+    @Query("SELECT * FROM songs WHERE starredAt IS NOT NULL")
+    suspend fun starredSongs(): List<SongEntity>
+
+    @Query("SELECT * FROM albums WHERE starredAt IS NOT NULL")
+    suspend fun starredAlbums(): List<AlbumEntity>
+
+    @Query("SELECT * FROM artists WHERE starredAt IS NOT NULL")
+    suspend fun starredArtists(): List<ArtistEntity>
+
     @Transaction
     suspend fun clearStarredFlags(updatedAt: Long) {
         clearSongStars(updatedAt)
         clearAlbumStars(updatedAt)
         clearArtistStars(updatedAt)
+    }
+
+    /** One observable update for the whole favorite snapshot; unchanged snapshots do no writes. */
+    @Transaction
+    suspend fun replaceFavoritesIfChanged(
+        songs: List<SongEntity>,
+        albums: List<AlbumEntity>,
+        artists: List<ArtistEntity>,
+        now: Long,
+    ): Boolean {
+        val currentSongs = starredSongs().associateBy(SongEntity::id)
+        val currentAlbums = starredAlbums().associateBy(AlbumEntity::id)
+        val currentArtists = starredArtists().associateBy(ArtistEntity::id)
+        val previousSongs = songsByIds(songs.map(SongEntity::id)).associateBy(SongEntity::id)
+        val preservedSongs = songs.map { incoming ->
+            val previous = previousSongs[incoming.id]
+            incoming.copy(
+                playCount = maxOf(incoming.playCount, previous?.playCount ?: 0),
+                lastPlayedAt = listOfNotNull(incoming.lastPlayedAt, previous?.lastPlayedAt).maxOrNull(),
+                starredAt = incoming.starredAt ?: previous?.starredAt ?: now,
+            )
+        }
+        val normalizedAlbums = albums.map { incoming ->
+            incoming.copy(starredAt = incoming.starredAt ?: currentAlbums[incoming.id]?.starredAt ?: now)
+        }
+        val normalizedArtists = artists.map { incoming ->
+            incoming.copy(starredAt = incoming.starredAt ?: currentArtists[incoming.id]?.starredAt ?: now)
+        }
+        val songsMatch = currentSongs.size == preservedSongs.size && preservedSongs.all { incoming ->
+            currentSongs[incoming.id]?.copy(updatedAt = incoming.updatedAt) == incoming
+        }
+        val albumsMatch = currentAlbums.size == normalizedAlbums.size && normalizedAlbums.all { incoming ->
+            currentAlbums[incoming.id]?.copy(updatedAt = incoming.updatedAt) == incoming
+        }
+        val artistsMatch = currentArtists.size == normalizedArtists.size && normalizedArtists.all { incoming ->
+            currentArtists[incoming.id]?.copy(updatedAt = incoming.updatedAt) == incoming
+        }
+        if (songsMatch && albumsMatch && artistsMatch) return false
+
+        clearStarredFlags(now)
+        upsertSongs(preservedSongs)
+        upsertAlbums(normalizedAlbums)
+        upsertArtists(normalizedArtists)
+        return true
     }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -193,6 +252,22 @@ interface MediaDao {
         clearPlaylists()
         upsertPlaylists(items)
         clearOrphanedPlaylistSongs()
+    }
+
+    /** The list endpoint may omit artwork already supplied by a detail response. */
+    @Transaction
+    suspend fun replacePlaylistsIfChanged(items: List<PlaylistEntity>): Boolean {
+        val current = allPlaylists().associateBy(PlaylistEntity::id)
+        val merged = items.map { incoming ->
+            incoming.copy(coverArtId = incoming.coverArtId?.takeIf(String::isNotBlank)
+                ?: current[incoming.id]?.coverArtId)
+        }
+        val unchanged = current.size == merged.size && merged.all { incoming ->
+            current[incoming.id]?.copy(updatedAt = incoming.updatedAt) == incoming
+        }
+        if (unchanged) return false
+        replacePlaylists(merged)
+        return true
     }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

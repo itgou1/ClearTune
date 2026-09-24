@@ -35,6 +35,31 @@ data class SubsonicResponseDto(
     val lyrics: PlainLyricsDto? = null,
     val song: SongDto? = null,
     val scanStatus: ScanStatusDto? = null,
+    val shares: SharesDto? = null,
+)
+
+@Serializable
+data class SharesDto(val share: List<ShareDto> = emptyList())
+
+@Serializable
+data class ShareDto(
+    val id: String,
+    val url: String = "",
+    val description: String = "",
+    val username: String = "",
+    val created: String? = null,
+    val expires: String? = null,
+    val visitCount: Int = 0,
+    val entry: List<ShareEntryDto> = emptyList(),
+)
+
+@Serializable
+data class ShareEntryDto(
+    val id: String,
+    val title: String = "",
+    val album: String = "",
+    val artist: String = "",
+    val coverArt: String? = null,
 )
 
 @Serializable

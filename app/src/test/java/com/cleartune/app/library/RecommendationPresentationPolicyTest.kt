@@ -21,9 +21,9 @@ class RecommendationPresentationPolicyTest {
             librarySongCount = 60,
         )
 
-        assertEquals("long-absent", surfaces.rediscovery?.id)
+        assertEquals("random", surfaces.random?.id)
         assertEquals("frequent", surfaces.frequent?.id)
-        assertEquals(listOf("from-favorites", "new-taste", "random"), surfaces.discovery.map { it.id })
+        assertEquals(listOf("from-favorites", "new-taste", "long-absent"), surfaces.discovery.map { it.id })
     }
 
     @Test
@@ -33,7 +33,7 @@ class RecommendationPresentationPolicyTest {
             librarySongCount = 8,
         )
 
-        assertEquals("random", surfaces.rediscovery?.id)
+        assertEquals("random", surfaces.random?.id)
         assertNull(surfaces.frequent)
         assertEquals(emptyList<RecommendationShelf>(), surfaces.discovery)
     }

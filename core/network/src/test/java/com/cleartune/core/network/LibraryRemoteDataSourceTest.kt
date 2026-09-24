@@ -11,6 +11,80 @@ import org.junit.Test
 
 class LibraryRemoteDataSourceTest {
     @Test
+    fun shareLifecycleUsesFormPostsAndParsesServerLinks() = runBlocking {
+        val bodies = mutableMapOf<String, String>()
+        val server = HttpServer.create(InetSocketAddress(0), 0).apply {
+            createContext("/rest/createShare.view") { exchange ->
+                assertEquals("POST", exchange.requestMethod)
+                assertTrue(exchange.requestURI.rawQuery.isNullOrBlank())
+                bodies["create"] = exchange.requestBody.bufferedReader().readText()
+                exchange.respond("""{"subsonic-response":{"status":"ok","version":"1.16.1","shares":{"share":[{"id":"share-1","url":"https://music.example.com/share/abc","description":"推荐听","username":"alice","expires":"2026-10-01T00:00:00Z","entry":[{"id":"song-1","title":"第一首"}]}]}}}""")
+            }
+            createContext("/rest/getShares.view") { exchange ->
+                exchange.respond("""{"subsonic-response":{"status":"ok","version":"1.16.1","shares":{"share":[{"id":"share-1","url":"https://music.example.com/share/abc","username":"alice","visitCount":3}]}}}""")
+            }
+            createContext("/rest/updateShare.view") { exchange ->
+                assertEquals("POST", exchange.requestMethod)
+                bodies["update"] = exchange.requestBody.bufferedReader().readText()
+                exchange.respond("""{"subsonic-response":{"status":"ok","version":"1.16.1"}}""")
+            }
+            createContext("/rest/deleteShare.view") { exchange ->
+                assertEquals("POST", exchange.requestMethod)
+                bodies["delete"] = exchange.requestBody.bufferedReader().readText()
+                exchange.respond("""{"subsonic-response":{"status":"ok","version":"1.16.1"}}""")
+            }
+            start()
+        }
+        try {
+            val remote = LibraryRemoteDataSource(OpenSubsonicApiFactory().authorized(
+                ServerCredentials("http://127.0.0.1:${server.address.port}", "alice", "secret", true),
+            ))
+            val created = remote.createShare(listOf("song-1", "song-2"), "推荐听", 1_800_000_000_000L) as RemoteResult.Success
+            assertEquals("https://music.example.com/share/abc", created.value.url)
+            assertEquals("song-1", created.value.entry.single().id)
+            assertEquals(3, (remote.shares() as RemoteResult.Success).value.single().visitCount)
+            assertTrue(remote.updateShare("share-1", "新说明", 1_810_000_000_000L) is RemoteResult.Success)
+            assertTrue(remote.deleteShare("share-1") is RemoteResult.Success)
+            assertTrue("id=song-1&id=song-2" in bodies.getValue("create"))
+            assertTrue("description=" in bodies.getValue("update"))
+            assertTrue("id=share-1" in bodies.getValue("delete"))
+            assertTrue("secret" !in bodies.getValue("create"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun readsOneSongForPlaybackMetadataVerification() = runBlocking {
+        var request = ""
+        val server = HttpServer.create(InetSocketAddress(0), 0).apply {
+            createContext("/rest/getSong.view") { exchange ->
+                request = exchange.requestURI.toString()
+                exchange.respond(
+                    """{"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"song-1","title":"新标题","artist":"歌手","album":"专辑","duration":245,"year":2026,"genre":"流行"}}}""",
+                )
+            }
+            start()
+        }
+        try {
+            val remote = LibraryRemoteDataSource(
+                OpenSubsonicApiFactory().authorized(
+                    ServerCredentials("http://127.0.0.1:${server.address.port}", "user", "password", true),
+                ),
+            )
+
+            val result = remote.song("song-1") as RemoteResult.Success
+
+            assertEquals("新标题", result.value.title)
+            assertEquals("专辑", result.value.albumName)
+            assertTrue("id=song-1" in request)
+            assertTrue("p=" !in request && "t=" in request && "s=" in request)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun mapsNumericMusicFolderIdsUsedBySubsonicServers() = runBlocking {
         val server = HttpServer.create(InetSocketAddress(0), 0).apply {
             createContext("/rest/getMusicFolders.view") { exchange ->

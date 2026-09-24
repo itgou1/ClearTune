@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import java.security.MessageDigest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -198,6 +199,22 @@ class AppPreferences(private val context: Context) {
         it[lastLibrarySyncKey(accountKey)] = value.coerceAtLeast(0L)
     }
 
+    suspend fun songMetadataVerificationEpochMs(accountKey: String, songId: String): Long =
+        context.appSettingsDataStore.data.first()[songMetadataVerifiedKey(accountKey, songId)] ?: 0L
+
+    suspend fun songMetadataAttemptEpochMs(accountKey: String, songId: String): Long =
+        context.appSettingsDataStore.data.first()[songMetadataAttemptKey(accountKey, songId)] ?: 0L
+
+    suspend fun markSongMetadataAttempt(accountKey: String, songId: String, value: Long) = edit {
+        it[songMetadataAttemptKey(accountKey, songId)] = value.coerceAtLeast(0L)
+    }
+
+    suspend fun markSongMetadataVerified(accountKey: String, songId: String, value: Long) = edit {
+        val checkedAt = value.coerceAtLeast(0L)
+        it[songMetadataAttemptKey(accountKey, songId)] = checkedAt
+        it[songMetadataVerifiedKey(accountKey, songId)] = checkedAt
+    }
+
     suspend fun setFavoriteSongSort(value: String) = edit {
         it[FAVORITE_SONG_SORT] = value
     }
@@ -222,6 +239,12 @@ class AppPreferences(private val context: Context) {
         val IGNORED_UPDATE_VERSION = stringPreferencesKey("ignored_update_version")
         fun recentSearchesKey(accountKey: String) = stringPreferencesKey("account_${accountKey}_recent_searches")
         fun lastLibrarySyncKey(accountKey: String) = longPreferencesKey("account_${accountKey}_last_library_sync")
+        fun songMetadataAttemptKey(accountKey: String, songId: String) =
+            longPreferencesKey("account_${accountKey}_song_${songStorageKey(songId)}_metadata_attempt")
+        fun songMetadataVerifiedKey(accountKey: String, songId: String) =
+            longPreferencesKey("account_${accountKey}_song_${songStorageKey(songId)}_metadata_verified")
+        fun songStorageKey(songId: String): String = MessageDigest.getInstance("SHA-256")
+            .digest(songId.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
         fun lastPlaybackMobileQualityKey(accountKey: String) =
             booleanPreferencesKey("account_${accountKey}_last_playback_mobile_quality")
         val FAVORITE_SONG_SORT = stringPreferencesKey("favorite_song_sort")

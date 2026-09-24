@@ -61,6 +61,19 @@ sealed interface RemoteResult<out T> {
 class LibraryRemoteDataSource(
     private val authorized: AuthorizedOpenSubsonicApi,
 ) {
+    suspend fun shares() = execute { api.getShares(authQuery()) }
+        .map { it.shares?.share.orEmpty() }
+
+    suspend fun createShare(ids: List<String>, description: String?, expires: Long) =
+        execute { api.createShare(ids, description, expires, authQuery()) }
+            .map { response -> requireNotNull(response.shares?.share?.singleOrNull()) }
+
+    suspend fun updateShare(id: String, description: String, expires: Long) =
+        execute { api.updateShare(id, description, expires, authQuery()) }.map { Unit }
+
+    suspend fun deleteShare(id: String) =
+        execute { api.deleteShare(id, authQuery()) }.map { Unit }
+
     suspend fun albums(type: String = "alphabeticalByName", size: Int = 500, offset: Int = 0) =
         execute { api.getAlbumList2(type, size, offset, authQuery()) }
             .map { it.albumList2?.album.orEmpty().map(AlbumDto::toModel) }
@@ -161,6 +174,9 @@ class LibraryRemoteDataSource(
             songCount = size,
             songOffset = offset,
         ).map(SearchResults::songs)
+
+    suspend fun song(id: String) = execute { api.getSong(id, authQuery()) }
+        .map { response -> requireNotNull(response.song).toModel() }
 
     suspend fun genres() = execute { api.getGenres(authQuery()) }
         .map { it.genres?.genre.orEmpty().map(GenreDto::value) }

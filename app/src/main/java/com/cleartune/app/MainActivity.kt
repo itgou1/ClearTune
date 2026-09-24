@@ -114,6 +114,7 @@ class MainActivity : ComponentActivity() {
                             val playerViewModel = accountModels[PlayerViewModel::class.java]
                             val downloadViewModel = accountModels[DownloadViewModel::class.java]
                             val musicTagViewModel = accountModels[com.cleartune.app.metadata.MusicTagViewModel::class.java]
+                            val shareViewModel = accountModels[com.cleartune.app.share.ShareViewModel::class.java]
                             activePlayerViewModel = playerViewModel
                             ConnectedScreen(
                                 profile = current.profile,
@@ -123,6 +124,7 @@ class MainActivity : ComponentActivity() {
                                 downloadViewModel = downloadViewModel,
                                 settingsViewModel = settingsViewModel,
                                 musicTagViewModel = musicTagViewModel,
+                                shareViewModel = shareViewModel,
                                 onLogout = {
                                     authViewModel.logout {
                                         try {
@@ -343,6 +345,7 @@ private fun ConnectedScreen(
     downloadViewModel: DownloadViewModel,
     settingsViewModel: SettingsViewModel,
     musicTagViewModel: com.cleartune.app.metadata.MusicTagViewModel,
+    shareViewModel: com.cleartune.app.share.ShareViewModel,
     onLogout: () -> Unit,
 ) {
     NotificationPermissionEffect()
@@ -357,6 +360,7 @@ private fun ConnectedScreen(
             playerViewModel,
             downloadViewModel,
             settingsViewModel,
+            shareViewModel,
             onLogout,
         )
     }

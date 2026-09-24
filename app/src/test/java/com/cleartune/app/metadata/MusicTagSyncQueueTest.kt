@@ -44,13 +44,25 @@ class MusicTagSyncQueueTest {
         }, { true }, { _, success -> results += success })
         assertTrue(queue.start(first))
         assertFalse(queue.states.value.getValue(first.id).running)
+        val firstAttempt = queue.states.value.getValue(first.id).attempt
         assertEquals(listOf(false), results)
         assertTrue(queue.start(first))
         assertTrue(queue.states.value.getValue(first.id).running)
+        assertTrue(queue.states.value.getValue(first.id).attempt > firstAttempt)
         scope.cancel()
         assertFalse(queue.states.value.getValue(first.id).running)
         assertEquals(2, calls)
         assertEquals(listOf(false), results)
+    }
+
+    @Test fun dismissingSyncNoticeDoesNotDiscardWorkAndAnewAttemptCanBeShown() {
+        val running = MusicTagSyncStatus(first, running = true, attempt = 1)
+        val dismissed = mapOf(first.id to (running.attempt to true))
+        assertEquals(running, visibleSyncNotice(listOf(running), emptyMap()))
+        assertEquals(null, visibleSyncNotice(listOf(running), dismissed))
+        assertEquals(running.copy(running = false), visibleSyncNotice(listOf(running.copy(running = false)), dismissed))
+        val retry = running.copy(attempt = 2)
+        assertEquals(retry, visibleSyncNotice(listOf(retry), dismissed))
     }
 
     @Test fun revokedAccountDoesNotPublishCompletionOrStartQueuedSong() = runBlocking {

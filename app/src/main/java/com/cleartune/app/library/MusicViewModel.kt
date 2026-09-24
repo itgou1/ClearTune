@@ -1,5 +1,8 @@
 package com.cleartune.app.library
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cleartune.app.withResolvedArtwork
@@ -16,9 +19,11 @@ import com.cleartune.core.datastore.AppPreferences
 import com.cleartune.core.network.RemoteResult
 import com.cleartune.core.network.SearchResults
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -148,6 +153,7 @@ class MusicViewModel @Inject constructor(
     private val repository: MusicRepository,
     private val appPreferences: AppPreferences,
     session: com.cleartune.app.auth.AccountSession,
+    @param:ApplicationContext private val context: Context,
 ) : ViewModel() {
     private val accountKey = session.accountKey
     private val accountSettings = appPreferences.accountLibrarySettings(accountKey)
@@ -157,6 +163,9 @@ class MusicViewModel @Inject constructor(
     private val recommendationSeed = MutableStateFlow(dailyRecommendationSeed())
     private val recommendationExclusions = MutableStateFlow<Set<String>>(emptySet())
     private val recommendationEngine = RecommendationEngine()
+    private var fullRefreshJob: Job? = null
+    private var genresRefreshedAt = 0L
+    private var foldersRefreshedAt = 0L
 
     private val librarySnapshot = combine(
         repository.albums,
@@ -226,7 +235,26 @@ class MusicViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
-        refresh()
+        viewModelScope.launch {
+            val lastSync = accountSettings.first().lastLibrarySyncEpochMs
+            val hasLocalLibrary = repository.hasLocalLibraryData()
+            when {
+                lastSync <= 0L -> requestFullRefresh(reportErrors = !hasLocalLibrary)
+                shouldReconcileLibrary(lastSync) -> {
+                    delay(AUTOMATIC_SYNC_START_DELAY_MS)
+                    if (canRunAutomaticFullSync() &&
+                        !com.cleartune.core.player.PlaybackService.isPlaybackActive()
+                    ) {
+                        requestFullRefresh(reportErrors = false)
+                    }
+                }
+            }
+        }
+        viewModelScope.launch {
+            repository.songs.collect { songs ->
+                _genres.value = normalizeGenreLabels(_genres.value + songs.map(Song::genre))
+            }
+        }
         viewModelScope.launch {
             merge(
                 searchQuery.debounce(SEARCH_INPUT_DEBOUNCE_MS)
@@ -240,47 +268,95 @@ class MusicViewModel @Inject constructor(
     }
 
     fun refresh() {
-        viewModelScope.launch {
-            refreshing.value = true
-            libraryError.value = null
+        requestFullRefresh(reportErrors = true)
+    }
+
+    private fun requestFullRefresh(reportErrors: Boolean) {
+        if (fullRefreshJob?.isActive == true) {
+            if (reportErrors) {
+                refreshing.value = true
+                libraryError.value = null
+            }
+            return
+        }
+        fullRefreshJob = viewModelScope.launch {
+            if (reportErrors) refreshing.value = true
+            if (reportErrors) libraryError.value = null
             try {
                 syncStage.value = LibrarySyncStage.LIBRARY
                 val refreshError = repository.refreshLibrary()
-                libraryError.value = refreshError?.userMessage
+                if (reportErrors) libraryError.value = refreshError?.userMessage
                 if (refreshError == null) {
                     appPreferences.setLastLibrarySyncEpochMs(accountKey, System.currentTimeMillis())
                 }
 
-                syncStage.value = LibrarySyncStage.GENRES
-                when (val result = repository.genres()) {
-                    is RemoteResult.Success -> _genres.value = normalizeGenreLabels(
-                        result.value + libraryState.value.songs.map(Song::genre),
-                    )
-                    is RemoteResult.Failure -> Unit
-                }
-
-                syncStage.value = LibrarySyncStage.FOLDERS
-                _folderState.update {
-                    it.copy(loading = true, errorMessage = null, physicalBrowseUnsupported = false)
-                }
-                when (val result = repository.musicFolders()) {
-                    is RemoteResult.Success -> _folderState.update {
-                        it.copy(
-                            roots = result.value,
-                            loading = false,
-                            errorMessage = null,
-                            physicalBrowseUnsupported = false,
-                        )
-                    }
-                    is RemoteResult.Failure -> _folderState.update {
-                        it.copy(loading = false, errorMessage = result.error.userMessage)
-                    }
-                }
+                refreshGenresNow(showStage = true)
+                refreshFoldersNow(showStage = true)
             } finally {
                 syncStage.value = LibrarySyncStage.IDLE
                 refreshing.value = false
             }
         }
+    }
+
+    fun refreshPlaylists() {
+        viewModelScope.launch { repository.refreshPlaylists() }
+    }
+
+    fun refreshFavorites() {
+        viewModelScope.launch { repository.refreshFavorites() }
+    }
+
+    fun refreshGenres() {
+        val now = System.currentTimeMillis()
+        if (_genres.value.isNotEmpty() && now - genresRefreshedAt < DETAIL_REFRESH_MAX_AGE_MS) return
+        viewModelScope.launch { refreshGenresNow(showStage = false) }
+    }
+
+    fun refreshFolders() {
+        val now = System.currentTimeMillis()
+        if (_folderState.value.roots.isNotEmpty() && now - foldersRefreshedAt < DETAIL_REFRESH_MAX_AGE_MS) return
+        viewModelScope.launch { refreshFoldersNow(showStage = false) }
+    }
+
+    private suspend fun refreshGenresNow(showStage: Boolean) {
+        if (showStage) syncStage.value = LibrarySyncStage.GENRES
+        when (val result = repository.genres()) {
+            is RemoteResult.Success -> {
+                _genres.value = normalizeGenreLabels(
+                    result.value + libraryState.value.songs.map(Song::genre),
+                )
+                genresRefreshedAt = System.currentTimeMillis()
+            }
+            is RemoteResult.Failure -> Unit
+        }
+    }
+
+    private suspend fun refreshFoldersNow(showStage: Boolean) {
+        if (showStage) syncStage.value = LibrarySyncStage.FOLDERS
+        _folderState.update {
+            it.copy(loading = true, errorMessage = null, physicalBrowseUnsupported = false)
+        }
+        when (val result = repository.musicFolders()) {
+            is RemoteResult.Success -> _folderState.update {
+                foldersRefreshedAt = System.currentTimeMillis()
+                it.copy(
+                    roots = result.value,
+                    loading = false,
+                    errorMessage = null,
+                    physicalBrowseUnsupported = false,
+                )
+            }
+            is RemoteResult.Failure -> _folderState.update {
+                it.copy(loading = false, errorMessage = result.error.userMessage)
+            }
+        }
+    }
+
+    private fun canRunAutomaticFullSync(): Boolean {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
 
     fun updateSearchQuery(query: String) {
@@ -448,7 +524,10 @@ class MusicViewModel @Inject constructor(
         lyricsJob?.cancel()
         lyricsJob = null
         refreshLyrics(song)
-        refresh()
+        val songs = libraryState.value.songs
+        if (songs.isNotEmpty()) _genres.value = normalizeGenreLabels(
+            songs.map { if (it.id == song.id) song.genre else it.genre },
+        )
     }
 
     private fun requestLyrics(song: Song, forceRefresh: Boolean) {
@@ -487,9 +566,7 @@ class MusicViewModel @Inject constructor(
                         loading = false,
                         refreshing = false,
                         message = if (failed && current.lyrics?.lines.isNullOrEmpty()) "暂时无法获取歌词" else current.message,
-                        refreshMessage = if (!forceRefresh) null else if (failed) {
-                            if (current.lyrics?.lines.isNullOrEmpty()) "刷新失败，请联网后重试" else "刷新失败，已保留本地歌词"
-                        } else if (current.lyrics?.lines.isNullOrEmpty()) "服务器暂无歌词" else "歌词已刷新",
+                        refreshMessage = lyricsRefreshFeedback(forceRefresh, failed, previous, current.lyrics),
                     )
                 }
             }
@@ -599,7 +676,6 @@ class MusicViewModel @Inject constructor(
 
     internal fun reportMissingDetail() {
         _actionMessage.value = "内容已从服务器移除，本地缓存已自动清理"
-        refresh()
     }
 
     suspend fun coverArtUrl(id: String, size: Int = 512): String? = repository.coverArtUrl(id, size)
@@ -616,7 +692,7 @@ class MusicViewModel @Inject constructor(
     private suspend fun invalidateDetail(route: String) {
         _actionMessage.value = "内容已从服务器移除，本地缓存已自动清理"
         _detailInvalidations.emit(route)
-        refresh()
+        if (route.startsWith("playlist/")) repository.refreshPlaylists()
     }
 
     private suspend fun performSearch(query: String, forceRemote: Boolean) {
@@ -720,6 +796,8 @@ class MusicViewModel @Inject constructor(
         const val SEARCH_SONG_PAGE_SIZE = 50
     }
 }
+
+private const val AUTOMATIC_SYNC_START_DELAY_MS = 3_000L
 
 private fun SearchResults.withResolvedSearchArtwork(knownSongs: List<Song>): SearchResults {
     val resolvedAlbums = albums.withResolvedArtwork(knownSongs)

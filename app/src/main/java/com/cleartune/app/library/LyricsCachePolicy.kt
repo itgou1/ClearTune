@@ -8,6 +8,13 @@ import kotlinx.coroutines.flow.flow
 
 internal const val LYRICS_MAX_AGE_MS = 24L * 60 * 60 * 1_000
 
+internal fun lyricsRefreshFeedback(forceRefresh: Boolean, failed: Boolean, before: Lyrics?, after: Lyrics?): String? {
+    if (!forceRefresh) return null
+    if (failed) return if (after?.lines.isNullOrEmpty()) "刷新失败，请联网后重试" else "刷新失败，已保留本地歌词"
+    if (after?.lines.isNullOrEmpty()) return "服务器暂无歌词"
+    return if (before == after) "Navidrome 返回的歌词未变化" else "已从 Navidrome 重新读取歌词"
+}
+
 /** Emit saved lyrics immediately; an empty result must never permanently suppress a retry. */
 internal fun lyricsResults(
     cached: Lyrics?,

@@ -218,16 +218,17 @@ class MusicTagRepository @Inject constructor(
         val api = apiFactory.authorized(credentials)
         val library = TagLibraryClient(api)
         val scanStarted = try { library.startScan() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { false }
-        if (MusicTagField.COVER in pending.changes && !scanStarted) return false
-        repeat(6) { attempt ->
+        if (pending.changes.keys.any { it == MusicTagField.COVER || it == MusicTagField.LYRICS } && !scanStarted) return false
+        // Large libraries can take longer than the old 10-second scan window.
+        repeat(60) { attempt ->
             if (attempt > 0) delay(2_000)
+            val scanning = try { library.scanning() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+            if (scanning == true || (MusicTagField.COVER in pending.changes && (scanning != false || attempt == 0))) return@repeat
             val current = remoteSong(song.id)
             val expected = pending.changes.filterKeys { it in setOf(MusicTagField.TITLE, MusicTagField.ARTIST, MusicTagField.ALBUM, MusicTagField.YEAR, MusicTagField.GENRE) }
             val values = mapOf(MusicTagField.TITLE to current.title, MusicTagField.ARTIST to current.artist,
                 MusicTagField.ALBUM to current.album, MusicTagField.YEAR to current.year?.toString(), MusicTagField.GENRE to current.genre)
-            val scanning = try { library.scanning() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
-            if (expected.all { (field, value) -> values[field]?.trim() == value.trim() } && scanning != true &&
-                (MusicTagField.COVER !in pending.changes || scanning == false)) {
+            if (expected.all { (field, value) -> values[field]?.trim() == value.trim() }) {
                 if (MusicTagField.LYRICS in pending.changes) {
                     val result = LibraryRemoteDataSource(api).lyrics(song.copy(title = current.title, artistName = current.artist))
                     // Lyrics use another endpoint and may update later than getSong.
@@ -236,7 +237,11 @@ class MusicTagRepository @Inject constructor(
                         normalizedTagLyrics(pending.changes.getValue(MusicTagField.LYRICS))) return@repeat
                 }
                 checkSession()
-                if (music.refreshLibrary() != null) return false
+                val previous = latestSong(song.id) ?: song
+                music.refreshTagSong(previous, previous.copy(title = current.title,
+                    artistId = current.artistId, artistName = current.artist.ifBlank { "未知艺术家" },
+                    albumId = current.albumId, albumName = current.album.ifBlank { "未知专辑" },
+                    year = current.year, genre = current.genre, coverArtId = current.coverArt))
                 session.database.lyricsDao().invalidate(credentials.baseUrl.trimEnd('/'), credentials.username, song.id)
                 ArtworkCache.invalidateAfterTagEdit(context, session.accountKey, setOfNotNull(song.coverArtId, current.coverArt))
                 rememberWrite(song.id, null)

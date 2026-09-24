@@ -4,6 +4,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.ParcelFileDescriptor
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.hasClickAction
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.hasText
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import com.cleartune.app.MainActivity
+import com.cleartune.app.R
 import com.cleartune.app.auth.AccountViewModels
 import com.cleartune.app.auth.AuthUiState
 import com.cleartune.app.auth.AuthViewModel
@@ -96,6 +98,61 @@ class PlaybackAcceptanceTest {
         awaitPlaying()
     }
 
+    @Test fun selectingTheCurrentSongDoesNotRestartOrReplaceItsQueue() = connected { _ ->
+        val songs = music.libraryState.value.songs
+        instrumentation.runOnMainSync { player.play(songs, 1) }
+        awaitPlaying(songs[1].id)
+        await("playback progress") { player.state.value.positionMs > 1_000 }
+        val before = player.state.value
+        instrumentation.runOnMainSync { player.play(listOf(songs[1], songs[0]), 0) }
+        await("playback continues") { player.state.value.positionMs > before.positionMs + 500 }
+        assertEquals(before.queue.map { it.id }, player.state.value.queue.map { it.id })
+        assertEquals(before.currentIndex, player.state.value.currentIndex)
+
+        instrumentation.runOnMainSync { player.togglePlayPause() }
+        await("paused") { player.state.value.status == PlaybackStatus.PAUSED }
+        val pausedPosition = player.state.value.positionMs
+        instrumentation.runOnMainSync { player.play(listOf(songs[1]), 0) }
+        awaitPlaying(songs[1].id)
+        // The UI position is sampled periodically and may lead the exact pause point slightly.
+        assertTrue("Paused at $pausedPosition ms, resumed at ${player.state.value.positionMs} ms",
+            pausedPosition > 1_000 && player.state.value.positionMs >= pausedPosition - 500)
+        assertEquals(before.queue.map { it.id }, player.state.value.queue.map { it.id })
+    }
+
+    @Test fun lyricsModeSurvivesNextTrack() = connected { _ ->
+        val songs = music.libraryState.value.songs
+        instrumentation.runOnMainSync { player.play(songs) }
+        awaitPlaying("accept-0")
+
+        ui.onNodeWithText(context.getString(R.string.now_playing_compact, songs[0].title)).performClick()
+        ui.onNodeWithContentDescription(context.getString(R.string.lyrics)).performClick()
+        ui.onNodeWithText(context.getString(R.string.lyrics)).assertExists()
+
+        ui.onNodeWithContentDescription(context.getString(R.string.next_song)).performClick()
+        awaitPlaying("accept-1")
+        ui.onNodeWithText(context.getString(R.string.lyrics)).assertExists()
+    }
+
+    @Test fun playNextOverridesEveryPlaybackModeOnce() = connected { _ ->
+        val songs = music.libraryState.value.songs
+        for (mode in PlaybackMode.entries) {
+            instrumentation.runOnMainSync { player.play(songs) }
+            awaitPlaying("accept-0")
+            instrumentation.runOnMainSync {
+                player.setMode(mode)
+                player.playNext(songs[2])
+            }
+            await("forced next is physically queued in $mode") {
+                val state = player.state.value
+                state.queue.getOrNull(state.currentIndex + 1)?.id == "accept-2"
+            }
+            instrumentation.runOnMainSync { player.next() }
+            awaitPlaying("accept-2")
+            assertEquals(mode, player.state.value.mode)
+        }
+    }
+
     @Test fun externalPreviousSkipsAfterFiveSecondsAndRepeatedly() = connected { _ ->
         instrumentation.runOnMainSync {
             player.play(music.libraryState.value.songs, 2)
@@ -149,7 +206,8 @@ class PlaybackAcceptanceTest {
             awaitPlaying("accept-0")
             instrumentation.runOnMainSync { player.togglePlayPause(); player.seekTo(5_000) }
             await("paused at five seconds") {
-                player.state.value.status == PlaybackStatus.PAUSED && player.state.value.positionMs >= 5_000
+                // Wait for the seek to settle, rather than accepting the last playing snapshot.
+                player.state.value.status == PlaybackStatus.PAUSED && player.state.value.positionMs == 5_000L
             }
             val position = player.state.value.positionMs
             repeat(3) { shell("cmd media_session dispatch previous") }

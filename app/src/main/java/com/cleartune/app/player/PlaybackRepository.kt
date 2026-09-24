@@ -6,6 +6,8 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import com.cleartune.app.displayableArtworkId
 import com.cleartune.app.auth.AccountSession
+import com.cleartune.app.library.searchDocument
+import com.cleartune.app.library.shouldVerifyPlayedSong
 import com.cleartune.core.database.PendingMutationEntity
 import com.cleartune.core.database.PlayEventEntity
 import com.cleartune.core.database.QueueItemEntity
@@ -21,9 +23,11 @@ import com.cleartune.core.network.RemoteResult
 import com.cleartune.core.player.PlayerUiState
 import java.util.UUID
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CancellationException
 
 data class RestoredQueue(
     val songs: List<Song>,
@@ -48,6 +52,7 @@ class PlaybackRepository @Inject constructor(
     private val queueDao = database.queueDao()
     private val mediaDao = database.mediaDao()
     private val activityDao = database.activityDao()
+    private val refreshingSongIds = ConcurrentHashMap.newKeySet<String>()
 
     suspend fun urls(songs: List<Song>): PlaybackUrls? {
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
@@ -189,6 +194,42 @@ class PlaybackRepository @Inject constructor(
             PlayEventEntity(songId = songId, type = PlayEventType.STARTED.name, occurredAt = now),
         )
         remote()?.scrobble(songId, now, submission = false)
+    }
+
+    /** A best-effort metadata check that is never part of resolving or reading the audio source. */
+    suspend fun refreshPlayedSong(songId: String): Song? {
+        if (!session.active || !refreshingSongIds.add(songId)) return null
+        return try {
+            val connectivity = context.getSystemService(ConnectivityManager::class.java)
+            if (connectivity.activeNetwork == null) return null
+            val now = System.currentTimeMillis()
+            val lastVerified = preferences.songMetadataVerificationEpochMs(session.accountKey, songId)
+            val lastAttempt = preferences.songMetadataAttemptEpochMs(session.accountKey, songId)
+            if (!shouldVerifyPlayedSong(lastVerified, lastAttempt, now)) return null
+            preferences.markSongMetadataAttempt(session.accountKey, songId, now)
+            val result = remote()?.song(songId) ?: return null
+            if (result !is RemoteResult.Success) return null
+            val local = mediaDao.song(songId)?.toModel()
+            val fresh = result.value.let { remoteSong ->
+                if (local == null) remoteSong else remoteSong.copy(
+                    playCount = maxOf(local.playCount, remoteSong.playCount),
+                    lastPlayedAt = listOfNotNull(local.lastPlayedAt, remoteSong.lastPlayedAt).maxOrNull(),
+                    starredAt = local.starredAt,
+                )
+            }
+            if (fresh != local) {
+                mediaDao.upsertSongs(listOf(fresh.toEntity(now)))
+                mediaDao.upsertSearchDocuments(listOf(searchDocument(fresh)))
+            }
+            preferences.markSongMetadataVerified(session.accountKey, songId, now)
+            fresh.takeIf { it != local }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        } finally {
+            refreshingSongIds.remove(songId)
+        }
     }
 
     suspend fun submitScrobble(songId: String) {

@@ -54,7 +54,7 @@ class PlaylistCoverLoadingTest {
             ServerProfile(url, username, "test", "1", "1.16.1", true), "test", database)
         val repository = MusicRepository(session, OpenSubsonicApiFactory())
         lateinit var viewModel: MusicViewModel
-        ui.runOnIdle { viewModel = MusicViewModel(repository, AppPreferences(context), session) }
+        ui.runOnIdle { viewModel = MusicViewModel(repository, AppPreferences(context), session, context) }
         try {
             if (cached) runBlocking {
                 val key = artworkCacheKey(account, "cover", 192)

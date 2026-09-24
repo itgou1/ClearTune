@@ -18,6 +18,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BatchPlaylistRepositoryTest {
+    @Test fun openingPlaylistReusesRecentListRefreshAndStillLoadsMembers() = runBlocking {
+        Fixture().use { fixture ->
+            assertNull(fixture.repository.refreshPlaylists())
+            assertNull(fixture.repository.openPlaylist("p"))
+            assertEquals(1, fixture.requests.count { it.path?.contains("getPlaylists") == true })
+            assertEquals(1, fixture.requests.count { it.path?.contains("getPlaylist.view") == true })
+            assertEquals(listOf("existing"), fixture.repository.playlistSongs("p").first().map(Song::id))
+        }
+    }
+
     @Test fun playlistDetailWithoutArtworkPreservesListingArtworkAndUpdatesMetadata() = runBlocking {
         Fixture().use { fixture ->
             fixture.seedPlaylist()
@@ -105,6 +115,7 @@ class BatchPlaylistRepositoryTest {
         private val username = "batch-${UUID.randomUUID()}"
         private val key = accountStorageKey(baseUrl, username)
         private val database = DatabaseFactory.create(context, key)
+        val requests = CopyOnWriteArrayList<Uri>()
         val mutations = CopyOnWriteArrayList<Uri>()
         @Volatile var failWrite = false
         @Volatile var failRefresh = false
@@ -125,6 +136,7 @@ class BatchPlaylistRepositoryTest {
                     val request = input.readLine() ?: return@use
                     while (!input.readLine().isNullOrEmpty()) { /* Consume HTTP headers. */ }
                     val uri = Uri.parse("http://localhost" + request.split(" ")[1])
+                    requests += uri
                     val write = uri.path?.contains("updatePlaylist") == true || uri.path?.contains("createPlaylist") == true
                     if (write) mutations += uri
                     val failed = write && failWrite || !write && failRefresh && mutations.isNotEmpty()

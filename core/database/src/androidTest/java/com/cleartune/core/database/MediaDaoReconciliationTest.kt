@@ -62,6 +62,41 @@ class MediaDaoReconciliationTest {
         assertEquals(listOf("kept-song"), dao.observePlaylistSongs("playlist-1").first().map(SongEntity::id))
     }
 
+    @Test
+    fun unchangedPlaylistListingKeepsCachedRowAndArtwork() = runBlocking {
+        dao.upsertPlaylists(listOf(playlist("playlist-1").copy(coverArtId = "detail-cover")))
+        val sameListing = playlist("playlist-1").copy(updatedAt = 99)
+
+        assertEquals(false, dao.replacePlaylistsIfChanged(listOf(sameListing)))
+        assertEquals(1L, dao.playlist("playlist-1")!!.updatedAt)
+        assertEquals("detail-cover", dao.playlist("playlist-1")!!.coverArtId)
+
+        assertEquals(true, dao.replacePlaylistsIfChanged(listOf(sameListing.copy(name = "Renamed"))))
+        assertEquals("Renamed", dao.playlist("playlist-1")!!.name)
+        assertEquals("detail-cover", dao.playlist("playlist-1")!!.coverArtId)
+    }
+
+    @Test
+    fun favoriteSnapshotSkipsUnchangedAndPreservesLocalPlaybackHistory() = runBlocking {
+        val cached = song("song-1", "album-1", "artist-1").copy(
+            starredAt = 100,
+            playCount = 12,
+            lastPlayedAt = 200,
+        )
+        dao.upsertSongs(listOf(cached))
+        val incoming = cached.copy(playCount = 2, lastPlayedAt = 100, updatedAt = 99)
+
+        assertEquals(false, dao.replaceFavoritesIfChanged(listOf(incoming), emptyList(), emptyList(), 99))
+        assertEquals(1L, dao.song("song-1")!!.updatedAt)
+
+        assertEquals(true, dao.replaceFavoritesIfChanged(emptyList(), emptyList(), emptyList(), 300))
+        assertEquals(null, dao.song("song-1")!!.starredAt)
+        assertEquals(true, dao.replaceFavoritesIfChanged(listOf(incoming), emptyList(), emptyList(), 400))
+        assertEquals(12L, dao.song("song-1")!!.playCount)
+        assertEquals(200L, dao.song("song-1")!!.lastPlayedAt)
+        assertEquals(100L, dao.song("song-1")!!.starredAt)
+    }
+
     private fun album(id: String) = AlbumEntity(
         id = id,
         name = id,

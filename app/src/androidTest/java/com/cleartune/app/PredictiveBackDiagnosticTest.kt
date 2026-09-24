@@ -80,7 +80,7 @@ class PredictiveBackDiagnosticTest {
         val foregroundSelection = SongBatchSelection()
         var played: List<String> = emptyList()
         var downloaded: List<String> = emptyList()
-        ui.runOnIdle { music = MusicViewModel(MusicRepository(session, OpenSubsonicApiFactory()), AppPreferences(context), session) }
+        ui.runOnIdle { music = MusicViewModel(MusicRepository(session, OpenSubsonicApiFactory()), AppPreferences(context), session, context) }
         val origin = DetailTarget(originKind, if (originKind == DetailKind.ARTIST) "artist-a" else "album-b")
         val target = DetailTarget(destination, if (destination == DetailKind.PLAYLIST) "playlist-a" else "album-a")
         try {
@@ -115,11 +115,12 @@ class PredictiveBackDiagnosticTest {
                             Box(Modifier.fillMaxSize().testTag(item.route)) {
                                 when (kind) {
                                     DetailKind.ALBUM -> AlbumDetailScreen(selection, state, emptyList(), music,
-                                        { nav.popBackStack() }, play, download)
+                                        { nav.popBackStack() }, play, download, {})
                                     DetailKind.ARTIST -> ArtistDetailScreen(selection, state, emptyList(), emptyList(), music,
-                                        { }, { nav.popBackStack() }, play, download)
+                                        { }, { nav.popBackStack() }, play, download, {}, {})
                                     DetailKind.PLAYLIST -> PlaylistDetailScreen(state, music, { nav.popBackStack() },
-                                        play, download, listOf(songA, songB), { _, _ -> }, { _, _ -> }, { _, _ -> })
+                                        play, download, listOf(songA, songB), {}, { _, _ -> }, { _, _ -> }, { _, _ -> },
+                                        playlists = emptyList(), onPlayNext = {})
                                 }
                             }
                         }

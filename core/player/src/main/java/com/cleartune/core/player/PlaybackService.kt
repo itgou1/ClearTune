@@ -11,6 +11,7 @@ import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultDataSource
@@ -50,8 +51,23 @@ class PlaybackService : MediaLibraryService() {
     private var equalizerTransitionJob: Job? = null
     private var replayGainVolume = 1f
     private var equalizerHeadroom = 1f
+    private var forcedNext: ForcedNext? = null
     private val playerListener = object : Player.Listener {
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = applyReplayGain()
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            forcedNext?.let { pending ->
+                if (mediaItem?.mediaId == pending.targetMediaId || mediaItem?.mediaId != pending.sourceMediaId) {
+                    restorePlaybackModeAfterForcedNext()
+                }
+            }
+            applyReplayGain()
+        }
+
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            val targetId = forcedNext?.targetMediaId ?: return
+            if ((0 until player.mediaItemCount).none { player.getMediaItemAt(it).mediaId == targetId }) {
+                restorePlaybackModeAfterForcedNext()
+            }
+        }
 
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) = applyReplayGain()
 
@@ -181,6 +197,62 @@ class PlaybackService : MediaLibraryService() {
         applyOutputVolume()
     }
 
+    private fun forceNext(mediaId: String, item: MediaItem?): Boolean {
+        if (!::player.isInitialized) return false
+        val currentIndex = player.currentMediaItemIndex
+        if (currentIndex !in 0 until player.mediaItemCount) return false
+        val sourceId = player.currentMediaItem?.mediaId ?: return false
+        if (sourceId == mediaId) return false
+
+        val existingIndex = (0 until player.mediaItemCount)
+            .firstOrNull { player.getMediaItemAt(it).mediaId == mediaId }
+        when {
+            existingIndex == null && item == null -> return false
+            existingIndex == null -> player.addMediaItem(currentIndex + 1, item!!)
+            existingIndex != currentIndex + 1 -> {
+                val targetIndex = if (existingIndex < currentIndex) currentIndex else currentIndex + 1
+                player.moveMediaItem(existingIndex, targetIndex)
+            }
+        }
+
+        val pending = forcedNext
+        forcedNext = ForcedNext(
+            sourceMediaId = sourceId,
+            targetMediaId = mediaId,
+            restoreShuffle = pending?.restoreShuffle ?: player.shuffleModeEnabled,
+            restoreRepeatMode = pending?.restoreRepeatMode ?: player.repeatMode,
+        )
+        // Media3 keeps a separate randomized traversal order, and repeat-one prevents
+        // automatic transitions entirely. Use the physical next item for this one hop,
+        // then restore the user's selected mode as soon as the target starts.
+        player.shuffleModeEnabled = false
+        if (player.repeatMode == Player.REPEAT_MODE_ONE) player.repeatMode = Player.REPEAT_MODE_OFF
+        return true
+    }
+
+    private fun applyRequestedPlaybackMode(shuffle: Boolean, repeatMode: Int) {
+        val pending = forcedNext
+        if (pending == null) {
+            player.shuffleModeEnabled = shuffle
+            player.repeatMode = repeatMode
+            return
+        }
+        forcedNext = pending.copy(restoreShuffle = shuffle, restoreRepeatMode = repeatMode)
+        player.shuffleModeEnabled = false
+        player.repeatMode = if (repeatMode == Player.REPEAT_MODE_ONE) {
+            Player.REPEAT_MODE_OFF
+        } else {
+            repeatMode
+        }
+    }
+
+    private fun restorePlaybackModeAfterForcedNext() {
+        val pending = forcedNext ?: return
+        forcedNext = null
+        player.shuffleModeEnabled = pending.restoreShuffle
+        player.repeatMode = pending.restoreRepeatMode
+    }
+
     private fun applyEqualizer(animate: Boolean) {
         if (!::player.isInitialized) return
         if (!equalizerSettings.enabled && equalizer == null) {
@@ -294,6 +366,20 @@ class PlaybackService : MediaLibraryService() {
     companion object {
         private var activeService: PlaybackService? = null
 
+        internal fun forceNext(mediaId: String, item: MediaItem?): Boolean =
+            activeService?.forceNext(mediaId, item) == true
+
+        internal fun applyPlaybackMode(shuffle: Boolean, repeatMode: Int): Boolean {
+            val service = activeService ?: return false
+            service.applyRequestedPlaybackMode(shuffle, repeatMode)
+            return true
+        }
+
+        fun isPlaybackActive(): Boolean = activeService?.player?.let { player ->
+            player.playWhenReady && player.playbackState != Player.STATE_IDLE &&
+                player.playbackState != Player.STATE_ENDED
+        } == true
+
         /** Called on main. Release readers before changing tags, then reopen at the same position. */
         fun suspendForTagWrite(): () -> Unit {
             val service = activeService ?: return {}
@@ -321,6 +407,13 @@ class PlaybackService : MediaLibraryService() {
         fun Int.toBytes(): Long = toLong() * BYTES_PER_MEGABYTE
     }
 }
+
+private data class ForcedNext(
+    val sourceMediaId: String,
+    val targetMediaId: String,
+    val restoreShuffle: Boolean,
+    val restoreRepeatMode: Int,
+)
 
 private data class EqualizerBandPlan(
     val band: Short,

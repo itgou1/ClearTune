@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -84,6 +85,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
@@ -188,6 +190,9 @@ import com.cleartune.app.library.resultCount
 import com.cleartune.app.player.PlayerViewModel
 import com.cleartune.app.download.DownloadViewModel
 import com.cleartune.app.settings.SettingsViewModel
+import com.cleartune.app.share.ShareKind
+import com.cleartune.app.share.ShareTarget
+import com.cleartune.app.share.ShareViewModel
 import com.cleartune.core.model.Album
 import com.cleartune.core.model.Artist
 import com.cleartune.core.model.DownloadState
@@ -214,6 +219,15 @@ private enum class SearchResultFilter {
     ARTISTS,
     PLAYLISTS,
 }
+
+internal fun Song.shareTarget() = ShareTarget(
+    kind = ShareKind.SONG,
+    id = id,
+    title = title,
+    subtitle = artistName,
+    coverArtId = coverArtId,
+    songCount = 1,
+)
 
 private val mainDestinations = listOf(
     MainDestination("home", R.string.nav_home, Icons.Rounded.Home),
@@ -254,6 +268,7 @@ fun ClearTuneApp(
     playerViewModel: PlayerViewModel,
     downloadViewModel: DownloadViewModel,
     settingsViewModel: SettingsViewModel,
+    shareViewModel: ShareViewModel,
     onLogout: () -> Unit,
 ) {
     val navController = rememberNavController()
@@ -517,6 +532,9 @@ fun ClearTuneApp(
                         onAlbum = { navController.navigate("album/${Uri.encode(it)}") },
                         onArtist = { navController.navigate("artist/${Uri.encode(it)}") },
                         onPlay = playerViewModel::play,
+                        onPlayNext = playerViewModel::playNext,
+                        onDownload = { song -> downloadViewModel.download(listOf(song)) },
+                        onShare = { song -> shareViewModel.open(song.shareTarget()) },
                         onPlaylist = { navController.navigate("playlist/${Uri.encode(it)}") },
                     )
                 }
@@ -535,6 +553,7 @@ fun ClearTuneApp(
                         onPlay = playerViewModel::play,
                         onPlayNext = playerViewModel::playNext,
                         onDownload = { downloadViewModel.download(listOf(it)) },
+                        onShare = { song -> shareViewModel.open(song.shareTarget()) },
                         onGenre = { navController.navigate("genre/${Uri.encode(it)}") },
                     )
                 }
@@ -555,6 +574,8 @@ fun ClearTuneApp(
                 )
             }
             committedBackComposable(navController, "my") {
+                val shareState by shareViewModel.state.collectAsStateWithLifecycle()
+                LaunchedEffect(Unit) { shareViewModel.refresh() }
                 MainDestinationContent {
                     MyScreen(
                         profile = profile,
@@ -563,6 +584,7 @@ fun ClearTuneApp(
                         likedCount = libraryState.songs.count { it.starredAt != null },
                         offlineCount = downloads.count { it.state == DownloadState.COMPLETED },
                         downloadCount = downloads.count { it.state != DownloadState.COMPLETED },
+                        shareCount = shareState.shares.size,
                         isConnecting = libraryState.isRefreshing,
                         connectionError = libraryState.errorMessage,
                         onFavorites = { navController.navigate("favorites") },
@@ -571,11 +593,13 @@ fun ClearTuneApp(
                         onCreatePlaylist = viewModel::createPlaylist,
                         onOffline = { navController.navigate("offline") },
                         onDownloads = { navController.navigate("downloads") },
+                        onMyShares = { navController.navigate("my-shares") },
                         onSettings = { navController.navigate("settings") },
                     )
                 }
             }
             committedBackComposable(navController, "favorites") {
+                LaunchedEffect(Unit) { viewModel.refreshFavorites() }
                 FavoriteSongsScreen(
                     songs = libraryState.songs.filter { it.starredAt != null },
                     viewModel = viewModel,
@@ -627,6 +651,8 @@ fun ClearTuneApp(
                     onBack = navController::popBackStack,
                     onPlay = playerViewModel::play,
                     onDownload = { downloadViewModel.download(it) },
+                    onPlayNext = playerViewModel::playNext,
+                    onShare = shareViewModel::open,
                 )
             }
             committedBackComposable(
@@ -649,6 +675,8 @@ fun ClearTuneApp(
                     onBack = navController::popBackStack,
                     onPlay = playerViewModel::play,
                     onDownload = { downloadViewModel.download(it) },
+                    onPlayNext = playerViewModel::playNext,
+                    onShare = { song -> shareViewModel.open(song.shareTarget()) },
                 )
             }
             committedBackComposable(
@@ -667,6 +695,9 @@ fun ClearTuneApp(
                     onPlay = playerViewModel::play,
                     onDownload = { downloadViewModel.download(it) },
                     allSongs = libraryState.songs,
+                    playlists = libraryState.playlists,
+                    onPlayNext = playerViewModel::playNext,
+                    onShare = shareViewModel::open,
                     onRename = viewModel::renamePlaylist,
                     onRemoveSongs = viewModel::removePlaylistSongs,
                     onDelete = { playlistId, _ ->
@@ -682,6 +713,9 @@ fun ClearTuneApp(
                     onEqualizer = { navController.navigate("equalizer") },
                     onLogout = onLogout,
                 )
+            }
+            committedBackComposable(navController, "my-shares") {
+                MySharesScreen(shareViewModel, viewModel, navController::popBackStack)
             }
             committedBackComposable(navController, "discovery") {
                 val discoveryShelves = recommendationSurfaces(
@@ -726,6 +760,7 @@ fun ClearTuneApp(
                     onEqualizer = { navController.navigate("equalizer") },
                     onFavorite = { song, favorite -> viewModel.setSongFavorite(song, favorite) },
                     onDownload = { song -> downloadViewModel.download(listOf(song)) },
+                    onShare = { song -> shareViewModel.open(song.shareTarget()) },
                 )
             }
             committedBackComposable(navController, "queue") {
@@ -780,6 +815,11 @@ fun ClearTuneApp(
             }
         }
     }
+    ShareCreateSheet(shareViewModel, viewModel, onManage = { shareId ->
+        shareViewModel.close()
+        shareViewModel.select(shareId)
+        navController.navigate("my-shares")
+    })
     if (showBatchPicker && batchSelection.active) {
         BatchPlaylistSheet(
             playlists = libraryState.playlists,
@@ -885,7 +925,7 @@ private fun HomeScreen(
             item {
                 HomeEntranceSection(entranceProgress, section = 1) {
                     RecommendationSceneCards(
-                        rediscovery = recommendationContent.rediscovery,
+                        random = recommendationContent.random,
                         frequent = recommendationContent.frequent,
                         viewModel = viewModel,
                         onPlay = onPlay,
@@ -984,7 +1024,7 @@ private fun DiscoveryHeroCard(
 
 @Composable
 private fun RecommendationSceneCards(
-    rediscovery: RecommendationShelf?,
+    random: RecommendationShelf?,
     frequent: RecommendationShelf?,
     viewModel: MusicViewModel,
     onPlay: (List<Song>, Int) -> Unit,
@@ -997,21 +1037,16 @@ private fun RecommendationSceneCards(
     ) {
         HomeRecommendationCard(
             modifier = Modifier.weight(1f),
-            title = stringResource(
-                if (rediscovery?.id == "random") R.string.home_random else R.string.home_long_absent,
-            ),
+            title = stringResource(R.string.home_random),
             description = stringResource(
-                when {
-                    rediscovery?.songs.isNullOrEmpty() -> R.string.home_long_absent_empty
-                    rediscovery.id == "random" -> R.string.home_random_subtitle
-                    else -> R.string.home_long_absent_subtitle
-                },
+                if (random?.songs.isNullOrEmpty()) R.string.home_random_empty
+                else R.string.home_random_subtitle,
             ),
-            enabled = !rediscovery?.songs.isNullOrEmpty(),
-            hasRearCover = (rediscovery?.songs?.size ?: 0) > 1,
-            onPlay = { rediscovery?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
+            enabled = !random?.songs.isNullOrEmpty(),
+            hasRearCover = (random?.songs?.size ?: 0) > 1,
+            onPlay = { random?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
             artwork = { index, artworkModifier ->
-                RecommendationCoverCell(rediscovery?.songs?.getOrNull(index), viewModel, artworkModifier)
+                RecommendationCoverCell(random?.songs?.getOrNull(index), viewModel, artworkModifier)
             },
         )
         HomeRecommendationCard(
@@ -1097,6 +1132,7 @@ private fun MyScreen(
     likedCount: Int,
     offlineCount: Int,
     downloadCount: Int,
+    shareCount: Int,
     isConnecting: Boolean,
     connectionError: String?,
     onFavorites: () -> Unit,
@@ -1105,6 +1141,7 @@ private fun MyScreen(
     onCreatePlaylist: (String) -> Unit,
     onOffline: () -> Unit,
     onDownloads: () -> Unit,
+    onMyShares: () -> Unit,
     onSettings: () -> Unit,
 ) {
     var showCreatePlaylist by remember { mutableStateOf(false) }
@@ -1279,6 +1316,32 @@ private fun MyScreen(
                         modifier = Modifier.padding(horizontal = 14.dp),
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                     )
+                }
+            }
+        }
+        if (shareCount > 0) {
+            item {
+                MySectionTitle("分享")
+                ElevatedCard(
+                    onClick = onMyShares,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Rounded.Share, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("我的分享", style = MaterialTheme.typography.titleMedium)
+                            Text("${shareCount} 条链接 · 管理有效期",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(Icons.Rounded.ChevronRight, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }
@@ -1529,7 +1592,7 @@ internal fun FavoriteSongsScreen(
 }
 
 @Composable
-private fun SearchScreen(
+internal fun SearchScreen(
     state: SearchUiState,
     recentSearches: List<String>,
     genres: List<String>,
@@ -1538,6 +1601,9 @@ private fun SearchScreen(
     onAlbum: (String) -> Unit,
     onArtist: (String) -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
+    onPlayNext: (Song) -> Unit,
+    onDownload: (Song) -> Unit,
+    onShare: (Song) -> Unit = {},
     onPlaylist: (String) -> Unit,
 ) {
     var selectedResultFilter by rememberSaveable { mutableIntStateOf(SearchResultFilter.ALL.ordinal) }
@@ -1758,14 +1824,19 @@ private fun SearchScreen(
                         state.results.songs.take(state.visibleSongCount),
                         key = { "song-${it.id}" },
                     ) { song ->
-                        SongRow(
+                        MusicSongRow(
                             song = song,
+                            viewModel = viewModel,
                             onClick = { onPlay(state.results.songs, state.results.songs.indexOf(song)) },
-                            onFavorite = { viewModel.toggleSongFavorite(song) },
-                            trailingContent = {
-                                AddToPlaylistAction(
+                            actions = {
+                                SongActionsMenu(
+                                    song = song,
                                     playlists = playlists,
                                     viewModel = viewModel,
+                                    onPlayNext = { onPlayNext(song) },
+                                    onDownload = { onDownload(song) },
+                                    onToggleLike = { viewModel.toggleSongFavorite(song) },
+                                    onShare = { onShare(song) },
                                     onAddToPlaylist = { playlistId ->
                                         viewModel.addPlaylistSong(playlistId, song.id)
                                     },
@@ -1888,6 +1959,7 @@ internal fun LibraryScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onPlayNext: (Song) -> Unit,
     onDownload: (Song) -> Unit,
+    onShare: (Song) -> Unit = {},
     onGenre: (String) -> Unit,
 ) {
     val labels = listOf(
@@ -1924,6 +1996,12 @@ internal fun LibraryScreen(
     LaunchedEffect(savedSelectedTab, labels.size) {
         if (savedSelectedTab !in labels.indices) savedSelectedTab = 0
     }
+    LaunchedEffect(selectedTab) {
+        when (selectedTab) {
+            3 -> viewModel.refreshGenres()
+            4 -> viewModel.refreshFolders()
+        }
+    }
     LaunchedEffect(
         songListState.isScrollInProgress,
         indexedSongs.anchors,
@@ -1947,7 +2025,7 @@ internal fun LibraryScreen(
             subtitle = state.librarySyncSubtitle(),
         ) {
             FilledTonalIconButton(onClick = onRefresh, enabled = !state.isRefreshing) {
-                Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.refresh))
+                Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.sync_full_library))
             }
         }
         if (state.isRefreshing || state.errorMessage != null) {
@@ -2120,7 +2198,7 @@ internal fun LibraryScreen(
                             }
                         }
                         itemsIndexed(indexedSongs.songs, key = { _, song -> song.id }) { index, song ->
-                            LibrarySongRow(
+                            MusicSongRow(
                                 song = song,
                                 viewModel = viewModel,
                                 selected = if (selection.active) song.id in selection.ids else null,
@@ -2130,7 +2208,7 @@ internal fun LibraryScreen(
                                     if (selection.active) selection.toggle(song.id) else onPlay(indexedSongs.songs, index)
                                 },
                                 actions = {
-                                    LibrarySongActions(
+                                    SongActionsMenu(
                                         song = song,
                                         playlists = state.playlists,
                                         viewModel = viewModel,
@@ -2140,6 +2218,7 @@ internal fun LibraryScreen(
                                         onToggleLike = { viewModel.toggleSongFavorite(song) },
                                         onPlayNext = { onPlayNext(song) },
                                         onDownload = { onDownload(song) },
+                                        onShare = { onShare(song) },
                                     )
                                 },
                             )
@@ -2544,13 +2623,15 @@ private fun buildLibrarySongIndex(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LibrarySongRow(
+internal fun MusicSongRow(
     song: Song,
     viewModel: MusicViewModel,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
     selected: Boolean? = null,
     enabled: Boolean = true,
+    showTrackNumber: Boolean = false,
+    recentlyAdded: Boolean = false,
     actions: @Composable RowScope.() -> Unit,
 ) {
     Row(
@@ -2563,25 +2644,35 @@ private fun LibrarySongRow(
             .padding(start = 20.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (selected != null) Checkbox(checked = selected, onCheckedChange = null, enabled = enabled,
-            modifier = Modifier.size(50.dp)) else CoverArt(
-            id = song.displayCoverArtId(),
-            description = song.title,
-            viewModel = viewModel,
-            modifier = Modifier.size(50.dp),
-            fallbackSeed = song.id,
-        )
+        when {
+            selected != null -> Checkbox(checked = selected, onCheckedChange = null, enabled = enabled,
+                modifier = Modifier.size(50.dp))
+            showTrackNumber -> Box(Modifier.size(50.dp), contentAlignment = Alignment.Center) {
+                Text(song.trackNumber?.toString() ?: "♪", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            else -> CoverArt(
+                id = song.displayCoverArtId(),
+                description = song.title,
+                viewModel = viewModel,
+                modifier = Modifier.size(50.dp),
+                fallbackSeed = song.id,
+            )
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
                 .padding(start = 12.dp),
         ) {
-            Text(
-                song.title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.Medium,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    song.title,
+                    modifier = Modifier.weight(1f, fill = false),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.Medium,
+                )
+                if (recentlyAdded) RecentlyAddedSongBadge()
+            }
             val subtitle = listOfNotNull(song.displayArtistName(), song.displayAlbumName()).joinToString(" · ")
             if (subtitle.isNotEmpty() || !song.suffix.isNullOrBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
                 if (subtitle.isNotEmpty()) Text(
@@ -2667,6 +2758,8 @@ internal fun AlbumDetailScreen(
     onBack: () -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
     onDownload: (List<Song>) -> Unit,
+    onPlayNext: (Song) -> Unit,
+    onShare: (ShareTarget) -> Unit = {},
 ) {
     val recentSongIds = recentlyAddedSongIds(state.songs)
     val batchHint = stringResource(R.string.batch_long_press)
@@ -2675,6 +2768,14 @@ internal fun AlbumDetailScreen(
     LaunchedEffect(selectableIds) { selection.retain(selectableIds) }
     DetailScaffold(title = "", onBack = onBack,
         selectionHeader = if (selection.active) ({ SongSelectionHeader(selection, selectableIds) }) else null,
+        actions = {
+            state.album?.let { album ->
+                IconButton(onClick = { onShare(ShareTarget(ShareKind.ALBUM, album.id, album.name,
+                    album.artistName, album.coverArtId, album.songCount)) }) {
+                    Icon(Icons.Rounded.Share, contentDescription = "分享专辑")
+                }
+            }
+        },
     ) {
         if (state.isLoading) {
             item { LoadingBlock() }
@@ -2698,8 +2799,10 @@ internal fun AlbumDetailScreen(
             }
             state.errorMessage?.let { message -> item { EmptyBlock(message) } }
             items(state.songs, key = { it.id }) { song ->
-                SongRow(
+                MusicSongRow(
                     song = song,
+                    viewModel = viewModel,
+                    showTrackNumber = true,
                     recentlyAdded = song.id in recentSongIds,
                     selected = if (selection.active) song.id in selection.ids else null,
                     enabled = !selection.busy,
@@ -2707,11 +2810,15 @@ internal fun AlbumDetailScreen(
                     onClick = {
                         if (selection.active) selection.toggle(song.id) else onPlay(state.songs, state.songs.indexOf(song))
                     },
-                    onFavorite = { viewModel.toggleSongFavorite(song) },
-                    trailingContent = {
-                        AddToPlaylistAction(
+                    actions = {
+                        SongActionsMenu(
+                            song = song,
                             playlists = playlists,
                             viewModel = viewModel,
+                            onToggleLike = { viewModel.toggleSongFavorite(song) },
+                            onPlayNext = { onPlayNext(song) },
+                            onDownload = { onDownload(listOf(song)) },
+                            onShare = { onShare(song.shareTarget()) },
                             onAddToPlaylist = { playlistId ->
                                 viewModel.addPlaylistSong(playlistId, song.id)
                             },
@@ -2735,6 +2842,8 @@ internal fun ArtistDetailScreen(
     onBack: () -> Unit,
     onPlay: (List<Song>, Int) -> Unit,
     onDownload: (List<Song>) -> Unit,
+    onPlayNext: (Song) -> Unit,
+    onShare: (Song) -> Unit,
 ) {
     val batchHint = stringResource(R.string.batch_long_press)
     LaunchedEffect(state.songs.isNotEmpty()) { if (state.songs.isNotEmpty()) viewModel.showSongBatchHint(batchHint) }
@@ -2766,19 +2875,24 @@ internal fun ArtistDetailScreen(
                     )
                 }
                 items(state.songs, key = { "artist-song-${it.id}" }) { song ->
-                    SongRow(
+                    MusicSongRow(
                         song = song,
+                        viewModel = viewModel,
                         selected = if (selection.active) song.id in selection.ids else null,
                         enabled = !selection.busy,
                         onLongClick = { selection.start(song.id) },
                         onClick = {
                             if (selection.active) selection.toggle(song.id) else onPlay(state.songs, state.songs.indexOf(song))
                         },
-                        onFavorite = { viewModel.toggleSongFavorite(song) },
-                        trailingContent = {
-                            AddToPlaylistAction(
+                        actions = {
+                            SongActionsMenu(
+                                song = song,
                                 playlists = playlists,
                                 viewModel = viewModel,
+                                onToggleLike = { viewModel.toggleSongFavorite(song) },
+                                onPlayNext = { onPlayNext(song) },
+                                onDownload = { onDownload(listOf(song)) },
+                                onShare = { onShare(song) },
                                 onAddToPlaylist = { playlistId ->
                                     viewModel.addPlaylistSong(playlistId, song.id)
                                 },
@@ -2802,9 +2916,12 @@ internal fun PlaylistDetailScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onDownload: (List<Song>) -> Unit,
     allSongs: List<Song>,
+    onShare: (ShareTarget) -> Unit = {},
     onRename: (String, String) -> Unit,
     onRemoveSongs: (String, List<Int>) -> Unit,
     onDelete: (String, () -> Unit) -> Unit,
+    playlists: List<Playlist>,
+    onPlayNext: (Song) -> Unit,
 ) {
     var showRename by remember { mutableStateOf(false) }
     var showAdd by rememberSaveable(state.playlist?.id) { mutableStateOf(false) }
@@ -2830,6 +2947,14 @@ internal fun PlaylistDetailScreen(
                 selectedIndexes = emptySet()
             } else {
                 onBack()
+            }
+        },
+        actions = {
+            if (!isSelecting) state.playlist?.let { playlist ->
+                IconButton(onClick = { onShare(ShareTarget(ShareKind.PLAYLIST, playlist.id,
+                    playlist.name, "${playlist.songCount} 首歌曲", playlist.coverArtId, playlist.songCount)) }) {
+                    Icon(Icons.Rounded.Share, contentDescription = "分享歌单")
+                }
             }
         },
         bottomBar = {
@@ -2890,8 +3015,10 @@ internal fun PlaylistDetailScreen(
             state.errorMessage?.let { message -> item { EmptyBlock(message) } }
             itemsIndexed(state.songs, key = { index, song -> "${song.id}-$index" }) { index, song ->
                 val isSelected = index in selectedIndexes
-                SongRow(
+                MusicSongRow(
                     song = song,
+                    viewModel = viewModel,
+                    selected = if (isSelecting) isSelected else null,
                     onClick = {
                         if (isSelecting) {
                             selectedIndexes = if (isSelected) selectedIndexes - index else selectedIndexes + index
@@ -2903,34 +3030,17 @@ internal fun PlaylistDetailScreen(
                         isSelecting = true
                         selectedIndexes = setOf(index)
                     }),
-                    onFavorite = if (isSelecting) null else ({ viewModel.toggleSongFavorite(song) }),
-                    showFileType = true,
-                    leadingArtwork = { SongListCover(song, viewModel) },
-                    trailingContent = if (isSelecting) {
-                        {
-                            IconButton(
-                                onClick = {
-                                    selectedIndexes = if (isSelected) {
-                                        selectedIndexes - index
-                                    } else {
-                                        selectedIndexes + index
-                                    }
-                                },
-                            ) {
-                                Icon(
-                                    imageVector = if (isSelected) {
-                                        Icons.Rounded.CheckCircle
-                                    } else {
-                                        Icons.Rounded.RadioButtonUnchecked
-                                    },
-                                    contentDescription = stringResource(
-                                        if (isSelected) R.string.unselect_song else R.string.select_song,
-                                    ),
-                                )
-                            }
-                        }
-                    } else {
-                        null
+                    actions = {
+                        SongActionsMenu(
+                            song = song,
+                            playlists = playlists,
+                            viewModel = viewModel,
+                            onToggleLike = { viewModel.toggleSongFavorite(song) },
+                            onAddToPlaylist = { playlistId -> viewModel.addPlaylistSong(playlistId, song.id) },
+                            onPlayNext = { onPlayNext(song) },
+                            onDownload = { onDownload(listOf(song)) },
+                            onShare = { onShare(song.shareTarget()) },
+                        )
                     },
                 )
             }
@@ -3031,8 +3141,10 @@ private fun DiscoveryScreen(
     onShelf: (String) -> Unit,
     onBack: () -> Unit,
 ) {
-    var selectedShelfId by rememberSaveable { mutableStateOf<String?>(null) }
-    val visibleShelves = selectedShelfId?.let { selected -> shelves.filter { it.id == selected } } ?: shelves
+    val byId = shelves.associateBy(RecommendationShelf::id)
+    val favorites = byId["from-favorites"]
+    val taste = byId["new-taste"]
+    val longAbsent = byId["long-absent"]
     Scaffold(
         topBar = {
             ClearTuneTopAppBar(
@@ -3056,33 +3168,10 @@ private fun DiscoveryScreen(
             item {
                 Text(
                     text = stringResource(R.string.discover_page_subtitle),
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 20.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-            if (shelves.isNotEmpty()) {
-                item {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 20.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        item {
-                            FilterChip(
-                                selected = selectedShelfId == null,
-                                onClick = { selectedShelfId = null },
-                                label = { Text(stringResource(R.string.all)) },
-                            )
-                        }
-                        items(shelves, key = { "filter-${it.id}" }) { shelf ->
-                            FilterChip(
-                                selected = selectedShelfId == shelf.id,
-                                onClick = { selectedShelfId = shelf.id },
-                                label = { Text(shelf.title) },
-                            )
-                        }
-                    }
-                }
             }
             if (shelves.isEmpty()) {
                 item {
@@ -3093,61 +3182,296 @@ private fun DiscoveryScreen(
                     )
                 }
             }
-            items(visibleShelves, key = RecommendationShelf::id) { shelf ->
-                RecommendationShelfCard(
-                    shelf = shelf,
-                    viewModel = viewModel,
-                    onOpen = { onShelf(shelf.id) },
-                    onPlay = { if (shelf.songs.isNotEmpty()) onPlay(shelf.songs, 0) },
-                )
+            favorites?.let { shelf ->
+                item(key = shelf.id) {
+                    DiscoveryFavoriteHero(shelf, viewModel,
+                        onOpen = { onShelf(shelf.id) },
+                        onPlay = { index -> onPlay(shelf.songs, index) })
+                }
+            }
+            taste?.let { shelf ->
+                item(key = shelf.id) {
+                    DiscoveryTasteSection(shelf, viewModel,
+                        onOpen = { onShelf(shelf.id) },
+                        onPlay = { index -> onPlay(shelf.songs, index) })
+                }
+            }
+            longAbsent?.let { shelf ->
+                item(key = shelf.id) {
+                    DiscoveryLongAbsentSection(shelf, viewModel,
+                        onOpen = { onShelf(shelf.id) },
+                        onPlay = { index -> onPlay(shelf.songs, index) })
+                }
             }
         }
     }
 }
 
 @Composable
-private fun RecommendationShelfCard(
+private fun DiscoveryFavoriteHero(
     shelf: RecommendationShelf,
     viewModel: MusicViewModel,
     onOpen: () -> Unit,
-    onPlay: () -> Unit,
+    onPlay: (Int) -> Unit,
 ) {
-    ElevatedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp),
+    val hasSongs = shelf.songs.isNotEmpty()
+    ClearTuneGradientHeader(
+        modifier = Modifier.padding(horizontal = 20.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(shelf.title, style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        shelf.reason,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                TextButton(onClick = onOpen) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                shelf.title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleLarge,
+            )
+            if (hasSongs) {
+                TextButton(
+                    onClick = onOpen,
+                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                ) {
                     Text(stringResource(R.string.view_all))
-                    Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                repeat(4) { index ->
-                    RecommendationCoverCell(
-                        song = shelf.songs.getOrNull(index),
-                        viewModel = viewModel,
-                        modifier = Modifier.size(64.dp),
+                    Icon(
+                        Icons.Rounded.ChevronRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
                     )
-                }
-                Spacer(Modifier.weight(1f))
-                FilledIconButton(onClick = onPlay, enabled = shelf.songs.isNotEmpty()) {
-                    Icon(Icons.Rounded.PlayArrow, contentDescription = stringResource(R.string.play_all))
                 }
             }
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    if (hasSongs) shelf.reason else stringResource(R.string.discover_favorites_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (hasSongs) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(stringResource(R.string.recommendation_song_count, shelf.songs.size),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(6.dp))
+                    Button(
+                        onClick = { onPlay(0) },
+                        modifier = Modifier.height(40.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    ) {
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text(stringResource(R.string.discover_play_group))
+                    }
+                }
+            }
+            if (hasSongs) {
+                Box(Modifier.size(width = 108.dp, height = 104.dp)) {
+                    RecommendationCoverCell(shelf.songs.getOrNull(1), viewModel,
+                        Modifier.offset(x = 24.dp, y = 2.dp).size(80.dp)
+                            .graphicsLayer { rotationZ = 8f })
+                    RecommendationCoverCell(shelf.songs.firstOrNull(), viewModel,
+                        Modifier.offset(y = 14.dp).size(84.dp))
+                }
+            } else {
+                Box(
+                    modifier = Modifier.size(80.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
+                            RoundedCornerShape(18.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.Explore,
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+        if (hasSongs) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+            shelf.songs.take(2).forEachIndexed { index, song ->
+                DiscoverySongPreview(song, viewModel, compact = true,
+                    onClick = { onPlay(index) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoveryTasteSection(
+    shelf: RecommendationShelf,
+    viewModel: MusicViewModel,
+    onOpen: () -> Unit,
+    onPlay: (Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        DiscoverySectionHeading(shelf.title, onOpen, shelf.songs.isNotEmpty())
+        Text(stringResource(R.string.discover_taste_subtitle),
+            modifier = Modifier.padding(horizontal = 20.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (shelf.songs.isEmpty()) {
+            DiscoveryInlineEmpty(stringResource(R.string.discover_taste_empty))
+        } else if (shelf.songs.size == 2) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                shelf.songs.forEachIndexed { index, song ->
+                    Row(
+                        modifier = Modifier.weight(1f)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                            .clickable { onPlay(index) }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(62.dp)) {
+                            RecommendationCoverCell(song, viewModel, Modifier.fillMaxSize())
+                            Box(Modifier.align(Alignment.BottomEnd).padding(5.dp).size(22.dp)
+                                .background(MaterialTheme.colorScheme.surface, CircleShape),
+                                contentAlignment = Alignment.Center) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(song.title, style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(song.displayArtistName().orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        } else {
+            LazyRow(contentPadding = PaddingValues(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                itemsIndexed(shelf.songs, key = { _, song -> song.id }) { index, song ->
+                    Column(Modifier.width(105.dp).clickable { onPlay(index) }) {
+                        Box(Modifier.size(105.dp)) {
+                            RecommendationCoverCell(song, viewModel, Modifier.fillMaxSize())
+                            Box(Modifier.align(Alignment.BottomEnd).padding(7.dp).size(28.dp)
+                                .background(MaterialTheme.colorScheme.surface, CircleShape),
+                                contentAlignment = Alignment.Center) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Spacer(Modifier.height(7.dp))
+                        Text(song.title, style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(song.displayArtistName().orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoveryLongAbsentSection(
+    shelf: RecommendationShelf,
+    viewModel: MusicViewModel,
+    onOpen: () -> Unit,
+    onPlay: (Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        DiscoverySectionHeading(shelf.title, onOpen, shelf.songs.isNotEmpty())
+        Text(stringResource(R.string.discover_long_absent_subtitle),
+            modifier = Modifier.padding(horizontal = 20.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (shelf.songs.isEmpty()) {
+            DiscoveryInlineEmpty(stringResource(R.string.discover_long_absent_empty))
+        } else {
+            shelf.songs.take(3).forEachIndexed { index, song ->
+                val days = song.lastPlayedAt?.let { ((System.currentTimeMillis() - it) / 86_400_000L).coerceAtLeast(0) }
+                val subtitle = listOfNotNull(song.displayArtistName(),
+                    days?.let { stringResource(R.string.discover_last_played_days, it) }).joinToString(" · ")
+                DiscoverySongPreview(song, viewModel, subtitle,
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    onClick = { onPlay(index) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoverySectionHeading(title: String, onOpen: () -> Unit, showAction: Boolean) {
+    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(title, modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleLarge)
+        if (showAction) {
+            TextButton(
+                onClick = onOpen,
+                modifier = Modifier.height(40.dp),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+            ) {
+                Text(stringResource(R.string.view_all))
+                Icon(Icons.Rounded.ChevronRight, contentDescription = null,
+                    modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoveryInlineEmpty(text: String) {
+    Text(
+        text = text,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 16.dp),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun DiscoverySongPreview(
+    song: Song,
+    viewModel: MusicViewModel,
+    subtitle: String = song.displayArtistName().orEmpty(),
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val coverSize = if (compact) 38.dp else 42.dp
+    val verticalPadding = if (compact) 2.dp else 4.dp
+    Row(modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        .clickable(onClick = onClick).padding(vertical = verticalPadding),
+        verticalAlignment = Alignment.CenterVertically) {
+        RecommendationCoverCell(song, viewModel, Modifier.size(coverSize))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(song.title, style = if (compact) MaterialTheme.typography.bodyLarge
+                else MaterialTheme.typography.titleMedium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Icon(Icons.Rounded.PlayArrow, contentDescription = null,
+            modifier = Modifier.size(32.dp), tint = MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -3792,23 +4116,7 @@ internal fun SongRow(
                     overflow = TextOverflow.Ellipsis,
                     fontWeight = FontWeight.Medium,
                 )
-                if (recentlyAdded) {
-                    val description = stringResource(R.string.song_recently_added_description)
-                    Surface(
-                        modifier = Modifier.padding(start = 6.dp, end = 4.dp)
-                            .semantics { contentDescription = description },
-                        shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ) {
-                        Text(
-                            text = stringResource(R.string.song_recently_added),
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1,
-                        )
-                    }
-                }
+                if (recentlyAdded) RecentlyAddedSongBadge()
             }
             val subtitle = listOfNotNull(song.displayArtistName(), song.displayAlbumName()).joinToString(" · ")
             if (subtitle.isNotEmpty() || showFileType && !fileType.isNullOrBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3867,6 +4175,25 @@ private fun SongListCover(song: Song, viewModel: MusicViewModel) {
 }
 
 @Composable
+private fun RecentlyAddedSongBadge() {
+    val description = stringResource(R.string.song_recently_added_description)
+    Surface(
+        modifier = Modifier.padding(start = 6.dp, end = 4.dp)
+            .semantics { contentDescription = description },
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+    ) {
+        Text(
+            text = stringResource(R.string.song_recently_added),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
 private fun SongFormatBadge(format: String) {
     Surface(
         modifier = Modifier.padding(start = 6.dp, end = 5.dp),
@@ -3884,7 +4211,7 @@ private fun SongFormatBadge(format: String) {
 }
 
 @Composable
-private fun LibrarySongActions(
+internal fun SongActionsMenu(
     song: Song,
     playlists: List<Playlist>,
     viewModel: MusicViewModel,
@@ -3892,6 +4219,7 @@ private fun LibrarySongActions(
     onToggleLike: () -> Unit,
     onPlayNext: () -> Unit,
     onDownload: () -> Unit,
+    onShare: () -> Unit,
 ) {
     val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     var expanded by remember { mutableStateOf(false) }
@@ -3907,11 +4235,6 @@ private fun LibrarySongActions(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
-            DropdownMenuItem(
-                text = { Text("音乐标签") },
-                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Label, contentDescription = null) },
-                onClick = { expanded = false; musicTagActions.open(song) },
-            )
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.add_to_playlist)) },
                 leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null) },
@@ -3950,6 +4273,16 @@ private fun LibrarySongActions(
                 },
             )
             DropdownMenuItem(
+                text = { Text("分享歌曲") },
+                leadingIcon = { Icon(Icons.Rounded.Share, contentDescription = null) },
+                onClick = { expanded = false; onShare() },
+            )
+            DropdownMenuItem(
+                text = { Text("音乐标签") },
+                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Label, contentDescription = null) },
+                onClick = { expanded = false; musicTagActions.open(song) },
+            )
+            DropdownMenuItem(
                 text = { Text(stringResource(R.string.song_details)) },
                 leadingIcon = { Icon(Icons.Rounded.Info, contentDescription = null) },
                 onClick = {
@@ -3973,7 +4306,12 @@ private fun LibrarySongActions(
     }
 
     if (showDetails) {
-        SongDetailsDialog(song = song, onDismiss = { showDetails = false })
+        SongDetailsDialog(song = song, onDismiss = { showDetails = false }) { modifier ->
+            CoverArt(
+                id = song.displayCoverArtId(), description = song.title, viewModel = viewModel,
+                modifier = modifier, fallbackSeed = song.albumId ?: song.id,
+            )
+        }
     }
 }
 
@@ -4010,6 +4348,7 @@ private fun PlaylistPickerDialog(
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    LaunchedEffect(Unit) { viewModel.refreshPlaylists() }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.add_to_playlist)) },
@@ -4051,34 +4390,6 @@ private fun PlaylistPickerDialog(
             TextButton(onClick = onDismiss) {
                 Text(stringResource(R.string.cancel))
             }
-        },
-    )
-}
-
-@Composable
-private fun SongDetailsDialog(song: Song, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.song_details)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(song.title, style = MaterialTheme.typography.titleMedium)
-                song.displayArtistName()?.let { Text(stringResource(R.string.song_detail_artist, it)) }
-                song.displayAlbumName()?.let { Text(stringResource(R.string.song_detail_album, it)) }
-                Text(stringResource(R.string.song_detail_duration, formatDuration(song.durationSeconds)))
-                Text(
-                    stringResource(
-                        R.string.song_detail_format,
-                        listOfNotNull(
-                            song.suffix?.uppercase(),
-                            song.bitRate?.let { "$it kbps" },
-                        ).joinToString(" · ").ifBlank { stringResource(R.string.unknown_format) },
-                    ),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.close_action)) }
         },
     )
 }

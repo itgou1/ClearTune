@@ -56,13 +56,81 @@ class RecommendationEngineTest {
     }
 
     @Test
-    fun shelvesDoNotRepeatSongsAndReasonsExplainSelection() {
+    fun discoveryShelvesDoNotRepeatSongsAndReasonsExplainSelection() {
         val result = RecommendationEngine().generate(songs, 17, now = NOW)
-        val ids = result.flatMap { shelf -> shelf.songs.map(Song::id) }
+        val ids = result.filter { it.id in setOf("from-favorites", "new-taste", "long-absent") }
+            .flatMap { shelf -> shelf.songs.map(Song::id) }
 
         assertEquals(ids.distinct().size, ids.size)
+        assertTrue(result.first { it.id == "random" }.songs.isNotEmpty())
         assertTrue(result.all { it.reason.isNotBlank() })
         assertTrue(result.first { it.id == "new-taste" }.reason.contains("不超过 2 次"))
+    }
+
+    @Test
+    fun recentMusicAndListeningHistoryLeaveAllThreeDiscoveryThemesAvailable() {
+        val library = (0 until 24).map { index ->
+            Song(
+                id = "demo-$index", title = "歌曲 $index", artistName = "示例音乐人",
+                genre = if (index >= 17) "Rock" else "Pop",
+                playCount = (24 - index).toLong(),
+                starredAt = if (index in 1..8) NOW else null,
+                lastPlayedAt = when (index) {
+                    in 1..8 -> NOW - 2 * DAY
+                    in 17..21 -> NOW - 40 * DAY
+                    else -> null
+                },
+            )
+        }
+        val shelves = RecommendationEngine().generate(library, 42, now = NOW)
+        assertTrue(shelves.map { it.id }.containsAll(
+            listOf("from-favorites", "new-taste", "long-absent", "frequent", "random")))
+    }
+
+    @Test
+    fun overlappingCandidatesReserveSongsForEveryDiscoveryTheme() {
+        val library = (0 until 24).map { index ->
+            Song(
+                id = "overlap-$index",
+                title = "歌曲 $index",
+                artistId = "shared-artist",
+                artistName = "共同音乐人",
+                genre = "Rock",
+                playCount = 0,
+                starredAt = if (index < 3) NOW else null,
+                createdAt = NOW - 60 * DAY,
+                lastPlayedAt = NOW - 40 * DAY,
+            )
+        }
+
+        val discovery = RecommendationEngine().generate(library, 42, now = NOW)
+            .filter { it.id in setOf("from-favorites", "new-taste", "long-absent") }
+
+        assertTrue(discovery.all { it.songs.size >= 2 })
+        val ids = discovery.flatMap { shelf -> shelf.songs.map(Song::id) }
+        assertEquals(ids.distinct().size, ids.size)
+    }
+
+    @Test
+    fun missingPlaybackHistoryKeepsAnEmptyLongAbsentShelfForTheUi() {
+        val library = (0 until 24).map { index ->
+            Song(
+                id = "no-history-$index",
+                title = "歌曲 $index",
+                artistId = "artist-${index % 6}",
+                artistName = "音乐人 ${index % 6}",
+                genre = "Pop",
+                playCount = 0,
+                starredAt = if (index == 0) NOW else null,
+                createdAt = NOW - 60 * DAY,
+                lastPlayedAt = null,
+            )
+        }
+
+        val result = RecommendationEngine().generate(library, 42, now = NOW)
+
+        assertTrue(result.first { it.id == "long-absent" }.songs.isEmpty())
+        assertTrue(result.first { it.id == "new-taste" }.songs.isNotEmpty())
     }
 
     private companion object {

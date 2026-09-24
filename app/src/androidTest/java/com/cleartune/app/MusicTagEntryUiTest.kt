@@ -42,7 +42,7 @@ class MusicTagEntryUiTest {
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T = when (modelClass) {
-                MusicViewModel::class.java -> MusicViewModel(MusicRepository(session, OpenSubsonicApiFactory()), AppPreferences(context), session)
+                MusicViewModel::class.java -> MusicViewModel(MusicRepository(session, OpenSubsonicApiFactory()), AppPreferences(context), session, context)
                 else -> PlayerViewModel(context, PlaybackRepository(context, session, OpenSubsonicApiFactory(), AppPreferences(context)), PlaybackPreferences(context))
             } as T
         }
@@ -62,7 +62,7 @@ class MusicTagEntryUiTest {
                         if (playerScreen) NowPlayingScreen(PlayerUiState(currentSong = song), player, music,
                             LyricsUiState(), false, {}, {}, {}, { _, _ -> }, {})
                         else LibraryScreen(SongBatchSelection(), LibraryUiState(songs = listOf(song), isInitializing = false),
-                            emptyList(), FolderUiState(), music, {}, {}, {}, { _, _ -> }, {}, {}, {})
+                            emptyList(), FolderUiState(), music, {}, {}, {}, { _, _ -> }, {}, {}, {}, {})
                     }
                 }
             }

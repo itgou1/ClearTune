@@ -46,7 +46,7 @@ data class MusicTagUiState(
     val dirty: Boolean get() = changes.isNotEmpty()
 }
 
-data class MusicTagSyncStatus(val song: Song, val running: Boolean)
+data class MusicTagSyncStatus(val song: Song, val running: Boolean, val attempt: Long)
 
 internal fun musicTagSyncFinished(state: MusicTagUiState, song: Song, synced: Boolean): MusicTagUiState {
     if (state.song?.id != song.id || (!state.pending && state.dirty)) return state
@@ -161,6 +161,7 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
                 latestPending != null -> "上次操作尚未完成确认，请检查保存结果"
                 else -> "已读取原文件标签，可直接编辑，也可通过刮削填充"
             }) }
+        if (latestPending?.fileVerified == true && !syncing) completeSync(song)
     }
 
     fun query(title: String, artist: String) { if (!_state.value.busy) _state.update { it.copy(queryTitle = title, queryArtist = artist) } }
@@ -246,7 +247,8 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
         if (syncs.value[song.id]?.running == true) return
         _state.update { if (it.song?.id != song.id) it else it.copy(fileSaved = true, pending = true,
             syncing = true, isError = false, message = "标签已保存，曲库后台同步中，可返回继续使用") }
-        syncQueue.start(song)
+        if (!syncQueue.start(song)) _state.update { if (it.song?.id != song.id) it else it.copy(
+            syncing = false, message = "标签已保存，曲库同步尚未启动，可稍后重试") }
     }
 
     fun rereadAfterReview() = task("正在重新读取…") {

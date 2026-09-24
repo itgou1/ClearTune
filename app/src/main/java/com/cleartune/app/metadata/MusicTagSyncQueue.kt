@@ -20,10 +20,12 @@ internal class MusicTagSyncQueue(
     private val mutableStates = MutableStateFlow<Map<String, MusicTagSyncStatus>>(emptyMap())
     val states = mutableStates.asStateFlow()
     private val mutex = Mutex()
+    private var nextAttempt = 0L
 
     fun start(song: Song): Boolean {
         if (!active() || mutableStates.value[song.id]?.running == true) return false
-        mutableStates.update { it + (song.id to MusicTagSyncStatus(song, true)) }
+        val status = MusicTagSyncStatus(song, true, ++nextAttempt)
+        mutableStates.update { it + (song.id to status) }
         scope.launch {
             try {
                 val synced = try {
@@ -31,10 +33,11 @@ internal class MusicTagSyncQueue(
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { false }
                 if (active()) finished(song, synced)
-                mutableStates.update { if (synced) it - song.id else it + (song.id to MusicTagSyncStatus(song, false)) }
+                mutableStates.update { if (synced) it - song.id else it + (song.id to status.copy(running = false)) }
             } finally {
                 mutableStates.update { states ->
-                    if (states[song.id]?.running == true) states + (song.id to MusicTagSyncStatus(song, false)) else states
+                    if (states[song.id]?.attempt == status.attempt && states[song.id]?.running == true)
+                        states + (song.id to status.copy(running = false)) else states
                 }
             }
         }

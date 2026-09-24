@@ -2,10 +2,42 @@ package com.cleartune.core.network
 
 import retrofit2.Response
 import retrofit2.http.GET
+import retrofit2.http.POST
+import retrofit2.http.FormUrlEncoded
+import retrofit2.http.Field
+import retrofit2.http.FieldMap
 import retrofit2.http.QueryMap
 import retrofit2.http.Query
 
 interface OpenSubsonicApi {
+    @GET("rest/getShares.view")
+    suspend fun getShares(@QueryMap auth: Map<String, String>): Response<SubsonicResponseRoot>
+
+    @FormUrlEncoded
+    @POST("rest/createShare.view")
+    suspend fun createShare(
+        @Field("id") ids: List<String>,
+        @Field("description") description: String?,
+        @Field("expires") expires: Long,
+        @FieldMap auth: Map<String, String>,
+    ): Response<SubsonicResponseRoot>
+
+    @FormUrlEncoded
+    @POST("rest/updateShare.view")
+    suspend fun updateShare(
+        @Field("id") id: String,
+        @Field("description") description: String,
+        @Field("expires") expires: Long,
+        @FieldMap auth: Map<String, String>,
+    ): Response<SubsonicResponseRoot>
+
+    @FormUrlEncoded
+    @POST("rest/deleteShare.view")
+    suspend fun deleteShare(
+        @Field("id") id: String,
+        @FieldMap auth: Map<String, String>,
+    ): Response<SubsonicResponseRoot>
+
     @GET("rest/getSong.view")
     suspend fun getSong(@Query("id") id: String, @QueryMap auth: Map<String, String>): Response<SubsonicResponseRoot>
 

@@ -45,9 +45,9 @@ internal class RepositoryDetailSource(private val repository: MusicRepository) :
     }
 
     override suspend fun refresh(target: DetailTarget): ClearTuneError? = when (target.kind) {
-        DetailKind.ALBUM -> repository.loadAlbum(target.id)
-        DetailKind.ARTIST -> repository.loadArtist(target.id)
-        DetailKind.PLAYLIST -> repository.loadPlaylist(target.id)
+        DetailKind.ALBUM -> repository.loadAlbumIfStale(target.id)
+        DetailKind.ARTIST -> repository.loadArtistIfStale(target.id)
+        DetailKind.PLAYLIST -> repository.openPlaylist(target.id)
     }
 }
 

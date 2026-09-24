@@ -1,0 +1,222 @@
+<div id="ct-share-design" aria-label="ClearTune 分享界面设计">
+  <div class="ct-preview-nav"><label for="ct-scene">页面预览</label><select id="ct-scene" aria-label="选择设计页面"><option value="album">01 · 专辑入口</option><option value="playlist">02 · 歌单入口</option><option value="song">03 · 单曲菜单</option><option value="create">04 · 创建分享</option><option value="success">05 · 链接已生成</option><option value="my">06 · 我的页面入口</option><option value="list">07 · 我的分享</option><option value="manage">08 · 管理详情</option><option value="edit">09 · 编辑分享</option><option value="revoke">10 · 取消分享</option><option value="empty">11 · 无分享时隐藏栏目</option><option value="error">12 · 服务器未开启</option></select><span>可点击演示</span></div>
+  <div class="ct-phone" id="ct-phone" aria-label="手机界面"><div id="ct-app"></div><div class="ct-gesture"></div><div id="ct-toast" role="status" hidden></div></div>
+</div>
+<style>
+#ct-share-design{--ct-bg:light-dark(#f5f3ff,#11131a);--ct-surface:light-dark(#fffbff,#191b24);--ct-ink:light-dark(#1c1b1f,#e5e1e9);--ct-muted:light-dark(#625f6c,#c2bfcb);--ct-primary:light-dark(#4965a1,#b2c5ff);--ct-on-primary:light-dark(#fff,#0c2a60);--ct-pale:light-dark(#dce5ff,#263d70);--ct-soft:light-dark(#f1efff,#292b36);--ct-line:light-dark(#dedbe8,#424652);--ct-danger:light-dark(#ad3435,#ffb4ab);font-family:"Microsoft YaHei","Noto Sans SC",sans-serif;color:var(--ct-ink);font-size:14px;line-height:1.5;padding:8px 0 12px;color-scheme:light dark}
+#ct-share-design *{box-sizing:border-box}
+#ct-share-design button,#ct-share-design input,#ct-share-design textarea,#ct-share-design select{font:inherit;color:inherit}
+#ct-share-design button{border:0;background:none;padding:0;cursor:inherit}
+#ct-share-design button:focus-visible,#ct-share-design select:focus-visible,#ct-share-design textarea:focus-visible{outline:3px solid var(--ct-primary);outline-offset:3px}
+#ct-share-design .ct-preview-nav{max-width:520px;margin:0 auto 18px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;font-size:12px}
+#ct-share-design select{background:var(--ct-surface);border:1px solid var(--ct-line);border-radius:10px;padding:8px 12px;font-size:14px}
+#ct-share-design .ct-preview-nav span{color:var(--ct-muted)}
+#ct-share-design .ct-phone{width:min(390px,100%);min-height:810px;margin:auto;border:1px solid var(--ct-line);border-radius:30px;background:var(--ct-bg);position:relative;overflow:hidden;box-shadow:0 10px 32px #17203b0c}
+#ct-share-design #ct-app{position:relative;min-height:808px;padding-bottom:32px}
+#ct-share-design .ct-status{height:38px;display:flex;align-items:center;justify-content:space-between;padding:10px 24px 0;font-size:12px;font-weight:500}
+#ct-share-design .ct-status-right{display:flex;gap:5px;align-items:center}
+#ct-share-design i,#ct-share-design svg{width:22px;height:22px;display:inline-block;flex-shrink:0;vertical-align:middle}
+#ct-share-design .ct-status svg{width:14px;height:14px}
+#ct-share-design .ct-top{height:58px;padding:2px 12px;display:flex;align-items:center;gap:6px}
+#ct-share-design .ct-icon{width:48px;height:48px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;flex-shrink:0}
+#ct-share-design .ct-top-title{flex:1;font-size:20px;font-weight:500}
+#ct-share-design .ct-share-icon{color:var(--ct-primary)}
+#ct-share-design .ct-content{padding:8px 20px 20px}
+#ct-share-design h2{font-size:22px;font-weight:500;line-height:1.35;margin:0}
+#ct-share-design h3{font-size:18px;font-weight:500;margin:0}
+#ct-share-design p{margin:6px 0 0}
+#ct-share-design .ct-small{font-size:12px;color:var(--ct-muted);line-height:1.55}
+#ct-share-design .ct-sub{font-size:14px;color:var(--ct-muted)}
+#ct-share-design .ct-art{width:220px;height:220px;border-radius:20px;margin:8px auto 18px;position:relative;overflow:hidden;background:#a0b7c1;color:#f6f1dc;isolation:isolate}
+#ct-share-design .ct-art:before{content:"";position:absolute;width:155%;height:72%;left:-18%;bottom:-27%;border-radius:50%;background:#557a88;transform:rotate(-18deg);z-index:-1}
+#ct-share-design .ct-art:after{content:"";position:absolute;width:118%;height:52%;left:27%;bottom:-12%;border-radius:50%;background:#2c5264;transform:rotate(-27deg);z-index:-1}
+#ct-share-design .ct-art .ct-sun{width:55px;height:55px;background:#f6e4bb;border-radius:50%;position:absolute;left:30px;top:30px}
+#ct-share-design .ct-art .ct-cover-type{position:absolute;bottom:20px;left:20px;font-size:10px;letter-spacing:3px}
+#ct-share-design .ct-art.playlist{background:#d0bfd7}
+#ct-share-design .ct-art.playlist:before{background:#8d83ac}
+#ct-share-design .ct-art.playlist:after{background:#5a5c8b}
+#ct-share-design .ct-art.mini{width:60px;height:60px;border-radius:12px;margin:0;flex-shrink:0}
+#ct-share-design .ct-art.mini .ct-sun{width:17px;height:17px;left:9px;top:9px}
+#ct-share-design .ct-art.mini .ct-cover-type{display:none}
+#ct-share-design .ct-title-row{display:flex;gap:8px;align-items:center;justify-content:space-between}
+#ct-share-design .ct-tonal{background:var(--ct-pale);color:var(--ct-primary);width:42px;height:42px}
+#ct-share-design .ct-actions{display:flex;gap:12px;align-items:center;margin:22px 0 18px}
+#ct-share-design .ct-btn{min-height:48px;border-radius:26px;padding:12px 18px;border:1px solid var(--ct-line);display:flex;gap:8px;align-items:center;justify-content:center;font-weight:500}
+#ct-share-design .ct-primary{background:var(--ct-primary);color:var(--ct-on-primary);border-color:transparent}
+#ct-share-design .ct-actions .ct-btn{flex:1}
+#ct-share-design .ct-full{width:100%;margin-top:12px}
+#ct-share-design .ct-song-row{display:flex;align-items:center;gap:12px;min-height:63px;border-bottom:1px solid var(--ct-line)}
+#ct-share-design .ct-song-row:last-child{border:0}
+#ct-share-design .ct-song-num{width:18px;text-align:center;color:var(--ct-muted);font-size:12px}
+#ct-share-design .ct-grow{flex:1;min-width:0}
+#ct-share-design .ct-song-row .ct-grow>div:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ct-share-design .ct-song-row .ct-icon{width:38px}
+#ct-share-design .ct-gesture{position:absolute;bottom:10px;left:36%;width:28%;height:4px;background:var(--ct-muted);border-radius:5px;z-index:20}
+#ct-share-design .ct-scrim{position:absolute;inset:0;background:#10121d55;z-index:3}
+#ct-share-design .ct-sheet{position:relative;z-index:4;border-radius:28px 28px 0 0;background:var(--ct-surface);padding:10px 22px 40px;margin-top:0;min-height:604px}
+#ct-share-design .ct-sheet-host{margin-bottom:-32px;min-height:808px}
+#ct-share-design .ct-sheet-host .ct-background{height:204px;overflow:hidden}
+#ct-share-design .ct-sheet-host .ct-background .ct-art{width:130px;height:130px;margin-top:0}
+#ct-share-design .ct-handle{width:32px;height:4px;border-radius:4px;background:var(--ct-line);margin:0 auto 16px}
+#ct-share-design .ct-sheet-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+#ct-share-design .ct-sheet-heading .ct-icon{width:32px;height:36px}
+#ct-share-design .ct-summary{display:flex;gap:12px;align-items:center;margin:4px 0 22px}
+#ct-share-design .ct-summary strong{font-weight:500;font-size:16px;display:block}
+#ct-share-design .ct-field-label{display:block;margin:18px 0 10px;font-size:14px;font-weight:500}
+#ct-share-design .ct-field-label span{font-weight:400;color:var(--ct-muted);font-size:12px}
+#ct-share-design textarea{resize:none;display:block;width:100%;height:77px;border:1px solid var(--ct-line);border-radius:12px;background:var(--ct-surface);padding:12px;font-size:14px}
+#ct-share-design textarea::placeholder{color:var(--ct-muted)}
+#ct-share-design .ct-periods{display:flex;gap:10px}
+#ct-share-design .ct-periods button{border:1px solid var(--ct-line);border-radius:12px;padding:9px 8px;flex:1;min-height:42px}
+#ct-share-design .ct-periods button[aria-pressed="true"]{background:var(--ct-pale);border-color:var(--ct-primary);color:var(--ct-primary);font-weight:500}
+#ct-share-design .ct-note{display:flex;gap:8px;align-items:flex-start;background:var(--ct-soft);padding:12px;border-radius:12px;margin:18px 0 12px;font-size:12px;color:var(--ct-muted)}
+#ct-share-design .ct-note svg{width:16px;height:16px;margin-top:2px}
+#ct-share-design .ct-footnote{font-size:12px;color:var(--ct-muted);margin:12px 0 16px}
+#ct-share-design .ct-success-mark{width:52px;height:52px;border-radius:50%;background:var(--ct-pale);color:var(--ct-primary);display:flex;align-items:center;justify-content:center;margin:6px auto 12px}
+#ct-share-design .ct-center{text-align:center}
+#ct-share-design .ct-link-box{padding:15px;border:1px solid var(--ct-line);border-radius:14px;background:var(--ct-soft);overflow-wrap:anywhere;color:var(--ct-primary);margin:18px 0;font-size:14px}
+#ct-share-design .ct-text-button{color:var(--ct-primary);min-height:44px;display:flex;gap:8px;align-items:center;justify-content:center;width:100%;margin-top:10px}
+#ct-share-design .ct-section-label{font-weight:500;color:var(--ct-primary);margin:24px 0 12px;font-size:13px}
+#ct-share-design .ct-group{background:var(--ct-surface);border-radius:20px;padding:0 16px}
+#ct-share-design .ct-setting{width:100%;min-height:76px;display:flex;align-items:center;gap:14px;text-align:left;border-bottom:1px solid var(--ct-line)}
+#ct-share-design .ct-setting:last-child{border-bottom:0}
+#ct-share-design .ct-setting .ct-icon{width:32px;color:var(--ct-primary)}
+#ct-share-design .ct-my-profile{display:flex;align-items:center;gap:14px;background:var(--ct-surface);border-radius:20px;padding:16px;min-height:92px}
+#ct-share-design .ct-my-avatar{width:52px;height:52px;color:var(--ct-primary)}
+#ct-share-design .ct-my-avatar svg{width:52px;height:52px}
+#ct-share-design .ct-my-gear{width:40px;height:40px;border-radius:50%;background:var(--ct-pale);color:var(--ct-primary);display:flex;align-items:center;justify-content:center}
+#ct-share-design .ct-my-features{display:flex;gap:12px;margin:14px 0 0}
+#ct-share-design .ct-my-feature{width:50%;min-height:126px;padding:14px 12px 18px;text-align:left;border-radius:20px;background:radial-gradient(circle at 78% 115%,var(--ct-pale) 0 44%,transparent 45%),var(--ct-surface);overflow:hidden}
+#ct-share-design .ct-my-feature:nth-child(2){background:radial-gradient(circle at 22% 115%,var(--ct-pale) 0 44%,transparent 45%),var(--ct-surface)}
+#ct-share-design .ct-my-feature .ct-icon{width:28px;height:28px;background:var(--ct-pale);color:var(--ct-primary);margin-bottom:6px}
+#ct-share-design .ct-my-feature .ct-icon svg{width:17px;height:17px}
+#ct-share-design .ct-my-feature strong,#ct-share-design .ct-my-feature span:last-child{display:block}
+#ct-share-design .ct-my-feature strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ct-share-design .ct-my-feature span:last-child{font-size:12px;color:var(--ct-muted);margin-top:5px}
+#ct-share-design .ct-my-downloads{display:flex;align-items:center;background:var(--ct-surface);border-radius:20px}
+#ct-share-design .ct-my-downloads button{width:50%;display:flex;align-items:center;gap:9px;text-align:left;padding:13px 10px;min-height:68px}
+#ct-share-design .ct-my-downloads button+button{border-left:1px solid var(--ct-line)}
+#ct-share-design .ct-my-downloads .ct-icon{width:30px;height:30px;border-radius:10px;background:var(--ct-pale);color:var(--ct-primary)}
+#ct-share-design .ct-my-downloads .ct-icon svg{width:18px;height:18px}
+#ct-share-design .ct-my-downloads strong,#ct-share-design .ct-my-downloads .ct-small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ct-share-design .ct-my-downloads strong{font-size:12px}
+#ct-share-design .ct-my-playlist-heading{display:flex;align-items:center;margin:18px 0 10px;gap:8px}
+#ct-share-design .ct-my-playlist-heading strong{font-weight:500}
+#ct-share-design .ct-my-count{background:var(--ct-soft);border-radius:20px;color:var(--ct-muted);font-size:11px;padding:2px 8px}
+#ct-share-design .ct-my-create{margin-left:auto;color:var(--ct-primary);font-size:12px}
+#ct-share-design .ct-my-playlist{display:flex;width:100%;align-items:center;gap:12px;text-align:left;background:var(--ct-surface);border-radius:18px;padding:10px 14px;min-height:70px}
+#ct-share-design .ct-my-playlist .ct-art{width:46px;height:46px}
+#ct-share-design .ct-my-share-label{margin:14px 0 8px;color:var(--ct-primary);font-size:13px;font-weight:500}
+#ct-share-design .ct-brand{display:flex;align-items:center;gap:14px;margin:14px 0 26px}
+#ct-share-design .ct-brand-mark{width:48px;height:48px;border-radius:16px;background:var(--ct-pale);color:var(--ct-primary);display:flex;align-items:center;justify-content:center}
+#ct-share-design .ct-share-card{display:block;width:100%;text-align:left;background:var(--ct-surface);border-radius:20px;padding:16px;margin:16px 0}
+#ct-share-design .ct-share-card .ct-summary{margin:0 0 14px}
+#ct-share-design .ct-meta-line{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#ct-share-design .ct-badge{background:var(--ct-pale);color:var(--ct-primary);padding:3px 8px;border-radius:7px;font-size:11px}
+#ct-share-design .ct-badge.expired{background:var(--ct-soft);color:var(--ct-muted)}
+#ct-share-design .ct-meta-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-bottom:1px solid var(--ct-line);font-size:13px}
+#ct-share-design .ct-meta-row span:first-child{color:var(--ct-muted)}
+#ct-share-design .ct-danger{color:var(--ct-danger)}
+#ct-share-design .ct-dialog-wrap{position:absolute;inset:0;z-index:7;display:flex;justify-content:center;align-items:center;padding:26px;background:#10121d60}
+#ct-share-design .ct-dialog{width:100%;padding:24px;border-radius:28px;background:var(--ct-surface)}
+#ct-share-design .ct-dialog p{margin:16px 0 24px;color:var(--ct-muted)}
+#ct-share-design .ct-dialog-buttons{display:flex;justify-content:flex-end;gap:24px}
+#ct-share-design .ct-dialog-buttons button{min-height:44px;font-weight:500}
+#ct-share-design .ct-menu-row{width:100%;min-height:52px;display:flex;align-items:center;gap:16px;text-align:left}
+#ct-share-design .ct-menu-row.selected{color:var(--ct-primary)}
+#ct-share-design .ct-empty{padding:120px 12px 70px;text-align:center}
+#ct-share-design .ct-empty .ct-success-mark{margin-bottom:22px}
+#ct-share-design #ct-toast{position:absolute;z-index:30;bottom:36px;left:20px;right:20px;background:var(--ct-ink);color:var(--ct-bg);border-radius:12px;padding:13px 16px;font-size:13px}
+@media(max-width:360px){#ct-share-design .ct-sheet{padding-left:16px;padding-right:16px}#ct-share-design .ct-content{padding-left:16px;padding-right:16px}#ct-share-design .ct-preview-nav{gap:6px}#ct-share-design .ct-summary strong{font-size:15px}#ct-share-design .ct-meta-row{font-size:12px}}
+</style>
+<script>
+(() => {
+const root=document.getElementById('ct-share-design');
+const app=root.querySelector('#ct-app');
+const picker=root.querySelector('#ct-scene');
+const phone=root.querySelector('#ct-phone');
+const saved=window.openai?.widgetState?.privateContent;
+let scene=saved?.scene || 'album', kind=saved?.kind || 'playlist', days=saved?.days || 7, desc=saved?.desc || '';
+let revoked=false, selectedRecord=0, toastTimer;
+const tuning={sheetRadius:28, surface:'auto'};
+const scenes=Array.from(picker.options).map(o=>o.value);
+if(!scenes.includes(scene))scene='album';
+const icon=n=>`<i data-lucide="${n}" aria-hidden="true"></i>`;
+const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const art=(k='album',mini=false)=>`<div class="ct-art ${k==='playlist'?'playlist':''} ${mini?'mini':''}" role="img" aria-label="演示封面：抽象山丘与日落"><span class="ct-sun"></span><span class="ct-cover-type">${k==='playlist'?'ON THE WAY':'STILL / 2026'}</span></div>`;
+const data=()=>kind==='album'?{name:'山海之间',by:'林间回声',type:'专辑',count:'8 首歌曲'}:kind==='song'?{name:'晚风经过',by:'林间回声 · 山海之间',type:'歌曲',count:'单曲'}:{name:'通勤路上',by:'demo 创建',type:'歌单',count:'12 首歌曲'};
+const summary=()=>{const d=data();return `<div class="ct-summary">${art(kind,true)}<div class="ct-grow"><strong>${d.name}</strong><div class="ct-small">${d.type} · ${d.count}</div></div></div>`;};
+const status=()=>`<div class="ct-status"><span>9:41</span><span class="ct-status-right">${icon('signal')}${icon('wifi')}${icon('battery-full')}</span></div>`;
+const top=(title='',action='')=>`${status()}<div class="ct-top"><button class="ct-icon cursor-interaction" data-act="back" aria-label="返回">${icon('arrow-left')}</button><div class="ct-top-title">${title}</div>${action}</div>`;
+const shareAction=k=>`<button class="ct-icon ct-share-icon cursor-interaction" data-act="share-${k}" aria-label="分享${k==='album'?'专辑':'歌单'}">${icon('share-2')}</button>`;
+function detail(k='album'){
+const isList=k==='playlist';
+return `${top('',shareAction(k))}<div class="ct-content">${art(k)}<div class="ct-title-row"><h2>${isList?'通勤路上':'山海之间'}</h2><button class="ct-icon ct-tonal cursor-interaction" data-act="demo" aria-label="${isList?'重命名':'收藏专辑'}">${icon(isList?'pencil':'heart')}</button></div><p class="ct-sub">${isList?'demo · 12 首歌曲':'林间回声 · 2026 · 8 首歌曲'}</p><div class="ct-actions"><button class="ct-btn ct-primary cursor-interaction" data-act="demo">${icon('play')}播放全部</button><button class="ct-btn cursor-interaction" data-act="demo">${icon('download')}下载</button>${isList?`<button class="ct-icon cursor-interaction" data-act="demo" aria-label="添加歌曲">${icon('list-plus')}</button>`:''}</div>${['晚风经过','穿过城市的光','缓慢的晴天','沿途'].map((name,i)=>`<div class="ct-song-row"><span class="ct-song-num">${String(i+1).padStart(2,'0')}</span><div class="ct-grow"><div>${name}</div><div class="ct-small">林间回声</div></div><button class="ct-icon cursor-interaction" data-act="song-menu" aria-label="${name}更多选项">${icon('ellipsis-vertical')}</button></div>`).join('')}</div>`;
+}
+function sheet(inner){return `<div class="ct-sheet-host"><div class="ct-background">${top()}${art(kind)}</div><div class="ct-scrim"></div><section class="ct-sheet" aria-label="分享面板"><div class="ct-handle"></div>${inner}</section></div>`;}
+const heading=t=>`<div class="ct-sheet-heading"><h3>${t}</h3><button class="ct-icon cursor-interaction" data-act="close" aria-label="关闭分享面板">${icon('x')}</button></div>`;
+const periods=()=>`<div class="ct-periods">${[1,7,30].map(n=>`<button class="cursor-interaction" data-days="${n}" aria-pressed="${days===n}">${days===n?'✓ ':''}${n} 天</button>`).join('')}</div>`;
+function form(edit=false){return sheet(`${heading(edit?'编辑分享':'分享'+data().type)}${summary()}<label class="ct-field-label" for="ct-description">分享说明 <span>可选</span></label><textarea id="ct-description" maxlength="200" placeholder="写一句推荐语（可选）">${escape(desc)}</textarea><div class="ct-field-label">${edit?'新的有效期':'有效期'}</div>${periods()}${edit?'<p class="ct-small" style="margin-top:10px">从保存时开始计算，分享链接保持不变。</p>':kind==='playlist'?`<div class="ct-note">${icon('list-music')}<span>分享当前的 12 首歌曲，后续修改不会同步。</span></div>`:'<div style="height:12px"></div>'}<p class="ct-footnote">拥有链接的人可在有效期内访问，无需登录。</p><button class="ct-btn ct-primary ct-full cursor-interaction" data-act="${edit?'save':'generate'}">${edit?'保存修改':'生成分享链接'}</button>`);}
+function success(){return sheet(`${heading('分享'+data().type)}<div class="ct-success-mark">${icon('check')}</div><h2 class="ct-center">链接已生成</h2><p class="ct-small ct-center">有效期至 ${expiry()}</p><div style="margin-top:24px">${summary()}</div><div class="ct-link-box">https://music.example.com/share/DEMO123</div><button class="ct-btn ct-primary ct-full cursor-interaction" data-act="send">${icon('share-2')}分享链接</button><p class="ct-small ct-center">在系统分享中选择微信或其他应用</p><button class="ct-btn ct-full cursor-interaction" data-act="copy">${icon('copy')}复制链接</button><button class="ct-text-button cursor-interaction" data-act="manage">管理此分享 ${icon('chevron-right')}</button>`);}
+function expiry(){return days===1?'2026-09-25 09:41':days===30?'2026-10-24 09:41':'2026-10-01 09:41';}
+const setting=(ic,title,sub,act='demo')=>`<button class="ct-setting cursor-interaction" data-act="${act}"><span class="ct-icon">${icon(ic)}</span><div class="ct-grow"><div>${title}</div>${sub?`<div class="ct-small">${sub}</div>`:''}</div>${icon('chevron-right')}</button>`;
+function my(empty=false){
+ const count=records.filter((r,i)=>!revoked||i!==0).length;
+ return `${status()}<div class="ct-content">
+ <h2 style="margin:18px 0 22px">我的</h2>
+ <div class="ct-my-profile"><span class="ct-my-avatar">${icon('circle-user-round')}</span><div class="ct-grow"><strong>demo</strong><div class="ct-small">🟢 Navidrome 已连接</div></div><button class="ct-my-gear cursor-interaction" data-act="demo" aria-label="设置">${icon('settings')}</button></div>
+ <div class="ct-my-features"><button class="ct-my-feature cursor-interaction" data-act="demo"><span class="ct-icon">${icon('chart-no-axes-combined')}</span><strong>听歌报告</strong><span>回顾你的聆听</span></button><button class="ct-my-feature cursor-interaction" data-act="demo"><span class="ct-icon">${icon('heart')}</span><strong>喜欢的音乐</strong><span>42 首歌曲</span></button></div>
+ <div class="ct-section-label" style="margin-top:10px">离线与下载</div><div class="ct-my-downloads"><button class="cursor-interaction" data-act="demo"><span class="ct-icon">${icon('circle-check')}</span><span class="ct-grow"><strong>离线音乐</strong><span class="ct-small">12 首歌曲</span></span></button><button class="cursor-interaction" data-act="demo"><span class="ct-icon">${icon('download')}</span><span class="ct-grow"><strong>下载管理</strong><span class="ct-small">2 个任务</span></span></button></div>
+ <div class="ct-my-playlist-heading"><strong>歌单</strong><span class="ct-my-count">1</span><button class="ct-my-create cursor-interaction" data-act="demo">＋ 新建歌单</button></div><button class="ct-my-playlist cursor-interaction" data-act="demo">${art('playlist',true)}<span class="ct-grow">通勤路上<span class="ct-small" style="display:block">12 首歌曲</span></span>${icon('chevron-right')}</button>
+ ${empty?'':`<div class="ct-my-share-label">分享</div><div class="ct-group">${setting('share-2','我的分享',count+' 条链接 · 管理有效期','list')}</div>`}
+ </div>`;
+}
+const records=[{name:'通勤路上',k:'playlist',type:'歌单快照 · 12 首',date:'10 月 1 日 09:41 到期',visits:'访问 3 次'},{name:'山海之间',k:'album',type:'专辑 · 8 首',date:'10 月 22 日 14:20 到期',visits:'访问 8 次'},{name:'晚风经过',k:'song',type:'歌曲 · 林间回声',date:'9 月 20 日已到期',visits:'访问 2 次',expired:true}];
+function list(empty=false){return `${top('我的分享')}<div class="ct-content"><div class="ct-sub">当前账号创建的链接</div>${empty?`<div class="ct-empty"><div class="ct-success-mark">${icon('link')}</div><h3>还没有分享</h3><p class="ct-sub">从歌曲、专辑或歌单<br>创建第一条链接</p></div>`:records.filter((r,i)=>!revoked||i!==0).map((r,i)=>`<button class="ct-share-card cursor-interaction" data-record="${records.indexOf(r)}"><div class="ct-summary">${art(r.k,true)}<div class="ct-grow"><strong>${r.name}</strong><span class="ct-small">${r.type}</span></div>${icon('chevron-right')}</div><div class="ct-meta-line"><span class="ct-badge ${r.expired?'expired':''}">${r.expired?'已过期':'生效中'}</span><span class="ct-small">${r.visits}</span></div><p class="ct-small" style="margin-top:12px">${r.date}</p></button>`).join('')}</div>`;}
+function manage(){const expired=records[selectedRecord]?.expired;return `${top('分享详情')}<div class="ct-content" style="padding-top:22px">${summary()}<span class="ct-badge ${expired?'expired':''}">${expired?'已过期':'生效中'}</span><div class="ct-link-box">https://music.example.com/share/DEMO123</div><div class="ct-meta-row"><span>有效期至</span><span>${expired?'2026-09-20 09:41':expiry()}</span></div><div class="ct-meta-row"><span>创建时间</span><span>2026-09-24 09:41</span></div><div class="ct-meta-row"><span>访问次数</span><span>3 次</span></div><div class="ct-meta-row"><span>分享说明</span><span>${escape(desc||'未填写')}</span></div>${kind==='playlist'?`<div class="ct-note">${icon('list-music')}<span>已分享创建时的 12 首歌曲。</span></div>`:''}${expired?'<p class="ct-footnote">链接已到期，修改有效期后可再次分享。</p>':`<button class="ct-btn ct-primary ct-full cursor-interaction" data-act="send">${icon('share-2')}分享链接</button><button class="ct-btn ct-full cursor-interaction" data-act="copy">${icon('copy')}复制链接</button>`}<button class="ct-text-button cursor-interaction" data-act="edit">${icon('pencil')}${expired?'编辑有效期':'编辑分享'}</button><button class="ct-text-button ct-danger cursor-interaction" data-act="revoke">${icon('link-2-off')}取消分享</button></div>`;}
+function song(){kind='song';return sheet(`${heading('晚风经过')}<div class="ct-small" style="margin-bottom:16px">林间回声 · 山海之间</div>${[['list-end','下一首播放','demo'],['heart','喜欢歌曲','demo'],['list-plus','加入歌单','demo'],['download','下载歌曲','demo'],['share-2','分享歌曲','share-song'],['info','歌曲详情','demo']].map(([ic,t,a])=>`<button class="ct-menu-row cursor-interaction ${a==='share-song'?'selected':''}" data-act="${a}">${icon(ic)}${t}</button>`).join('')}`);}
+function error(){return sheet(`${heading('分享'+data().type)}${summary()}<div class="ct-empty" style="padding:30px 0 60px"><div class="ct-success-mark">${icon('link-2-off')}</div><h3>当前服务器未开启分享</h3><p class="ct-sub">请联系服务器管理员开启分享功能。</p></div><button class="ct-btn ct-primary ct-full cursor-interaction" data-act="close">知道了</button>`);}
+function render(){
+picker.value=scene;
+root.querySelector('#ct-toast').hidden=true;
+if(scene==='album'||scene==='playlist')app.innerHTML=detail(scene);
+else if(scene==='song')app.innerHTML=song();
+else if(scene==='create')app.innerHTML=form();
+else if(scene==='success')app.innerHTML=success();
+else if(scene==='my'||scene==='empty')app.innerHTML=my(scene==='empty');
+else if(scene==='list')app.innerHTML=list();
+else if(scene==='manage')app.innerHTML=manage();
+else if(scene==='edit')app.innerHTML=form(true);
+else if(scene==='revoke')app.innerHTML=manage()+`<div class="ct-dialog-wrap"><section class="ct-dialog" role="dialog" aria-modal="true" aria-labelledby="ct-revoke-title"><h2 id="ct-revoke-title">取消这条分享？</h2><p>取消后，这个链接将无法访问。<br>已发送的消息不会被删除。</p><div class="ct-dialog-buttons"><button class="cursor-interaction" data-act="manage">保留链接</button><button class="ct-danger cursor-interaction" data-act="confirm-revoke">取消分享</button></div></section></div>`;
+else app.innerHTML=error();
+root.querySelectorAll('.ct-sheet').forEach(el=>el.style.borderRadius=`${tuning.sheetRadius}px ${tuning.sheetRadius}px 0 0`);
+root.style.colorScheme=tuning.surface==='auto'?'light dark':tuning.surface;
+if(globalThis.lucide)globalThis.lucide.createIcons({attrs:{width:22,height:22}});
+}
+function persist(){window.openai?.setWidgetState?.({modelContent:{design:'ClearTune 分享',page:scene,kind,days},privateContent:{scene,kind,days,desc}})?.catch(()=>{});}
+function go(next){scene=next;render();persist();}
+function toast(text){const el=root.querySelector('#ct-toast');clearTimeout(toastTimer);el.textContent=text;el.hidden=false;toastTimer=setTimeout(()=>el.hidden=true,2800);}
+picker.addEventListener('change',()=>{kind='playlist';selectedRecord=0;go(picker.value);});
+root.addEventListener('input',e=>{if(e.target.id==='ct-description')desc=e.target.value;});
+root.addEventListener('click',e=>{
+const b=e.target.closest('button');if(!b)return;
+if(b.dataset.days){const ta=root.querySelector('textarea');if(ta)desc=ta.value;days=Number(b.dataset.days);render();persist();return;}
+if(b.dataset.record!==undefined){selectedRecord=Number(b.dataset.record);kind=records[selectedRecord].k;go('manage');return;}
+const a=b.dataset.act;if(!a)return;
+if(a.startsWith('share-')){kind=a.slice(6);go('create');}
+else if(a==='generate'){selectedRecord=0;go('success');}
+else if(a==='song-menu')go('song');
+else if(a==='copy')toast('演示：链接已复制（未写入真实剪贴板）');
+else if(a==='send')toast('演示：这里打开系统分享面板，可选择微信；未实际发送');
+else if(a==='save'){if(records[selectedRecord])records[selectedRecord].expired=false;go('manage');toast('演示：修改已保存，链接保持不变');}
+else if(a==='confirm-revoke'){revoked=true;go('list');toast('演示：分享已取消');}
+else if(a==='close')go(scene==='edit'?'manage':scene==='song'?'album':kind==='song'?'song':kind);
+else if(a==='back')go(['manage','edit','revoke'].includes(scene)?'list':scene==='list'?'my':'album');
+else if(['list','manage','edit','revoke'].includes(a))go(a);
+else toast('此处保留现有功能，本稿仅演示分享流程');
+});
+window.addEventListener('openai:set_globals',e=>{const s=e.detail?.globals?.widgetState?.privateContent;if(s&&scenes.includes(s.scene)){scene=s.scene;kind=s.kind||'playlist';days=s.days||7;desc=s.desc||'';render();}});
+render();
+if(globalThis.Tweak){const t=new Tweak({container:phone,onChange:render});t.addSelect(tuning,'surface',{label:'外观',options:[{label:'跟随系统',value:'auto'},{label:'浅色',value:'light'},{label:'深色',value:'dark'}]});t.addSlider(tuning,'sheetRadius',{label:'面板圆角',min:20,max:32,step:4,unit:'dp'});}
+})();
+</script>

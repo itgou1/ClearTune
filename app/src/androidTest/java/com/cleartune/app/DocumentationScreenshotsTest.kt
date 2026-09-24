@@ -7,8 +7,12 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.LinearGradient
 import android.graphics.Shader
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -51,7 +55,7 @@ class DocumentationScreenshotsTest {
             """{"id":"a$i","name":"$title","artist":"示例音乐人","coverArt":"${600 + i}","songCount":4,"duration":840,"created":"2026-09-01T00:00:00Z"}"""
         }.joinToString(",")
         val songs = (0 until 24).map { i ->
-            """{"id":"s$i","title":"${titles[i % 6]} · ${i / 6 + 1}","artist":"示例音乐人","album":"${titles[i % 6]}","albumId":"a${i % 6}","coverArt":"${600 + i % 6}","duration":210,"suffix":"flac","genre":"Pop","playCount":${24 - i}}"""
+            """{"id":"s$i","title":"${titles[i % 6]} · ${i / 6 + 1}","artist":"示例音乐人","album":"${titles[i % 6]}","albumId":"a${i % 6}","coverArt":"${600 + i % 6}","duration":210,"suffix":"flac","genre":"${if (i >= 17) "Rock" else "Pop"}","playCount":${24 - i}}"""
         }
         val covers = (0 until 6).map(::cover)
         val response = """{"subsonic-response":{"status":"ok","version":"1.16.1","type":"test","albumList2":{"album":[$albums]},"artists":{"index":[]},"playlists":{"playlist":[{"id":"p1","name":"清晨慢慢听","songCount":8,"duration":1680,"coverArt":"601"},{"id":"p2","name":"通勤路上","songCount":12,"duration":2520,"coverArt":"602"}]},"searchResult3":{"song":[${songs.joinToString(",")}]},"starred2":{"song":[${songs.take(8).joinToString(",")}]},"genres":{"genre":[]},"musicFolders":{"musicFolder":[]},"playQueue":{"entry":[]}}}""".toByteArray()
@@ -103,20 +107,35 @@ class DocumentationScreenshotsTest {
                             starredAt = now,
                         )
                     }
-                    database.mediaDao().upsertSongs(rows)
+                    val longAbsent = (17..21).map { i ->
+                        checkNotNull(database.mediaDao().song("s$i")).copy(
+                            lastPlayedAt = now - 40 * 86_400_000L,
+                        )
+                    }
+                    database.mediaDao().upsertSongs(rows + longAbsent)
                     ui.waitUntil(10_000) { music.libraryState.value.songs.count { it.starredAt != null } == 8 }
                 } finally { database.close() }
             }
             ui.waitUntil(10_000) { music.recommendations.value.any { it.id == "frequent" && it.songs.isNotEmpty() } }
+            ui.waitUntil(10_000) {
+                music.recommendations.value.map { it.id }.containsAll(
+                    listOf("from-favorites", "new-taste", "long-absent"))
+            }
             fun capture(name: String) {
                 ui.waitForIdle()
                 Thread.sleep(1_500) // Allow real cover requests and the entrance animation to settle.
                 val folder = File(context.getExternalFilesDir(null), "documentation").apply { mkdirs() }
-                val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+                val bitmap = ui.onRoot().captureToImage().asAndroidBitmap()
                 File(folder, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 bitmap.recycle()
             }
             capture("ui-home-v1.3.3.png")
+            ui.onNodeWithText("发现音乐").performClick()
+            ui.onNodeWithText("从喜欢出发").assertExists()
+            ui.onNodeWithText("换个口味").assertExists()
+            ui.onNodeWithText("好久不见").assertExists()
+            capture("ui-discovery-redesign.png")
+            ui.onNodeWithContentDescription(context.getString(R.string.back)).performClick()
             ui.onNodeWithText("我的").performClick()
             capture("ui-mine-v1.3.3.png")
         } finally {

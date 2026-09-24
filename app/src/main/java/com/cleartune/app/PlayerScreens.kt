@@ -58,6 +58,7 @@ import androidx.compose.material.icons.automirrored.rounded.Label
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -254,11 +255,12 @@ internal fun NowPlayingScreen(
     onEqualizer: () -> Unit,
     onFavorite: (com.cleartune.core.model.Song, Boolean) -> Unit,
     onDownload: (com.cleartune.core.model.Song) -> Unit,
+    onShare: (com.cleartune.core.model.Song) -> Unit = {},
 ) {
     val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     val song = state.currentSong
     val displayCoverArtId = song?.displayCoverArtId()
-    var showLyrics by remember(song?.id) { mutableStateOf(false) }
+    var showLyrics by remember { mutableStateOf(false) }
     LaunchedEffect(showLyrics, song?.id) {
         if (showLyrics) song?.let(musicViewModel::loadLyrics)
     }
@@ -594,6 +596,11 @@ internal fun NowPlayingScreen(
                 headlineContent = { Text("音乐标签") },
                 leadingContent = { Icon(Icons.AutoMirrored.Rounded.Label, contentDescription = null) },
                 modifier = Modifier.clickable { showMoreActions = false; musicTagActions.open(song) },
+            )
+            ListItem(
+                headlineContent = { Text("分享歌曲") },
+                leadingContent = { Icon(Icons.Rounded.Share, contentDescription = null) },
+                modifier = Modifier.clickable { showMoreActions = false; onShare(song) },
             )
             ListItem(
                 headlineContent = { Text(stringResource(R.string.song_details)) },

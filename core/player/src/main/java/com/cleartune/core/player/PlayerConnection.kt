@@ -238,34 +238,50 @@ class PlayerConnection(context: Context) {
 
     fun hasActiveQueue(): Boolean = (controller?.mediaItemCount ?: 0) > 0
 
-    fun playNext(song: Song, streamUrl: String, artworkUrl: String? = null) {
+    fun playNext(song: Song, streamUrl: String? = null, artworkUrl: String? = null) {
         val mediaController = controller ?: return
         songMap = songMap + (song.id to song)
-        val replayGainQueue = ReplayGainMetadata.queueValues(listOf(song))
-        val item = MediaItem.Builder()
-            .setMediaId(song.id)
-            .setUri(streamUrl)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(song.title)
-                    .setArtist(song.artistName)
-                    .setAlbumTitle(song.albumName)
-                    .setArtworkUri(artworkUrl?.let(Uri::parse))
-                    .setExtras(
-                        ReplayGainMetadata.extras(song, replayGainQueue).apply {
-                            SessionSongMetadata.write(this, song)
-                        },
-                    )
-                    .build(),
-            )
-            .apply { playbackCacheKey(song.id, streamUrl)?.let(::setCustomCacheKey) }
-            .build()
-        val insertAt = if (mediaController.currentMediaItemIndex in 0 until mediaController.mediaItemCount) {
-            mediaController.currentMediaItemIndex + 1
-        } else {
-            mediaController.mediaItemCount
+        val item = streamUrl?.let { stream ->
+            val replayGainQueue = ReplayGainMetadata.queueValues(listOf(song))
+            MediaItem.Builder()
+                .setMediaId(song.id)
+                .setUri(stream)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(song.title)
+                        .setArtist(song.artistName)
+                        .setAlbumTitle(song.albumName)
+                        .setArtworkUri(artworkUrl?.let(Uri::parse))
+                        .setExtras(
+                            ReplayGainMetadata.extras(song, replayGainQueue).apply {
+                                SessionSongMetadata.write(this, song)
+                            },
+                        )
+                        .build(),
+                )
+                .apply { playbackCacheKey(song.id, stream)?.let(::setCustomCacheKey) }
+                .build()
         }
-        mediaController.addMediaItem(insertAt, item)
+        if (PlaybackService.forceNext(song.id, item)) return
+
+        // The local playback service normally performs the operation atomically.
+        // Keep a physical-queue fallback for a controller reconnect in progress.
+        val currentIndex = mediaController.currentMediaItemIndex
+        val existingIndex = (0 until mediaController.mediaItemCount)
+            .firstOrNull { mediaController.getMediaItemAt(it).mediaId == song.id }
+        if (existingIndex != null && currentIndex in 0 until mediaController.mediaItemCount) {
+            if (existingIndex != currentIndex + 1) {
+                val targetIndex = if (existingIndex < currentIndex) currentIndex else currentIndex + 1
+                mediaController.moveMediaItem(existingIndex, targetIndex)
+            }
+        } else if (item != null) {
+            val insertAt = if (currentIndex in 0 until mediaController.mediaItemCount) {
+                currentIndex + 1
+            } else {
+                mediaController.mediaItemCount
+            }
+            mediaController.addMediaItem(insertAt, item)
+        }
     }
 
     fun cycleMode(): PlaybackMode {
@@ -311,11 +327,15 @@ class PlayerConnection(context: Context) {
     }
 
     private fun applyMode(player: Player, value: PlaybackMode) {
-        player.shuffleModeEnabled = value == PlaybackMode.SHUFFLE
-        player.repeatMode = when (value) {
+        val shuffle = value == PlaybackMode.SHUFFLE
+        val repeatMode = when (value) {
             PlaybackMode.SEQUENTIAL -> Player.REPEAT_MODE_OFF
             PlaybackMode.REPEAT_ALL, PlaybackMode.SHUFFLE -> Player.REPEAT_MODE_ALL
             PlaybackMode.REPEAT_ONE -> Player.REPEAT_MODE_ONE
+        }
+        if (!PlaybackService.applyPlaybackMode(shuffle, repeatMode)) {
+            player.shuffleModeEnabled = shuffle
+            player.repeatMode = repeatMode
         }
     }
 
