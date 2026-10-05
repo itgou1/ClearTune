@@ -1,7 +1,6 @@
 package com.cleartune.core.player
 
 import android.media.AudioManager
-import android.media.audiofx.Equalizer
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -29,12 +28,18 @@ class EqualizerLifecycleTest {
 
     @Test fun playbackProbeAcrossEqualizerToggleAndTrackChanges() = fixture(enableInitially = false) { service, player ->
         val context = instrumentation.targetContext
+        var lowestVolume = 1f
         val files = listOf(48_000, 44_100, 32_000).map { rate ->
             File(context.cacheDir, "eq-probe-$rate.wav").apply { writeBytes(tone(rate)) }
         }
         try {
             main {
                 player.addListener(field(service, "playerListener") as Player.Listener)
+                player.addListener(object : Player.Listener {
+                    override fun onVolumeChanged(volume: Float) {
+                        lowestVolume = minOf(lowestVolume, volume)
+                    }
+                })
                 player.setMediaItems(files.map { MediaItem.fromUri(it.toURI().toString()) })
                 player.repeatMode = Player.REPEAT_MODE_ALL
                 player.prepare()
@@ -52,7 +57,7 @@ class EqualizerLifecycleTest {
             probe(service, player, "enable-request")
             main { apply(service, enabled = true) }
             awaitTransition(service)
-            main { assertNotNull("Native equalizer must be supported for this probe", field(service, "equalizer")) }
+            main { assertTrue("Native equalizer must be supported for this probe", controller(service).isAttached) }
             probe(service, player, "enabled")
             Thread.sleep(2000)
             probe(service, player, "disable-request")
@@ -67,9 +72,10 @@ class EqualizerLifecycleTest {
                 Thread.sleep(1500)
             }
             main {
-                assertNull("Disabled equalizer must not remain attached after track changes", field(service, "equalizer"))
+                assertFalse("Disabled equalizer must not remain attached after track changes", controller(service).isAttached)
                 assertEquals(1f, player.volume, 0.0001f)
                 assertNull(player.playerError)
+                assertTrue("EQ switching must not dip below its required 6 dB headroom", lowestVolume >= 0.501f)
             }
         } finally {
             main { player.stop() }
@@ -79,7 +85,7 @@ class EqualizerLifecycleTest {
 
     private fun probe(service: PlaybackService, player: ExoPlayer, event: String) = main {
         Log.i("EqualizerProbe", "${System.currentTimeMillis()} $event session=${player.audioSessionId} " +
-            "attached=${field(service, "equalizer") != null} volume=${player.volume} position=${player.currentPosition}")
+            "attached=${controller(service).isAttached} volume=${player.volume} position=${player.currentPosition}")
     }
 
     private fun awaitPlaying(player: ExoPlayer) {
@@ -110,10 +116,10 @@ class EqualizerLifecycleTest {
         main { apply(service, enabled = false) }
         awaitTransition(service)
         main {
-            assertNull(field(service, "equalizer"))
+            assertFalse(controller(service).isAttached)
             assertEquals(1f, player.volume, 0.0001f)
             repeat(3) { apply(service, enabled = false) }
-            assertNull(field(service, "equalizer"))
+            assertFalse(controller(service).isAttached)
             assertEquals(1f, player.volume, 0.0001f)
         }
     }
@@ -126,13 +132,13 @@ class EqualizerLifecycleTest {
         main { apply(service, enabled = false) }
         awaitTransition(service)
         main {
-            assertNull(field(service, "equalizer"))
+            assertFalse(controller(service).isAttached)
             assertEquals(1f, player.volume, 0.0001f)
             apply(service, enabled = true)
         }
         awaitTransition(service)
         main {
-            assertTrue((field(service, "equalizer") as Equalizer).enabled)
+            assertTrue(controller(service).isAttached)
             assertTrue(player.volume > 0f)
         }
     }
@@ -149,16 +155,17 @@ class EqualizerLifecycleTest {
                 setField(service, "player", player)
                 if (enableInitially) apply(service, enabled = true, animate = false)
             }
+            awaitTransition(service)
             main {
                 if (enableInitially) {
-                    assumeTrue("Device must provide a controllable native equalizer", field(service, "equalizer") != null)
+                    assumeTrue("Device must provide a controllable native equalizer", controller(service).isAttached)
                 }
             }
             block(service, player)
         } finally {
             main {
                 (field(service, "playbackScope") as CoroutineScope).cancel()
-                (field(service, "equalizer") as Equalizer?)?.release()
+                controller(service).close()
                 player.release()
             }
         }
@@ -181,6 +188,8 @@ class EqualizerLifecycleTest {
         PlaybackService::class.java.getDeclaredMethod("applyEqualizer", Boolean::class.javaPrimitiveType)
             .apply { isAccessible = true }.invoke(service, animate)
     }
+
+    private fun controller(service: PlaybackService) = field(service, "equalizerController") as EqualizerController
 
     private fun field(service: PlaybackService, name: String): Any? =
         PlaybackService::class.java.getDeclaredField(name).apply { isAccessible = true }.get(service)
