@@ -37,6 +37,10 @@ internal fun FavoriteSongsScreen(
     LaunchedEffect(savedSort) { if (pendingSort == savedSort) pendingSort = null }
     val sort = pendingSort ?: savedSort ?: PlaylistSort()
     val sorted = remember(songs, sort) { sortedFavoriteEntries(songs, sort) }
+    val coverArtId = remember(songs) {
+        sortedFavoriteEntries(songs, PlaylistSort())
+            .firstNotNullOfOrNull { it.coverArtId.displayableArtworkId() }
+    }
     var showAdd by rememberSaveable { mutableStateOf(false) }
     var more by remember { mutableStateOf(false) }
     var selecting by rememberSaveable { mutableStateOf(false) }
@@ -50,7 +54,7 @@ internal fun FavoriteSongsScreen(
         actions = {
             if (!selecting) IconButton(enabled = songs.isNotEmpty(), onClick = {
                 onShare(ShareTarget(ShareKind.PLAYLIST, "favorites", title, "${songs.size} 首歌曲",
-                    songs.firstOrNull()?.coverArtId, songs.size, sorted.map { it.id }))
+                    coverArtId, songs.size, sorted.map { it.id }))
             }) { Icon(Icons.Rounded.Share, "分享我喜欢的音乐") }
         },
         bottomBar = {
@@ -63,7 +67,7 @@ internal fun FavoriteSongsScreen(
         },
     ) {
         item {
-            DetailHeader(title, stringResource(R.string.song_count, songs.size), songs.firstOrNull()?.coverArtId,
+            DetailHeader(title, stringResource(R.string.song_count, songs.size), coverArtId,
                 viewModel, previewSize = 192)
             if (!selecting) PlaylistDetailActions(
                 hasSongs = songs.isNotEmpty() && savedSort != null,

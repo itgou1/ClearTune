@@ -158,8 +158,9 @@ class SongActionsConsistencyUiTest {
         }
         fun menuItem(label: String) = ui.onNode(hasText(label) and hasAnyAncestor(isPopup()))
         openMenu()
-        val labels = listOf(
-            context.getString(R.string.add_to_playlist), context.getString(R.string.unlike_song),
+        if (screen == "playlist") menuItem(context.getString(R.string.add_to_playlist)).assertDoesNotExist()
+        val labels = (if (screen == "playlist") emptyList() else listOf(context.getString(R.string.add_to_playlist))) + listOf(
+            context.getString(R.string.unlike_song),
             context.getString(R.string.play_next), context.getString(R.string.download_action),
             "分享歌曲", "音乐标签", context.getString(R.string.song_details),
         )

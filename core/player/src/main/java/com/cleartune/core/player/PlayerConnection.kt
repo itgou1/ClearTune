@@ -153,9 +153,17 @@ class PlayerConnection(context: Context) {
         }
         if (items.isEmpty()) return
         controller?.apply {
+            // Restoring a queue must not open the audio source until playback is requested.
+            // Stop an already prepared source too, e.g. when a newer server queue replaces it.
+            if (!playWhenReady) {
+                pause()
+                stop()
+            }
             setMediaItems(items, startIndex.coerceIn(items.indices), positionMs.coerceAtLeast(0))
-            prepare()
-            if (playWhenReady) play()
+            if (playWhenReady) {
+                prepare()
+                play()
+            }
         }
     }
 

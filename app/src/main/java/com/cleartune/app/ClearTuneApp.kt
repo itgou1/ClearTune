@@ -2968,6 +2968,7 @@ internal fun PlaylistDetailScreen(
                             viewModel = viewModel,
                             onToggleLike = { viewModel.toggleSongFavorite(song) },
                             onAddToPlaylist = { playlistId -> viewModel.addPlaylistSong(playlistId, song.id) },
+                            showAddToPlaylist = false,
                             onPlayNext = { onPlayNext(song) },
                             onDownload = { onDownload(listOf(song)) },
                             onShare = { onShare(song.shareTarget()) },
@@ -4165,6 +4166,7 @@ internal fun SongActionsMenu(
     onPlayNext: () -> Unit,
     onDownload: () -> Unit,
     onShare: () -> Unit,
+    showAddToPlaylist: Boolean = true,
 ) {
     val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     var expanded by remember { mutableStateOf(false) }
@@ -4180,7 +4182,7 @@ internal fun SongActionsMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
-            DropdownMenuItem(
+            if (showAddToPlaylist) DropdownMenuItem(
                 text = { Text(stringResource(R.string.add_to_playlist)) },
                 leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null) },
                 onClick = {

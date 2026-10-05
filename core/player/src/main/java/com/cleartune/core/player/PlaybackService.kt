@@ -51,6 +51,7 @@ class PlaybackService : MediaLibraryService() {
     private var equalizerTransitionJob: Job? = null
     private var replayGainVolume = 1f
     private var equalizerHeadroom = 1f
+    private var equalizerTransitionVolume = 1f
     private var forcedNext: ForcedNext? = null
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -149,11 +150,14 @@ class PlaybackService : MediaLibraryService() {
         val settingsFlow = AppPreferences(this@PlaybackService).settings
         playbackScope.launch {
             settingsFlow
-                .collect { settings ->
-                    volumeNormalizationEnabled = settings.volumeNormalizationEnabled
-                    equalizerSettings = settings.equalizer
+                .map { it.volumeNormalizationEnabled to it.equalizer }
+                .distinctUntilChanged()
+                .collect { (normalizationEnabled, newEqualizerSettings) ->
+                    val equalizerChanged = equalizerSettings != newEqualizerSettings
+                    volumeNormalizationEnabled = normalizationEnabled
+                    equalizerSettings = newEqualizerSettings
                     applyReplayGain()
-                    applyEqualizer(animate = true)
+                    if (equalizerChanged) applyEqualizer(animate = true)
                 }
         }
         cacheScope.launch {
@@ -255,35 +259,52 @@ class PlaybackService : MediaLibraryService() {
 
     private fun applyEqualizer(animate: Boolean) {
         if (!::player.isInitialized) return
-        if (!equalizerSettings.enabled && equalizer == null) {
-            equalizerHeadroom = 1f
-            applyOutputVolume()
+        equalizerTransitionJob?.cancel()
+        if (!equalizerSettings.enabled) {
+            if (equalizer == null) {
+                equalizerHeadroom = 1f
+                equalizerTransitionVolume = 1f
+                applyOutputVolume()
+                return
+            }
+            equalizerTransitionJob = playbackScope.launch {
+                // Detach the native effect while quiet. Keeping a disabled instance
+                // attached can leave device DSP state alive across subsequent tracks.
+                fadeEqualizerVolume(0f, animate)
+                if (animate) delay(EQUALIZER_SETTLE_DURATION_MS)
+                detachEqualizer()
+                equalizerHeadroom = 1f
+                if (animate) delay(EQUALIZER_SETTLE_DURATION_MS)
+                fadeEqualizerVolume(1f, animate)
+            }
             return
         }
 
         val currentSessionId = player.audioSessionId
-        if (currentSessionId <= 0) return
+        if (currentSessionId <= 0) {
+            releaseEqualizer()
+            return
+        }
         if (audioSessionId != currentSessionId) {
             releaseEqualizer()
             audioSessionId = currentSessionId
         }
 
         val effect = equalizer ?: runCatching { Equalizer(0, currentSessionId) }
-            .onFailure { Log.w(TAG, "Equalizer is unavailable for this audio session", it) }
+            .onFailure { handleEqualizerFailure(it) }
             .getOrNull()
             ?.also { equalizer = it }
             ?: return
 
-        if (!effect.hasControl()) {
-            Log.w(TAG, "System equalizer control is held by another audio effect")
+        val hasControl = runCatching { effect.hasControl() }
+            .onFailure { handleEqualizerFailure(it) }
+            .getOrNull() ?: return
+        if (!hasControl) {
+            handleEqualizerFailure(IllegalStateException("System equalizer control is held by another audio effect"))
             return
         }
 
-        val anchorLevels = if (equalizerSettings.enabled) {
-            equalizerSettings.activeLevelsDb
-        } else {
-            List(EQUALIZER_FREQUENCIES_HZ.size) { 0 }
-        }
+        val anchorLevels = equalizerSettings.activeLevelsDb
         val plan = runCatching {
             val range = effect.bandLevelRange
             val deviceRange = range[0].toInt()..range[1].toInt()
@@ -316,10 +337,14 @@ class PlaybackService : MediaLibraryService() {
         equalizerTransitionJob?.cancel()
         equalizerTransitionJob = playbackScope.launch {
             try {
-                if (!effect.enabled) effect.enabled = true
+                val enabling = !effect.enabled
+                if (enabling) {
+                    fadeEqualizerVolume(0f, animate)
+                    if (animate) delay(EQUALIZER_SETTLE_DURATION_MS)
+                }
                 equalizerHeadroom = minOf(equalizerHeadroom, targetHeadroom)
                 applyOutputVolume()
-                val steps = if (animate) EQUALIZER_TRANSITION_STEPS else 1
+                val steps = if (animate && !enabling) EQUALIZER_TRANSITION_STEPS else 1
                 repeat(steps) { step ->
                     val progress = (step + 1f) / steps
                     plan.forEachIndexed { index, target ->
@@ -331,9 +356,12 @@ class PlaybackService : MediaLibraryService() {
                     }
                     if (step < steps - 1) delay(EQUALIZER_TRANSITION_DURATION_MS / steps)
                 }
-                if (!equalizerSettings.enabled) effect.enabled = false
+                if (enabling) {
+                    effect.enabled = true
+                    if (animate) delay(EQUALIZER_SETTLE_DURATION_MS)
+                }
                 equalizerHeadroom = targetHeadroom
-                applyOutputVolume()
+                fadeEqualizerVolume(1f, animate)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -344,15 +372,42 @@ class PlaybackService : MediaLibraryService() {
 
     private fun applyOutputVolume() {
         if (::player.isInitialized) {
-            player.volume = (replayGainVolume * equalizerHeadroom).coerceIn(0f, 1f)
+            player.volume = (replayGainVolume * equalizerHeadroom * equalizerTransitionVolume)
+                .coerceIn(0f, 1f)
+        }
+    }
+
+    private suspend fun fadeEqualizerVolume(target: Float, animate: Boolean) {
+        val start = equalizerTransitionVolume
+        val steps = if (animate && start != target) EQUALIZER_VOLUME_FADE_STEPS else 1
+        repeat(steps) { step ->
+            val progress = (step + 1f) / steps
+            // Approach silence gently: some native effects smooth gain changes
+            // but hard-mute at zero, which can otherwise truncate the ramp.
+            val remaining = 1f - progress
+            val fraction = if (target == 0f) 1f - remaining * remaining * remaining else progress
+            equalizerTransitionVolume = start + (target - start) * fraction
+            applyOutputVolume()
+            // Give the audio thread time to consume the final muted volume before
+            // changing the native effect's lifecycle.
+            if (steps > 1) delay(EQUALIZER_TRANSITION_DURATION_MS / steps)
         }
     }
 
     private fun releaseEqualizer() {
         equalizerTransitionJob?.cancel()
         equalizerTransitionJob = null
+        detachEqualizer()
+        equalizerHeadroom = 1f
+        equalizerTransitionVolume = 1f
+        applyOutputVolume()
+    }
+
+    private fun detachEqualizer() {
         runCatching { equalizer?.enabled = false }
+            .onFailure { Log.w(TAG, "Could not disable system equalizer", it) }
         runCatching { equalizer?.release() }
+            .onFailure { Log.w(TAG, "Could not release system equalizer", it) }
         equalizer = null
     }
 
@@ -402,7 +457,11 @@ class PlaybackService : MediaLibraryService() {
         const val TAG = "ClearTunePlayback"
         const val BYTES_PER_MEGABYTE = 1_024L * 1_024L
         const val EQUALIZER_TRANSITION_STEPS = 8
+        const val EQUALIZER_VOLUME_FADE_STEPS = 32
         const val EQUALIZER_TRANSITION_DURATION_MS = 96L
+        // Volume commands and native effect changes run on different threads.
+        // Keep output muted while the mixer finishes applying each change.
+        const val EQUALIZER_SETTLE_DURATION_MS = 48L
 
         fun Int.toBytes(): Long = toLong() * BYTES_PER_MEGABYTE
     }

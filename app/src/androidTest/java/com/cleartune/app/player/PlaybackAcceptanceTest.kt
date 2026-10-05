@@ -373,6 +373,55 @@ class PlaybackAcceptanceTest {
     ).bufferedReader().use { it.readText() }
 }
 
+/** Tests the real service without logging in or changing the user's saved account. */
+class DeferredQueueRestoreTest {
+    private lateinit var connection: com.cleartune.core.player.PlayerConnection
+    @Test fun restoredQueueDoesNotRequestAudioUntilPlayAndKeepsPosition() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val server = AcceptanceAudioServer()
+        fun awaitState(condition: () -> Boolean) = runBlocking {
+            kotlinx.coroutines.withTimeout(15_000) {
+                while (!condition()) kotlinx.coroutines.delay(50)
+            }
+        }
+        try {
+            instrumentation.runOnMainSync {
+                connection = com.cleartune.core.player.PlayerConnection(instrumentation.targetContext)
+            }
+            awaitState { connection.state.value.connected }
+            val songs = (0..1).map { com.cleartune.core.model.Song("restore-${UUID.randomUUID()}", "Restore $it", durationSeconds = 12) }
+            val urls = songs.associate { it.id to "${server.url}stream/${it.id}.wav" }
+            instrumentation.runOnMainSync {
+                connection.setQueue(songs, 1, urls, positionMs = 4_000, playWhenReady = false)
+            }
+            awaitState { connection.state.value.currentSong?.id == songs[1].id }
+            // Observe longer than the reported startup buffering interval.
+            Thread.sleep(1_200)
+            assertEquals(PlaybackStatus.IDLE, connection.state.value.status)
+            assertEquals(4_000L, connection.state.value.positionMs)
+            assertTrue("Restoration must not fetch audio", server.requests.isEmpty())
+            instrumentation.runOnMainSync { connection.togglePlayPause() }
+            awaitState { connection.state.value.status == PlaybackStatus.PLAYING }
+            assertTrue(server.requests.any { it.contains("/stream/") })
+            assertTrue(connection.state.value.positionMs >= 4_000)
+            // Replacing an already prepared queue must also defer loading.
+            instrumentation.runOnMainSync {
+                connection.setQueue(songs, 0, urls, positionMs = 2_000, playWhenReady = false)
+            }
+            awaitState { connection.state.value.status == PlaybackStatus.IDLE }
+            Thread.sleep(1_200)
+            assertFalse(server.requests.any { it.contains(songs[0].id) })
+            assertEquals(2_000L, connection.state.value.positionMs)
+            instrumentation.runOnMainSync { connection.playAt(0) }
+            awaitState { connection.state.value.status == PlaybackStatus.PLAYING }
+            assertTrue(server.requests.any { it.contains(songs[0].id) })
+        } finally {
+            instrumentation.runOnMainSync { if (::connection.isInitialized) { connection.clear(); connection.release() } }
+            server.close()
+        }
+    }
+}
+
 private class AcceptanceAudioServer {
     private val server = ServerSocket(0)
     val url = "http://127.0.0.1:${server.localPort}/"
