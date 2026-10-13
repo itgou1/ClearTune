@@ -54,6 +54,17 @@ class PlaybackService : MediaLibraryService() {
     )
     private var forcedNext: ForcedNext? = null
     private val playerListener = object : Player.Listener {
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // Release an endless live connection on pause, including headset/system controls.
+            // Preparing it again starts at the live edge rather than replaying buffered audio.
+            if (!playWhenReady && player.currentMediaItem?.mediaMetadata?.extras
+                    ?.getBoolean("com.cleartune.song.is_radio", false) == true &&
+                player.playbackState != Player.STATE_IDLE
+            ) {
+                player.stop()
+                player.seekToDefaultPosition()
+            }
+        }
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             forcedNext?.let { pending ->
                 if (mediaItem?.mediaId == pending.targetMediaId || mediaItem?.mediaId != pending.sourceMediaId) {
@@ -120,6 +131,10 @@ class PlaybackService : MediaLibraryService() {
             addListener(playerListener)
         }
         val sessionPlayer = object : ForwardingPlayer(player) {
+            override fun play() {
+                if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) player.prepare()
+                super.play()
+            }
             // Headsets and system controls must skip tracks just like the in-app button,
             // including doing nothing at the start of a non-looping queue.
             override fun seekToPrevious() = seekToPreviousMediaItem()

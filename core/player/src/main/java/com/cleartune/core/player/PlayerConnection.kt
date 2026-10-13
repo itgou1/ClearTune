@@ -52,6 +52,8 @@ class PlayerConnection(context: Context) {
     private val queueUndoSnapshots = LinkedHashMap<Long, QueueUndoSnapshot>()
     private var nextQueueUndoToken = 1L
     private var released = false
+    // Media3 can retain the previous source's error while a replacement queue is idle.
+    private var deferredQueueError: androidx.media3.common.PlaybackException? = null
 
     private val _state = MutableStateFlow(PlayerUiState())
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
@@ -60,9 +62,10 @@ class PlayerConnection(context: Context) {
         override fun onEvents(player: Player, events: Player.Events) = publish(player)
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            deferredQueueError = null
             _state.value = _state.value.copy(
                 status = PlaybackStatus.ERROR,
-                errorMessage = "播放失败，请检查网络或音频格式",
+                errorMessage = playbackErrorMessage(error.errorCode),
             )
         }
     }
@@ -83,7 +86,9 @@ class PlayerConnection(context: Context) {
                 runCatching { controllerFuture.get() }.onSuccess { mediaController ->
                     controller = mediaController
                     mediaController.addListener(listener)
-                    applyMode(mediaController, mode)
+                    val liveRadio = mediaController.currentMediaItem?.mediaMetadata?.extras
+                        ?.getBoolean("com.cleartune.song.is_radio", false) == true
+                    applyMode(mediaController, if (liveRadio) PlaybackMode.SEQUENTIAL else mode)
                     pendingQueue?.let { pending ->
                         pendingQueue = null
                         setQueue(
@@ -148,11 +153,16 @@ class PlayerConnection(context: Context) {
                         )
                         .build(),
                 )
-                .apply { playbackCacheKey(song.id, stream)?.let(::setCustomCacheKey) }
+                .apply {
+                    if (song.isRadio) setCustomCacheKey("cleartune:radio:${song.id}")
+                    else playbackCacheKey(song.id, stream)?.let(::setCustomCacheKey)
+                }
                 .build()
         }
         if (items.isEmpty()) return
         controller?.apply {
+            deferredQueueError = if (!playWhenReady) playerError else null
+            applyMode(this, if (songs.any(Song::isRadio)) PlaybackMode.SEQUENTIAL else mode)
             // Restoring a queue must not open the audio source until playback is requested.
             // Stop an already prepared source too, e.g. when a newer server queue replaces it.
             if (!playWhenReady) {
@@ -192,6 +202,14 @@ class PlayerConnection(context: Context) {
     fun next() = controller?.seekToNextMediaItem() ?: Unit
     fun previous() = controller?.seekToPreviousMediaItem() ?: Unit
     fun remove(index: Int) = controller?.removeMediaItem(index) ?: Unit
+
+    /** Remove every occurrence by ID so an asynchronous check cannot remove a different song. */
+    fun removeSong(songId: String) {
+        val player = controller ?: return
+        for (index in player.mediaItemCount - 1 downTo 0) {
+            if (player.getMediaItemAt(index).mediaId == songId) player.removeMediaItem(index)
+        }
+    }
     fun move(from: Int, to: Int) = controller?.moveMediaItem(from, to) ?: Unit
     fun clear() = controller?.clearMediaItems() ?: Unit
 
@@ -348,6 +366,7 @@ class PlayerConnection(context: Context) {
     }
 
     private fun publish(player: Player) {
+        val currentError = player.playerError?.takeUnless { it === deferredQueueError }
         val queue = (0 until player.mediaItemCount).map { index ->
             val item = player.getMediaItemAt(index)
             songMap[item.mediaId] ?: SessionSongMetadata.read(item)
@@ -355,7 +374,7 @@ class PlayerConnection(context: Context) {
         songMap = queue.associateBy(Song::id)
         val index = player.currentMediaItemIndex.takeIf { it in queue.indices } ?: -1
         val status = when {
-            player.playerError != null -> PlaybackStatus.ERROR
+            currentError != null -> PlaybackStatus.ERROR
             player.playbackState == Player.STATE_BUFFERING -> PlaybackStatus.BUFFERING
             player.playbackState == Player.STATE_ENDED -> PlaybackStatus.ENDED
             player.isPlaying -> PlaybackStatus.PLAYING
@@ -373,7 +392,7 @@ class PlayerConnection(context: Context) {
             durationMs = player.duration.takeIf { it > 0 } ?: 0,
             bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0),
             mode = mode,
-            errorMessage = player.playerError?.let { "播放失败，请稍后重试" },
+            errorMessage = currentError?.let { playbackErrorMessage(it.errorCode) },
         )
     }
 
@@ -430,8 +449,10 @@ private object SessionSongMetadata {
     private const val LAST_PLAYED_AT = "${PREFIX}last_played_at"
     private const val STARRED_AT = "${PREFIX}starred_at"
     private const val CREATED_AT = "${PREFIX}created_at"
+    private const val IS_RADIO = "${PREFIX}is_radio"
 
     fun write(extras: Bundle, song: Song) = extras.apply {
+        putBoolean(IS_RADIO, song.isRadio)
         song.artistId?.let { putString(ARTIST_ID, it) }
         song.albumId?.let { putString(ALBUM_ID, it) }
         putLong(DURATION_SECONDS, song.durationSeconds)
@@ -475,6 +496,7 @@ private object SessionSongMetadata {
             starredAt = extras.optionalLong(STARRED_AT),
             createdAt = extras.optionalLong(CREATED_AT),
             replayGain = ReplayGainMetadata.values(extras).replayGain,
+            isRadio = extras?.getBoolean(IS_RADIO, false) ?: false,
         )
     }
 

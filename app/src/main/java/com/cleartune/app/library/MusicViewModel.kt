@@ -252,8 +252,17 @@ class MusicViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            var previousSongIds = emptySet<String>()
             repository.songs.collect { songs ->
                 _genres.value = normalizeGenreLabels(_genres.value + songs.map(Song::genre))
+                val currentIds = songs.mapTo(hashSetOf(), Song::id)
+                val removedIds = previousSongIds - currentIds
+                previousSongIds = currentIds
+                if (removedIds.isNotEmpty()) {
+                    _searchState.update { current -> current.copy(
+                        results = current.results.copy(songs = current.results.songs.filterNot { it.id in removedIds }),
+                    ) }
+                }
             }
         }
         viewModelScope.launch {
@@ -466,7 +475,8 @@ class MusicViewModel @Inject constructor(
                             hasMoreArtists = searchPaging.hasMoreArtists,
                             hasMoreAlbums = searchPaging.hasMoreAlbums,
                             hasMoreSongs = searchPaging.hasMoreSongs,
-                            results = resolvedResults,
+                            // Verification may have removed a local row while artwork was resolved.
+                            results = resolvedResults.copy(songs = mergeFreshSearchResults(it.results, result.value).songs),
                         )
                     }
                 }
@@ -640,7 +650,12 @@ class MusicViewModel @Inject constructor(
 
     fun addPlaylistSong(id: String, songId: String) {
         viewModelScope.launch {
-            reportPlaylistAction(id, repository.addPlaylistSong(id, songId), "已添加到歌单")
+            val result = repository.addPlaylistSongs(id, listOf(songId))
+            reportPlaylistAction(id, result.error, when {
+                result.refreshError != null -> "添加请求已提交，暂时无法确认是否保存，请刷新歌单查看"
+                result.addedCount == 0 -> "歌曲已在歌单中"
+                else -> "已添加到歌单"
+            })
         }
     }
 
@@ -668,7 +683,7 @@ class MusicViewModel @Inject constructor(
                     if (playlistId != null && result.error.isNotFound()) invalidateDetail("playlist/$playlistId")
                 } else {
                     _actionMessage.value = when {
-                        result.refreshError != null -> "歌曲已处理，歌单暂未刷新，请稍后刷新查看"
+                        result.refreshError != null -> "添加请求已提交，暂时无法确认是否保存，请刷新歌单查看"
                         result.addedCount == 0 -> "所选歌曲已在歌单中"
                         result.skippedCount > 0 -> "已添加 ${result.addedCount} 首，跳过 ${result.skippedCount} 首重复歌曲"
                         else -> "已添加 ${result.addedCount} 首歌曲到歌单"
@@ -754,7 +769,8 @@ class MusicViewModel @Inject constructor(
         val searchServer = shouldSearchServer(
             localResultCount = localResults.totalCount(),
             lastLibrarySyncEpochMs = lastSync,
-            forced = forceRemote,
+            // A plentiful local result set can still contain stale song IDs.
+            forced = forceRemote || localResults.songs.isNotEmpty(),
         )
         val resolvedLocalResults = withContext(Dispatchers.Default) {
             localResults.withResolvedSearchArtwork(libraryState.value.songs)
@@ -770,7 +786,8 @@ class MusicViewModel @Inject constructor(
             },
         )
         if (!searchServer) return
-        _searchState.value = when (val result = repository.search(normalizedQuery)) {
+        val result = repository.search(normalizedQuery)
+        _searchState.value = when (result) {
             is RemoteResult.Success -> {
                 searchPaging = searchPaging.next(result.value, REMOTE_SEARCH_CATEGORIES)
                 val merged = mergeFreshSearchResults(localResults, result.value)
@@ -806,6 +823,15 @@ class MusicViewModel @Inject constructor(
                     "已显示本地结果，服务器搜索暂不可用"
                 },
             )
+        }
+        if (result is RemoteResult.Success) {
+            repository.reconcileSearchSongs(localResults.songs, result.value.songs) { removedId ->
+                _searchState.update { current ->
+                    if (current.query != query) current else current.copy(
+                        results = current.results.copy(songs = current.results.songs.filterNot { it.id == removedId }),
+                    )
+                }
+            }
         }
     }
 

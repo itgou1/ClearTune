@@ -15,6 +15,15 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cleartune.core.model.DownloadState
+import com.cleartune.core.model.Song
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -163,7 +172,7 @@ internal fun MiniPlayer(
 ) {
     val song = state.currentSong ?: return
     Surface(tonalElevation = 0.dp, shadowElevation = 0.dp) {
-        val durationMs = state.durationMs.takeIf { it > 0 } ?: song.durationSeconds * 1_000
+        val durationMs = if (song.isRadio) 0 else state.durationMs.takeIf { it > 0 } ?: song.durationSeconds * 1_000
         val progress = if (durationMs > 0) {
             state.positionMs.toFloat() / durationMs
         } else {
@@ -182,7 +191,7 @@ internal fun MiniPlayer(
                         .fillMaxWidth()
                         .height(2.dp),
                 )
-            } else {
+            } else if (!song.isRadio) {
                 LinearProgressIndicator(
                     progress = { progress.coerceIn(0f, 1f) },
                     modifier = Modifier
@@ -197,7 +206,9 @@ internal fun MiniPlayer(
                     .padding(start = 8.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CoverArt(
+                if (song.isRadio) Image(painterResource(R.drawable.radio_cover_portrait), null,
+                    modifier = Modifier.size(42.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
+                else CoverArt(
                     song.displayCoverArtId(),
                     song.title,
                     musicViewModel,
@@ -212,7 +223,12 @@ internal fun MiniPlayer(
                         playing = state.status == PlaybackStatus.PLAYING,
                         fontWeight = FontWeight.Medium,
                     )
-                    song.displayArtistName()?.let {
+                    (if (song.isRadio) stringResource(when (state.status) {
+                        PlaybackStatus.PLAYING -> R.string.radio_live
+                        PlaybackStatus.BUFFERING, PlaybackStatus.READY -> R.string.radio_connecting
+                        PlaybackStatus.ERROR -> R.string.radio_play_error
+                        else -> R.string.radio_paused
+                    }) else song.displayArtistName())?.let {
                         Text(
                             it,
                             maxLines = 1,
@@ -256,6 +272,9 @@ internal fun NowPlayingScreen(
     onFavorite: (com.cleartune.core.model.Song, Boolean) -> Unit,
     onDownload: (com.cleartune.core.model.Song) -> Unit,
     onShare: (com.cleartune.core.model.Song) -> Unit = {},
+    onAlbum: (String) -> Unit = {},
+    onArtist: (String) -> Unit = {},
+    downloadState: DownloadState? = null,
 ) {
     val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     val song = state.currentSong
@@ -266,6 +285,15 @@ internal fun NowPlayingScreen(
     }
     var showDetails by remember(song?.id) { mutableStateOf(false) }
     var showMoreActions by remember(song?.id) { mutableStateOf(false) }
+    var playlistSong by remember { mutableStateOf<Song?>(null) }
+    val library by musicViewModel.libraryState.collectAsStateWithLifecycle()
+    val playlistSubmission by musicViewModel.playlistSongAddState.collectAsStateWithLifecycle()
+    LaunchedEffect(playlistSong, playlistSubmission.completed) {
+        if (playlistSong != null && playlistSubmission.completed) {
+            playlistSong = null
+            musicViewModel.resetPlaylistSongAddState()
+        }
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -490,41 +518,16 @@ internal fun NowPlayingScreen(
                     Text(formatTime(durationMs), style = MaterialTheme.typography.labelMedium)
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(
-                        onClick = playerViewModel::previous,
-                        modifier = Modifier.size(56.dp),
-                    ) {
-                        Icon(Icons.Rounded.SkipPrevious, contentDescription = stringResource(R.string.previous_song))
-                    }
-                    FilledIconButton(onClick = playerViewModel::togglePlayPause, modifier = Modifier.size(70.dp)) {
-                        if (state.status in setOf(PlaybackStatus.BUFFERING, PlaybackStatus.READY)) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(32.dp),
-                                strokeWidth = 3.dp,
-                                color = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        } else {
-                            Icon(
-                                if (state.status == PlaybackStatus.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                contentDescription = stringResource(
-                                    if (state.status == PlaybackStatus.PLAYING) R.string.pause_action else R.string.play_action,
-                                ),
-                                modifier = Modifier.size(36.dp),
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = playerViewModel::next,
-                        modifier = Modifier.size(56.dp),
-                    ) {
-                        Icon(Icons.Rounded.SkipNext, contentDescription = stringResource(R.string.next_song))
-                    }
-                }
+                PlayerTransportControls(
+                    playing = state.status == PlaybackStatus.PLAYING,
+                    buffering = state.status in setOf(PlaybackStatus.BUFFERING, PlaybackStatus.READY),
+                    previousLabel = stringResource(R.string.previous_song),
+                    toggleLabel = stringResource(if (state.status in setOf(PlaybackStatus.PLAYING, PlaybackStatus.BUFFERING, PlaybackStatus.READY)) R.string.pause_action else R.string.play_action),
+                    nextLabel = stringResource(R.string.next_song),
+                    onPrevious = playerViewModel::previous,
+                    onToggle = playerViewModel::togglePlayPause,
+                    onNext = playerViewModel::next,
+                )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -577,7 +580,11 @@ internal fun NowPlayingScreen(
         )
     }
     if (showMoreActions && song != null) {
-        ModalBottomSheet(onDismissRequest = { showMoreActions = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showMoreActions = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
+          Column(Modifier.verticalScroll(rememberScrollState())) {
             Text(
                 text = stringResource(R.string.more_actions),
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
@@ -585,22 +592,63 @@ internal fun NowPlayingScreen(
                 fontWeight = FontWeight.SemiBold,
             )
             ListItem(
-                headlineContent = { Text(stringResource(R.string.download_current_song)) },
-                leadingContent = { Icon(Icons.Rounded.Download, contentDescription = null) },
+                headlineContent = { Text(stringResource(R.string.add_to_playlist)) },
+                leadingContent = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null) },
                 modifier = Modifier.clickable {
+                    showMoreActions = false
+                    musicViewModel.resetPlaylistSongAddState()
+                    musicViewModel.refreshPlaylists()
+                    playlistSong = song
+                },
+            )
+            ListItem(
+                headlineContent = { Text("查看专辑", color = MaterialTheme.colorScheme.onSurface.copy(
+                    alpha = if (song.albumId.isNullOrBlank()) 0.38f else 1f,
+                )) },
+                supportingContent = { Text(if (song.albumId.isNullOrBlank()) "暂无可访问的专辑信息"
+                    else song.displayAlbumName() ?: "查看所属专辑") },
+                leadingContent = { Icon(Icons.Rounded.Album, contentDescription = null) },
+                modifier = Modifier.clickable(enabled = !song.albumId.isNullOrBlank()) {
+                    song.albumId?.let { showMoreActions = false; onAlbum(it) }
+                },
+            )
+            ListItem(
+                headlineContent = { Text("查看歌手", color = MaterialTheme.colorScheme.onSurface.copy(
+                    alpha = if (song.artistId.isNullOrBlank()) 0.38f else 1f,
+                )) },
+                supportingContent = { Text(if (song.artistId.isNullOrBlank()) "暂无可访问的歌手信息"
+                    else song.displayArtistName() ?: "查看所属歌手") },
+                leadingContent = { Icon(Icons.Rounded.Person, contentDescription = null) },
+                modifier = Modifier.clickable(enabled = !song.artistId.isNullOrBlank()) {
+                    song.artistId?.let { showMoreActions = false; onArtist(it) }
+                },
+            )
+            ListItem(
+                headlineContent = { Text(when (downloadState) {
+                    DownloadState.COMPLETED -> "已下载"
+                    DownloadState.DOWNLOADING -> "下载中"
+                    DownloadState.QUEUED -> "等待下载"
+                    DownloadState.PAUSED -> "继续下载"
+                    DownloadState.FAILED -> "重试下载"
+                    null -> "下载歌曲"
+                }) },
+                leadingContent = { Icon(Icons.Rounded.Download, contentDescription = null) },
+                modifier = Modifier.clickable(enabled = downloadState !in setOf(
+                    DownloadState.COMPLETED, DownloadState.DOWNLOADING, DownloadState.QUEUED,
+                )) {
                     onDownload(song)
                     showMoreActions = false
                 },
             )
             ListItem(
-                headlineContent = { Text("音乐标签") },
-                leadingContent = { Icon(Icons.AutoMirrored.Rounded.Label, contentDescription = null) },
-                modifier = Modifier.clickable { showMoreActions = false; musicTagActions.open(song) },
-            )
-            ListItem(
                 headlineContent = { Text("分享歌曲") },
                 leadingContent = { Icon(Icons.Rounded.Share, contentDescription = null) },
                 modifier = Modifier.clickable { showMoreActions = false; onShare(song) },
+            )
+            ListItem(
+                headlineContent = { Text("音乐标签") },
+                leadingContent = { Icon(Icons.AutoMirrored.Rounded.Label, contentDescription = null) },
+                modifier = Modifier.clickable { showMoreActions = false; musicTagActions.open(song) },
             )
             ListItem(
                 headlineContent = { Text(stringResource(R.string.song_details)) },
@@ -611,7 +659,20 @@ internal fun NowPlayingScreen(
                 },
             )
             Spacer(Modifier.height(24.dp))
+          }
         }
+    }
+    playlistSong?.let { target ->
+        BatchPlaylistSheet(
+            playlists = library.playlists,
+            count = 1,
+            busy = playlistSubmission.isAdding,
+            error = playlistSubmission.errorMessage,
+            onSelect = { musicViewModel.addPlaylistSongs(it, listOf(target.id)) },
+            onCreate = { musicViewModel.createPlaylistWithSongs(it, listOf(target.id)) },
+            onDismiss = { playlistSong = null; musicViewModel.resetPlaylistSongAddState() },
+            cover = { playlist -> CoverArt(playlist.coverArtId, playlist.name, musicViewModel, Modifier.size(40.dp)) },
+        )
     }
 }
 
@@ -1037,6 +1098,54 @@ internal fun LyricsScreen(
     }
 }
 
+@Composable
+private fun QueueSongActions(
+    song: Song,
+    isCurrent: Boolean,
+    onPlayNext: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onToggleLike: () -> Unit,
+    onDetails: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    var expanded by remember(song.id) { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.more_actions),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (!isCurrent) DropdownMenuItem(
+                text = { Text(stringResource(R.string.play_next)) },
+                leadingIcon = { Icon(Icons.Rounded.SkipNext, contentDescription = null) },
+                onClick = { expanded = false; onPlayNext() },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.add_to_playlist)) },
+                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null) },
+                onClick = { expanded = false; onAddToPlaylist() },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(if (song.starredAt != null) R.string.unlike_song else R.string.like_song)) },
+                leadingIcon = { Icon(if (song.starredAt != null) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                    contentDescription = null) },
+                onClick = { expanded = false; onToggleLike() },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.song_details)) },
+                leadingIcon = { Icon(Icons.Rounded.Info, contentDescription = null) },
+                onClick = { expanded = false; onDetails() },
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("从播放队列移除") },
+                leadingIcon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                onClick = { expanded = false; onRemove() },
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun QueueScreen(
@@ -1048,6 +1157,34 @@ internal fun QueueScreen(
     onTogglePlayback: () -> Unit,
     onBrowseLibrary: () -> Unit,
 ) {
+    val library by musicViewModel.libraryState.collectAsStateWithLifecycle()
+    val playlistSubmission by musicViewModel.playlistSongAddState.collectAsStateWithLifecycle()
+    var playlistSong by remember { mutableStateOf<Song?>(null) }
+    var detailsSong by remember { mutableStateOf<Song?>(null) }
+    LaunchedEffect(playlistSong, playlistSubmission.completed) {
+        if (playlistSong != null && playlistSubmission.completed) {
+            playlistSong = null
+            musicViewModel.resetPlaylistSongAddState()
+        }
+    }
+    playlistSong?.let { target ->
+        BatchPlaylistSheet(
+            playlists = library.playlists,
+            count = 1,
+            busy = playlistSubmission.isAdding,
+            error = playlistSubmission.errorMessage,
+            onSelect = { musicViewModel.addPlaylistSongs(it, listOf(target.id)) },
+            onCreate = { musicViewModel.createPlaylistWithSongs(it, listOf(target.id)) },
+            onDismiss = { playlistSong = null; musicViewModel.resetPlaylistSongAddState() },
+            cover = { playlist -> CoverArt(playlist.coverArtId, playlist.name, musicViewModel, Modifier.size(40.dp)) },
+        )
+    }
+    detailsSong?.let { target ->
+        SongDetailsDialog(song = target, onDismiss = { detailsSong = null }) { modifier ->
+            CoverArt(target.displayCoverArtId(), target.title, musicViewModel, modifier,
+                fallbackSeed = target.albumId ?: target.id)
+        }
+    }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
@@ -1281,8 +1418,19 @@ internal fun QueueScreen(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
-                                    IconButton(
-                                        onClick = {
+                                    val actionSong = library.songs.firstOrNull { it.id == song.id } ?: song
+                                    QueueSongActions(
+                                        song = actionSong,
+                                        isCurrent = isCurrent,
+                                        onPlayNext = { playerViewModel.playNext(actionSong) },
+                                        onAddToPlaylist = {
+                                            musicViewModel.resetPlaylistSongAddState()
+                                            musicViewModel.refreshPlaylists()
+                                            playlistSong = actionSong
+                                        },
+                                        onToggleLike = { musicViewModel.setSongFavorite(actionSong, actionSong.starredAt == null) },
+                                        onDetails = { detailsSong = actionSong },
+                                        onRemove = {
                                             val currentIndex = latestQueue.indexOfFirst { it.id == song.id }
                                             if (currentIndex >= 0) {
                                                 val undoToken = playerViewModel.removeUndoable(currentIndex)
@@ -1301,14 +1449,7 @@ internal fun QueueScreen(
                                                 }
                                             }
                                         },
-                                        modifier = Modifier.size(40.dp),
-                                    ) {
-                                        Icon(
-                                            Icons.Rounded.Delete,
-                                            contentDescription = stringResource(R.string.remove_action),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
+                                    )
                                     IconButton(
                                         onClick = {},
                                         modifier = Modifier

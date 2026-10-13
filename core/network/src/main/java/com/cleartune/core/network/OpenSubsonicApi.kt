@@ -10,6 +10,9 @@ import retrofit2.http.QueryMap
 import retrofit2.http.Query
 
 interface OpenSubsonicApi {
+    @GET("rest/getInternetRadioStations.view")
+    suspend fun getInternetRadioStations(@QueryMap auth: Map<String, String>): Response<SubsonicResponseRoot>
+
     @GET("rest/getShares.view")
     suspend fun getShares(@QueryMap auth: Map<String, String>): Response<SubsonicResponseRoot>
 

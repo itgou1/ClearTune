@@ -284,6 +284,7 @@ fun ClearTuneApp(
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val playerState by playerViewModel.state.collectAsStateWithLifecycle()
     val playerMessage by playerViewModel.message.collectAsStateWithLifecycle()
+    val radioState by playerViewModel.radioState.collectAsStateWithLifecycle()
     val downloads by downloadViewModel.downloads.collectAsStateWithLifecycle()
     val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
     val updateState by settingsViewModel.updateState.collectAsStateWithLifecycle()
@@ -306,11 +307,12 @@ fun ClearTuneApp(
         }
     }
     val openNowPlaying = {
-        if (!navController.popBackStack("now-playing", inclusive = false)) {
-            navController.navigate("now-playing") { launchSingleTop = true }
+        val route = "now-playing"
+        if (!navController.popBackStack(route, inclusive = false)) {
+            navController.navigate(route) { launchSingleTop = true }
         }
     }
-    val showNavigationBar = !batchSelection.active && currentRoute in mainDestinations.map { it.route }
+    val showNavigationBar = !batchSelection.active && (currentRoute in mainDestinations.map { it.route } || currentRoute == "radio")
     val showMiniPlayer = !batchSelection.active && playerState.currentSong != null && currentRoute !in setOf("now-playing", "queue")
     val viewDownloadsLabel = stringResource(R.string.view_downloads)
     val viewUpdateLabel = stringResource(R.string.update_available_action)
@@ -358,7 +360,7 @@ fun ClearTuneApp(
     }
     LaunchedEffect(playerState.currentSong?.id) {
         viewModel.updateRecommendationExclusions(setOfNotNull(playerState.currentSong?.id))
-        playerState.currentSong?.let(viewModel::loadLyrics)
+        playerState.currentSong?.takeUnless(Song::isRadio)?.let(viewModel::loadLyrics)
     }
 
     Scaffold(
@@ -430,7 +432,7 @@ fun ClearTuneApp(
                             ) {
                                 mainDestinations.forEach { destination ->
                                     NavigationBarItem(
-                                        selected = currentRoute == destination.route,
+                                        selected = currentRoute == destination.route || (currentRoute == "radio" && destination.route == "home"),
                                         onClick = {
                                             navController.navigate(destination.route) {
                                                 popUpTo(navController.graph.findStartDestination().id) {
@@ -517,8 +519,21 @@ fun ClearTuneApp(
                         onPlay = playerViewModel::play,
                         recommendations = recommendations,
                         onDiscovery = { navController.navigate("discovery") },
+                        onRadio = { navController.navigate("radio") { launchSingleTop = true } },
                         animateEntrance = !homeEntrancePlayed,
                         onEntranceStarted = { homeEntrancePlayed = true },
+                    )
+                }
+            }
+            committedBackComposable(navController, "radio") {
+                LaunchedEffect(Unit) { playerViewModel.refreshRadioStations() }
+                MainDestinationContent {
+                    RadioScreen(
+                        state = radioState,
+                        playback = playerState,
+                        onPlay = playerViewModel::playRadio,
+                        onRefresh = playerViewModel::refreshRadioStations,
+                        onBack = { navController.popBackStack() },
                     )
                 }
             }
@@ -751,7 +766,17 @@ fun ClearTuneApp(
                 )
             }
             committedBackComposable(navController, "now-playing") {
-                NowPlayingScreen(
+                if (playerState.currentSong?.isRadio == true) {
+                    LaunchedEffect(Unit) { playerViewModel.refreshRadioStations() }
+                    RadioPlayerScreen(
+                        state = radioState,
+                        playback = playerState,
+                        onToggle = playerViewModel::togglePlayPause,
+                        onSelect = playerViewModel::playRadio,
+                        onRefresh = playerViewModel::refreshRadioStations,
+                        onBack = { navController.popBackStack() },
+                    )
+                } else NowPlayingScreen(
                     state = playerState,
                     playerViewModel = playerViewModel,
                     musicViewModel = viewModel,
@@ -765,6 +790,9 @@ fun ClearTuneApp(
                     onFavorite = { song, favorite -> viewModel.setSongFavorite(song, favorite) },
                     onDownload = { song -> downloadViewModel.download(listOf(song)) },
                     onShare = { song -> shareViewModel.open(song.shareTarget()) },
+                    onAlbum = { navController.navigate("album/${Uri.encode(it)}") { launchSingleTop = true } },
+                    onArtist = { navController.navigate("artist/${Uri.encode(it)}") { launchSingleTop = true } },
+                    downloadState = downloads.firstOrNull { it.songId == playerState.currentSong?.id }?.state,
                 )
             }
             committedBackComposable(navController, "queue") {
@@ -872,6 +900,7 @@ private fun HomeScreen(
     onPlay: (List<Song>, Int) -> Unit,
     recommendations: List<RecommendationShelf>,
     onDiscovery: () -> Unit,
+    onRadio: () -> Unit,
     animateEntrance: Boolean,
     onEntranceStarted: () -> Unit,
 ) {
@@ -903,6 +932,9 @@ private fun HomeScreen(
                     .padding(20.dp),
             )
         }
+        if (isLibraryEmpty) {
+            item { RadioHomeCard(onRadio, Modifier.fillMaxWidth().padding(horizontal = 20.dp)) }
+        }
         if ((state.isInitializing || state.isRefreshing) && isLibraryEmpty) {
             item { LoadingBlock() }
         } else if (isLibraryEmpty) {
@@ -929,10 +961,10 @@ private fun HomeScreen(
             item {
                 HomeEntranceSection(entranceProgress, section = 1) {
                     RecommendationSceneCards(
-                        random = recommendationContent.random,
                         frequent = recommendationContent.frequent,
                         viewModel = viewModel,
                         onPlay = onPlay,
+                        onRadio = onRadio,
                     )
                 }
             }
@@ -1028,10 +1060,10 @@ private fun DiscoveryHeroCard(
 
 @Composable
 private fun RecommendationSceneCards(
-    random: RecommendationShelf?,
     frequent: RecommendationShelf?,
     viewModel: MusicViewModel,
     onPlay: (List<Song>, Int) -> Unit,
+    onRadio: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -1039,20 +1071,6 @@ private fun RecommendationSceneCards(
             .padding(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        HomeRecommendationCard(
-            modifier = Modifier.weight(1f),
-            title = stringResource(R.string.home_random),
-            description = stringResource(
-                if (random?.songs.isNullOrEmpty()) R.string.home_random_empty
-                else R.string.home_random_subtitle,
-            ),
-            enabled = !random?.songs.isNullOrEmpty(),
-            hasRearCover = (random?.songs?.size ?: 0) > 1,
-            onPlay = { random?.songs?.takeIf(List<Song>::isNotEmpty)?.let { onPlay(it, 0) } },
-            artwork = { index, artworkModifier ->
-                RecommendationCoverCell(random?.songs?.getOrNull(index), viewModel, artworkModifier)
-            },
-        )
         HomeRecommendationCard(
             modifier = Modifier.weight(1f),
             title = stringResource(R.string.home_frequent),
@@ -1070,6 +1088,7 @@ private fun RecommendationSceneCards(
                 RecommendationCoverCell(frequent?.songs?.getOrNull(index), viewModel, artworkModifier)
             },
         )
+        RadioHomeCard(onRadio, Modifier.weight(1f))
     }
 }
 

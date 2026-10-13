@@ -56,7 +56,7 @@ private class RoutingDataSource(
 
     override fun open(dataSpec: DataSpec): Long {
         check(active == null) { "DataSource is already open" }
-        if (!dataSpec.uri.isHttpStream()) {
+        if (!dataSpec.uri.isHttpStream() || dataSpec.key?.startsWith("cleartune:radio:") == true) {
             active = direct
             return direct.open(dataSpec)
         }

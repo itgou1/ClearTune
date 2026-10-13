@@ -32,6 +32,32 @@ class MediaDaoReconciliationTest {
     }
 
     @Test
+    fun localCompletedListenUpdatesImmediatelyAndSurvivesStaleServerRefresh() = runBlocking {
+        dao.upsertSongs(listOf(song("moonlight", "album", "artist").copy(lastPlayedAt = 100)))
+        val activity = database.activityDao()
+        val eventId = activity.recordCompletedPlay("moonlight", 900)
+        assertEquals(900L, dao.song("moonlight")!!.lastPlayedAt)
+        assertEquals(listOf(eventId), activity.pendingCompletedPlays().map { it.id })
+        dao.replaceLibrary(emptyList(), emptyList(), listOf(song("moonlight", "album", "artist").copy(lastPlayedAt = 100)))
+        assertEquals(900L, dao.song("moonlight")!!.lastPlayedAt)
+        activity.markPlaySynced(eventId)
+        assertEquals(emptyList<PlayEventEntity>(), activity.pendingCompletedPlays())
+        dao.upsertSongs(listOf(song("moonlight", "album", "artist").copy(lastPlayedAt = 1000)))
+        assertEquals(1000L, dao.song("moonlight")!!.lastPlayedAt)
+    }
+
+    @Test
+    fun repairsPastCompletedListensWithoutCountingStartedOrOtherVersions() = runBlocking {
+        dao.upsertSongs(listOf(song("moonlight", "album", "artist"), song("other-version", "album", "artist")))
+        database.activityDao().addPlayEvent(PlayEventEntity(songId = "moonlight", type = "COMPLETED", occurredAt = 800))
+        database.activityDao().addPlayEvent(PlayEventEntity(songId = "moonlight", type = "STARTED", occurredAt = 900))
+        dao.restoreListeningHistory(emptyList(), allSongs = true)
+        assertEquals(800L, dao.song("moonlight")!!.lastPlayedAt)
+        assertEquals(null, dao.song("other-version")!!.lastPlayedAt)
+        assertEquals(1, database.activityDao().pendingCompletedPlays().size)
+    }
+
+    @Test
     fun replacingLibraryRemovesStaleMediaAndPlaylistLinks() = runBlocking {
         dao.upsertAlbums(listOf(album("kept-album"), album("stale-album")))
         dao.upsertArtists(listOf(artist("kept-artist"), artist("stale-artist")))
@@ -60,6 +86,25 @@ class MediaDaoReconciliationTest {
         assertEquals(listOf("kept-artist"), dao.observeArtists().first().map(ArtistEntity::id))
         assertEquals(listOf("kept-song"), dao.observeSongs().first().map(SongEntity::id))
         assertEquals(listOf("kept-song"), dao.observePlaylistSongs("playlist-1").first().map(SongEntity::id))
+    }
+
+    @Test
+    fun missingSongCleanupRemovesIndexAndLinksButKeepsOtherVersions() = runBlocking {
+        dao.upsertSongs(listOf(song("old", "album", "artist"), song("new", "album", "artist")))
+        dao.insertSearchDocuments(listOf("old", "new").map { id ->
+            SearchDocumentEntity(entityType = "song", entityId = id, title = "成都", subtitle = "",
+                keywords = "成都", pinyin = "chengdu", initials = "cd")
+        })
+        dao.upsertPlaylists(listOf(playlist("playlist")))
+        dao.replacePlaylistSongs("playlist", listOf(
+            PlaylistSongEntity("playlist", "old", 0), PlaylistSongEntity("playlist", "new", 1),
+        ))
+        dao.removeMissingSong("old")
+        dao.removeMissingSong("old") // Safe if search and playback both confirm the same ID.
+        assertEquals(null, dao.song("old"))
+        assertEquals(listOf("new"), dao.observeSongs().first().map(SongEntity::id))
+        assertEquals(listOf("new"), dao.searchDocuments("song", "chengdu", 10).map { it.entityId })
+        assertEquals(listOf("new"), dao.observePlaylistSongs("playlist").first().map(SongEntity::id))
     }
 
     @Test

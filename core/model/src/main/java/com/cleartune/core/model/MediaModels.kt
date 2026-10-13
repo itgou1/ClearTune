@@ -52,7 +52,18 @@ data class Song(
     val starredAt: Long? = null,
     val createdAt: Long? = null,
     val replayGain: ReplayGain? = null,
+    val isRadio: Boolean = false,
 )
+
+data class InternetRadioStation(
+    val id: String,
+    val name: String,
+    val streamUrl: String,
+    val homePageUrl: String? = null,
+) {
+    val playbackId: String get() = "radio:$id"
+    fun asSong() = Song(id = playbackId, title = name, artistName = "网络电台", albumName = "直播", isRadio = true)
+}
 
 data class Playlist(
     val id: String,

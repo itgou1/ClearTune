@@ -36,6 +36,18 @@ data class SubsonicResponseDto(
     val song: SongDto? = null,
     val scanStatus: ScanStatusDto? = null,
     val shares: SharesDto? = null,
+    val internetRadioStations: InternetRadioStationsDto? = null,
+)
+
+@Serializable
+data class InternetRadioStationsDto(val internetRadioStation: List<InternetRadioStationDto> = emptyList())
+
+@Serializable
+data class InternetRadioStationDto(
+    val id: String,
+    val name: String,
+    val streamUrl: String,
+    val homePageUrl: String? = null,
 )
 
 @Serializable

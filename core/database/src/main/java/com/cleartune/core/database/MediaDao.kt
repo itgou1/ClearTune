@@ -130,6 +130,24 @@ interface MediaDao {
     @Query("SELECT * FROM songs WHERE id = :id LIMIT 1")
     suspend fun song(id: String): SongEntity?
 
+    @Query("DELETE FROM songs WHERE id = :id")
+    suspend fun deleteSong(id: String)
+
+    @Query("DELETE FROM playlist_songs WHERE songId = :id")
+    suspend fun deleteSongPlaylistLinks(id: String)
+
+    @Query("DELETE FROM playlist_additions WHERE songId = :id")
+    suspend fun deleteSongPlaylistAdditions(id: String)
+
+    /** Remove library references atomically; downloaded files and history are independent. */
+    @Transaction
+    suspend fun removeMissingSong(id: String) {
+        deleteSong(id)
+        deleteSearchDocuments("song", listOf(id))
+        deleteSongPlaylistLinks(id)
+        deleteSongPlaylistAdditions(id)
+    }
+
     @Query("UPDATE songs SET starredAt = :starredAt, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateSongStarred(id: String, starredAt: Long?, updatedAt: Long)
 
@@ -227,7 +245,25 @@ interface MediaDao {
     }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertSongs(items: List<SongEntity>)
+    suspend fun insertSongs(items: List<SongEntity>)
+
+    @Transaction
+    suspend fun upsertSongs(items: List<SongEntity>) {
+        insertSongs(items)
+        items.chunked(500).forEach { batch ->
+            restoreListeningHistory(batch.map(SongEntity::id))
+        }
+    }
+
+    @Query("""
+        UPDATE songs SET lastPlayedAt = (
+            SELECT MAX(occurredAt) FROM play_events WHERE songId = songs.id AND type = 'COMPLETED'
+        )
+        WHERE (:allSongs OR id IN (:songIds)) AND COALESCE(lastPlayedAt, 0) < COALESCE((
+            SELECT MAX(occurredAt) FROM play_events WHERE songId = songs.id AND type = 'COMPLETED'
+        ), 0)
+    """)
+    suspend fun restoreListeningHistory(songIds: List<String>, allSongs: Boolean = false)
 
     @Query("DELETE FROM songs")
     suspend fun clearSongs()
@@ -390,6 +426,22 @@ interface DownloadDao {
 interface ActivityDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun addPlayEvent(event: PlayEventEntity): Long
+
+    @Query("UPDATE songs SET lastPlayedAt = MAX(COALESCE(lastPlayedAt, 0), :time) WHERE id = :songId")
+    suspend fun updateLastPlayed(songId: String, time: Long)
+
+    @Transaction
+    suspend fun recordCompletedPlay(songId: String, time: Long): Long {
+        val id = addPlayEvent(PlayEventEntity(songId = songId, type = "COMPLETED", occurredAt = time))
+        updateLastPlayed(songId, time)
+        return id
+    }
+
+    @Query("SELECT * FROM play_events WHERE synced = 0 AND type = 'COMPLETED' AND id > :afterId ORDER BY id LIMIT :limit")
+    suspend fun pendingCompletedPlays(afterId: Long = 0, limit: Int = 100): List<PlayEventEntity>
+
+    @Query("UPDATE play_events SET synced = 1 WHERE id = :id")
+    suspend fun markPlaySynced(id: Long)
 
     @Query("SELECT * FROM play_events WHERE synced = 0 ORDER BY occurredAt LIMIT :limit")
     suspend fun pendingPlayEvents(limit: Int = 100): List<PlayEventEntity>

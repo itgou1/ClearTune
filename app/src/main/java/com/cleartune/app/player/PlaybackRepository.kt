@@ -8,6 +8,7 @@ import com.cleartune.app.displayableArtworkId
 import com.cleartune.app.auth.AccountSession
 import com.cleartune.app.library.searchDocument
 import com.cleartune.app.library.shouldVerifyPlayedSong
+import com.cleartune.app.library.removeConfirmedMissingSong
 import com.cleartune.core.database.PendingMutationEntity
 import com.cleartune.core.database.PlayEventEntity
 import com.cleartune.core.database.QueueItemEntity
@@ -28,6 +29,8 @@ import javax.inject.Inject
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class RestoredQueue(
     val songs: List<Song>,
@@ -53,6 +56,10 @@ class PlaybackRepository @Inject constructor(
     private val mediaDao = database.mediaDao()
     private val activityDao = database.activityDao()
     private val refreshingSongIds = ConcurrentHashMap.newKeySet<String>()
+    private val scrobbleSyncMutex = Mutex()
+
+    suspend fun radioStations() = remote()?.radioStations()
+    fun isSessionActive() = session.active
 
     suspend fun urls(songs: List<Song>): PlaybackUrls? {
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
@@ -160,6 +167,8 @@ class PlaybackRepository @Inject constructor(
     }
 
     suspend fun persistQueue(state: PlayerUiState) {
+        // Radio is ephemeral; preserve the user's last music queue for the next launch.
+        if (state.queue.any(Song::isRadio)) return
         val now = System.currentTimeMillis()
         queueDao.replace(
             state.queue.mapIndexed { index, song ->
@@ -175,6 +184,7 @@ class PlaybackRepository @Inject constructor(
     }
 
     suspend fun saveServerQueue(state: PlayerUiState) {
+        if (state.queue.any(Song::isRadio)) return
         val remote = remote() ?: return queuePendingMutation(state)
         when (
             remote.saveQueue(
@@ -194,6 +204,13 @@ class PlaybackRepository @Inject constructor(
             PlayEventEntity(songId = songId, type = PlayEventType.STARTED.name, occurredAt = now),
         )
         remote()?.scrobble(songId, now, submission = false)
+    }
+
+    /** An audio error alone is never evidence that a library entry should be deleted. */
+    suspend fun removeMissingFailedSong(songId: String): Boolean {
+        val source = remote() ?: return false
+        if (!session.active) return false
+        return removeConfirmedMissingSong(songId, source::song, mediaDao::removeMissingSong)
     }
 
     /** A best-effort metadata check that is never part of resolving or reading the audio source. */
@@ -233,15 +250,21 @@ class PlaybackRepository @Inject constructor(
     }
 
     suspend fun submitScrobble(songId: String) {
-        val now = System.currentTimeMillis()
-        val result = remote()?.scrobble(songId, now, submission = true)
-        activityDao.addPlayEvent(
-            PlayEventEntity(
-                songId = songId,
-                type = PlayEventType.COMPLETED.name,
-                occurredAt = now,
-                synced = result is RemoteResult.Success,
-            ),
+        if (!session.active) return
+        // Save before networking: offline listening must affect recommendations immediately.
+        activityDao.recordCompletedPlay(songId, System.currentTimeMillis())
+        syncPendingScrobbles()
+    }
+
+    suspend fun syncPendingScrobbles() = scrobbleSyncMutex.withLock {
+        val source = remote() ?: return@withLock
+        uploadPendingScrobbles(
+            pending = { afterId -> activityDao.pendingCompletedPlays(afterId) },
+            upload = { event ->
+                if (!session.active) RemoteResult.Failure(com.cleartune.core.model.ClearTuneError.Authentication())
+                else source.scrobble(event.songId, event.occurredAt, submission = true)
+            },
+            markSynced = activityDao::markPlaySynced,
         )
     }
 

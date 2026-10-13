@@ -392,12 +392,17 @@ class DeferredQueueRestoreTest {
             val songs = (0..1).map { com.cleartune.core.model.Song("restore-${UUID.randomUUID()}", "Restore $it", durationSeconds = 12) }
             val urls = songs.associate { it.id to "${server.url}stream/${it.id}.wav" }
             instrumentation.runOnMainSync {
+                connection.setQueue(listOf(songs[0]), 0, mapOf(songs[0].id to "unsupported-qa://missing/audio"))
+            }
+            awaitState { connection.state.value.status == PlaybackStatus.ERROR }
+            instrumentation.runOnMainSync {
                 connection.setQueue(songs, 1, urls, positionMs = 4_000, playWhenReady = false)
             }
             awaitState { connection.state.value.currentSong?.id == songs[1].id }
             // Observe longer than the reported startup buffering interval.
             Thread.sleep(1_200)
             assertEquals(PlaybackStatus.IDLE, connection.state.value.status)
+            assertNull("Previous source error must not leak into the restored queue", connection.state.value.errorMessage)
             assertEquals(4_000L, connection.state.value.positionMs)
             assertTrue("Restoration must not fetch audio", server.requests.isEmpty())
             instrumentation.runOnMainSync { connection.togglePlayPause() }

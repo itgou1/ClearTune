@@ -188,9 +188,13 @@ class PredictiveBackDiagnosticTest {
                 ui.onNodeWithText("Song A").performScrollTo().performClick()
                 assertEquals(listOf("song-a"), played)
                 val downloadLabel = context.getString(R.string.download_action)
-                val downloadButton = if (destination == DetailKind.PLAYLIST)
-                    ui.onNodeWithContentDescription(downloadLabel) else ui.onNodeWithText(downloadLabel)
-                downloadButton.performScrollTo().performClick()
+                if (destination == DetailKind.PLAYLIST) {
+                    ui.onNodeWithContentDescription(context.getString(R.string.more_short))
+                        .performScrollTo().performClick()
+                    ui.onNodeWithText("下载全部").performClick()
+                } else {
+                    ui.onNodeWithText(downloadLabel).performScrollTo().performClick()
+                }
                 assertEquals(listOf("song-a"), downloaded)
             }
             InstrumentationRegistry.getInstrumentation().sendStatus(2, Bundle().apply {

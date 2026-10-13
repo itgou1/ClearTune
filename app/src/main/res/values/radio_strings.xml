@@ -1,0 +1,27 @@
+<resources>
+    <string name="radio_player_live">正在直播</string>
+    <string name="radio_collapse">收起播放器</string>
+    <string name="radio_previous">上一电台</string>
+    <string name="radio_next">下一电台</string>
+    <string name="radio_station_list">电台列表</string>
+    <string name="radio_live_hint">重新播放或切换电台时，从当前直播开始收听</string>
+    <string name="radio_title">网络电台</string>
+    <string name="radio_home_subtitle">好音乐，随时听见</string>
+    <string name="radio_hero_title">让声音\n陪你一会儿</string>
+    <string name="radio_hero_subtitle">音乐、经典与此刻的世界</string>
+    <string name="radio_all">全部电台</string>
+    <string name="radio_count">%1$d 个电台</string>
+    <string name="radio_back">返回首页</string>
+    <string name="radio_refresh">刷新电台</string>
+    <string name="radio_retry">重试</string>
+    <string name="radio_empty">暂无电台，请先在 Navidrome 网页端添加电台</string>
+    <string name="radio_connecting">正在连接直播…</string>
+    <string name="radio_live">正在直播 · 播放中</string>
+    <string name="radio_paused">直播已暂停</string>
+    <string name="radio_play_error">播放失败，点击重试</string>
+    <string name="radio_classic_subtitle">经典旋律 · 慢慢回味</string>
+    <string name="radio_news_subtitle">新闻资讯 · 听见世界</string>
+    <string name="radio_music_subtitle">流行音乐 · 全天相伴</string>
+    <string name="radio_play_station">播放%1$s</string>
+    <string name="radio_pause_station">暂停%1$s</string>
+</resources>

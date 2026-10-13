@@ -21,6 +21,7 @@ import com.cleartune.core.network.FavoriteTargetType
 import com.cleartune.core.network.OpenSubsonicApiFactory
 import com.cleartune.core.network.RemoteResult
 import com.cleartune.core.network.SearchResults
+import com.cleartune.core.network.PlaylistDetails
 import javax.inject.Inject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -64,7 +65,32 @@ class MusicRepository @Inject constructor(
     val songs: Flow<List<Song>> = mediaDao.observeSongs().map { items -> items.map { it.toModel() } }
     val playlists: Flow<List<Playlist>> = mediaDao.observePlaylists().map { items -> items.map { it.toModel() } }
 
-    suspend fun hasLocalLibraryData(): Boolean = mediaDao.libraryItemCount() > 0
+    suspend fun hasLocalLibraryData(): Boolean {
+        // Repair recommendations using qualifying listens retained by earlier versions.
+        mediaDao.restoreListeningHistory(emptyList(), allSongs = true)
+        return mediaDao.libraryItemCount() > 0
+    }
+
+    suspend fun removeMissingSong(songId: String): Boolean {
+        val source = remote() ?: return false
+        if (!session.active) return false
+        return removeConfirmedMissingSong(songId, source::song) { id ->
+            mediaDao.removeMissingSong(id)
+            remoteSearchCache.clear()
+        }
+    }
+
+    suspend fun reconcileSearchSongs(
+        local: List<Song>,
+        remote: List<Song>,
+        onRemoved: (String) -> Unit,
+    ) = coroutineScope {
+        // Bound concurrency, and publish removals as they arrive rather than holding up results.
+        missingSearchCandidates(local, remote).chunked(4).forEach { ids ->
+            ids.map { id -> async { if (removeMissingSong(id)) onRemoved(id) } }
+                .forEach { it.await() }
+        }
+    }
 
     suspend fun refreshLibrary(): ClearTuneError? = coroutineScope {
         val remote = remote() ?: return@coroutineScope ClearTuneError.Authentication()
@@ -206,17 +232,7 @@ class MusicRepository @Inject constructor(
         val remote = remote() ?: return ClearTuneError.Authentication()
         return when (val result = remote.playlist(id)) {
             is RemoteResult.Success -> {
-                val playlist = mediaDao.upsertPlaylistDetail(result.value.playlist.toEntity()).toModel()
-                mediaDao.upsertSongs(result.value.songs.map { it.toEntity() })
-                mediaDao.upsertSearchDocuments(
-                    listOf(searchDocument(playlist)) + result.value.songs.map(::searchDocument),
-                )
-                mediaDao.replacePlaylistSongs(
-                    id,
-                    result.value.songs.mapIndexed { index, song ->
-                        PlaylistSongEntity(id, song.id, index)
-                    },
-                )
+                cachePlaylist(id, result.value)
                 null
             }
             is RemoteResult.Failure -> {
@@ -228,6 +244,15 @@ class MusicRepository @Inject constructor(
                 result.error
             }
         }
+    }
+
+    private suspend fun cachePlaylist(id: String, details: PlaylistDetails) {
+        val playlist = mediaDao.upsertPlaylistDetail(details.playlist.toEntity()).toModel()
+        mediaDao.upsertSongs(details.songs.map { it.toEntity() })
+        mediaDao.upsertSearchDocuments(listOf(searchDocument(playlist)) + details.songs.map(::searchDocument))
+        mediaDao.replacePlaylistSongs(id, details.songs.mapIndexed { index, song ->
+            PlaylistSongEntity(id, song.id, index)
+        })
     }
 
     suspend fun openPlaylist(id: String): ClearTuneError? {
@@ -306,14 +331,30 @@ class MusicRepository @Inject constructor(
         if (additions.isEmpty()) return PlaylistSongsAddResult(skippedCount = skippedCount, refreshError = loadPlaylist(id))
         return when (val result = remote.addPlaylistSongs(id, additions)) {
             is RemoteResult.Failure -> PlaylistSongsAddResult(error = cleanMissingPlaylist(id, result.error))
-            // Once the server accepted the addition, a refresh failure must not invite resubmission.
             is RemoteResult.Success -> {
-                recordPlaylistAdditions(id, additions)
-                PlaylistSongsAddResult(
-                    addedCount = additions.size,
-                    skippedCount = skippedCount,
-                    refreshError = loadPlaylist(id),
-                )
+                // A successful update response can silently omit invalid song IDs.
+                // Only the subsequent membership read confirms that songs were saved.
+                when (val confirmed = remote.playlist(id)) {
+                    is RemoteResult.Failure -> PlaylistSongsAddResult(
+                        skippedCount = skippedCount, refreshError = confirmed.error,
+                    )
+                    is RemoteResult.Success -> {
+                        cachePlaylist(id, confirmed.value)
+                        val savedIds = confirmed.value.songs.map(Song::id).toSet()
+                        val saved = additions.filter { it in savedIds }
+                        recordPlaylistAdditions(id, saved)
+                        val missing = additions.size - saved.size
+                        PlaylistSongsAddResult(
+                            addedCount = saved.size,
+                            skippedCount = skippedCount,
+                            error = if (missing == 0) null else ClearTuneError.Server(
+                                userMessage = if (saved.isEmpty())
+                                    "歌曲未加入歌单，服务器未保存所选歌曲，请刷新搜索结果后重试"
+                                else "已添加 ${saved.size} 首，另有 $missing 首未被服务器保存，请刷新搜索结果后重试",
+                            ),
+                        )
+                    }
+                }
             }
         }
     }
@@ -457,7 +498,10 @@ class MusicRepository @Inject constructor(
         val now = System.currentTimeMillis()
         val cached = remoteSearchCache[cacheKey]?.takeIf {
             now - it.cachedAt < REMOTE_SEARCH_CACHE_TTL_MS
-        }?.results
+        }?.results?.takeIf { page ->
+            // Another repository (for example playback) may have removed a missing song.
+            mediaDao.songsByIds(page.songs.map(Song::id)).size == page.songs.distinctBy(Song::id).size
+        }
         val result = cached?.let { RemoteResult.Success(it) } ?: remote.search(
             query = query,
             artistCount = artistCount,

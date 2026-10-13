@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.cleartune.core.datastore.PlaybackPreferences
 import com.cleartune.core.model.PlaybackMode
 import com.cleartune.core.model.Song
+import com.cleartune.core.model.InternetRadioStation
+import com.cleartune.core.network.RemoteResult
+import com.cleartune.app.R
 import com.cleartune.core.player.PlaybackStatus
 import com.cleartune.core.player.PlayerConnection
 import com.cleartune.core.player.PlayerUiState
@@ -19,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -55,13 +59,52 @@ class PlayerViewModel @Inject constructor(
     val message: StateFlow<String?> = _message.asStateFlow()
     private var restored = false
     private var submittedSongId: String? = null
+    private val _radioState = MutableStateFlow(RadioUiState())
+    val radioState = _radioState.asStateFlow()
+    private val radioArtworkUri = "android.resource://${context.packageName}/${R.drawable.radio_cover_portrait}"
+    private var playRequest = 0L
+
+    fun refreshRadioStations() {
+        if (_radioState.value.loading) return
+        _radioState.value = _radioState.value.copy(loading = true, error = null)
+        viewModelScope.launch {
+            val result = repository.radioStations()
+            if (!repository.isSessionActive()) return@launch
+            _radioState.value = when (result) {
+                is RemoteResult.Success -> RadioUiState(stations = result.value)
+                else -> _radioState.value.copy(loading = false, error = "电台加载失败，请检查网络后重试")
+            }
+        }
+    }
+
+    fun playRadio(station: InternetRadioStation) {
+        if (!repository.isSessionActive()) return
+        val uri = runCatching { java.net.URI(station.streamUrl) }.getOrNull()
+        if (uri?.scheme?.lowercase() !in setOf("http", "https") || uri?.host.isNullOrBlank()) {
+            _message.value = "电台播放地址无效，请在服务器中检查配置"
+            return
+        }
+        ++playRequest
+        if (state.value.currentSong?.id == station.playbackId) {
+            connection.togglePlayPause()
+        } else {
+            val song = station.asSong()
+            connection.setQueue(listOf(song), 0, mapOf(song.id to station.streamUrl), mapOf(song.id to radioArtworkUri))
+        }
+    }
 
     init {
+        viewModelScope.launch { repository.syncPendingScrobbles() }
         viewModelScope.launch {
             state.map { it.currentSong?.id to (it.status == PlaybackStatus.ERROR) }
                 .distinctUntilChanged()
-                .collect { (_, failed) ->
-                    if (failed) _message.value = state.value.errorMessage ?: "播放失败，请稍后重试"
+                .collectLatest { (songId, failed) ->
+                    if (!failed) return@collectLatest
+                    _message.value = state.value.errorMessage ?: "播放失败，请稍后重试"
+                    if (songId != null && state.value.currentSong?.isRadio != true && repository.removeMissingFailedSong(songId)) {
+                        _message.value = "歌曲已从服务器移除，曲库已更新"
+                        connection.removeSong(songId)
+                    }
                 }
         }
         viewModelScope.launch {
@@ -71,6 +114,7 @@ class PlayerViewModel @Inject constructor(
             if (!connection.hasActiveQueue()) {
                 repository.restoreQueue()?.let { restoredQueue ->
                     repository.urls(restoredQueue.songs)?.let { urls ->
+                        if (playRequest != 0L) return@let
                         connection.setQueue(
                             songs = restoredQueue.songs,
                             startIndex = restoredQueue.currentIndex,
@@ -83,6 +127,7 @@ class PlayerViewModel @Inject constructor(
                 }
                 repository.newerServerQueue()?.takeIf { state.value.status != PlaybackStatus.PLAYING }?.let { serverQueue ->
                     repository.urls(serverQueue.songs)?.let { urls ->
+                        if (playRequest != 0L) return@let
                         connection.setQueue(
                             songs = serverQueue.songs,
                             startIndex = serverQueue.currentIndex,
@@ -129,7 +174,7 @@ class PlayerViewModel @Inject constructor(
                     submittedSongId = null
                     started = false
                 }
-                if (songId != null && status == PlaybackStatus.PLAYING && !started) {
+                if (songId != null && status == PlaybackStatus.PLAYING && !started && state.value.currentSong?.isRadio != true) {
                     started = true
                     viewModelScope.launch { repository.recordStarted(songId) }
                     viewModelScope.launch {
@@ -143,10 +188,12 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             state.collect { snapshot ->
                 val song = snapshot.currentSong ?: return@collect
+                if (song.isRadio) return@collect
                 val threshold = minOf(240_000L, (snapshot.durationMs / 2).coerceAtLeast(30_000L))
                 if (snapshot.positionMs >= threshold && submittedSongId != song.id) {
                     submittedSongId = song.id
-                    repository.submitScrobble(song.id)
+                    // A slow server or pending backlog must not block observing the next song.
+                    viewModelScope.launch { repository.submitScrobble(song.id) }
                 }
             }
         }
@@ -154,9 +201,11 @@ class PlayerViewModel @Inject constructor(
 
     fun play(songs: List<Song>, startIndex: Int = 0) {
         val selected = songs.getOrNull(startIndex) ?: return
+        val request = ++playRequest
         if (continueCurrentSongIfSelected(selected.id)) return
         viewModelScope.launch {
             val urls = repository.urls(songs)
+            if (request != playRequest) return@launch
             if (urls == null) {
                 _message.value = "无法获取播放地址，请重新登录"
                 return@launch
@@ -180,6 +229,10 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun playNext(song: Song) {
+        if (state.value.currentSong?.isRadio == true) {
+            play(listOf(song))
+            return
+        }
         viewModelScope.launch {
             val snapshot = state.value
             val existingIndex = snapshot.queue.indexOfFirst { it.id == song.id }

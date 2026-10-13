@@ -18,6 +18,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BatchPlaylistRepositoryTest {
+    @Test fun acceptedButIgnoredSearchSongIsNotReportedAsSaved() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.ignoredIds = setOf("stale-search-id")
+            val result = fixture.repository.addPlaylistSongs("p", listOf("stale-search-id"))
+            assertNotNull(result.error)
+            assertEquals(0, result.addedCount)
+            assertEquals(listOf("existing"), fixture.repository.playlistSongs("p").first().map(Song::id))
+            assertTrue(fixture.repository.playlistAdditions("p").first().isEmpty())
+        }
+    }
+
+    @Test fun partialAcceptanceOnlyRecordsConfirmedSongsAndRetrySkipsThem() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.ignoredIds = setOf("stale")
+            val result = fixture.repository.addPlaylistSongs("p", listOf("b", "stale"))
+            assertNotNull(result.error)
+            assertEquals(1, result.addedCount)
+            assertEquals(setOf("b"), fixture.repository.playlistAdditions("p").first().keys)
+            fixture.repository.addPlaylistSongs("p", listOf("b", "stale"))
+            assertEquals(listOf("stale"), fixture.mutations.last().getQueryParameters("songIdToAdd"))
+        }
+    }
+
     @Test fun creationRecordsSongsAgainstReturnedPlaylistId() = runBlocking {
         Fixture().use { fixture ->
             assertNull(fixture.repository.createPlaylistWithSongs("New", listOf("b", "c")).error)
@@ -53,8 +76,7 @@ class BatchPlaylistRepositoryTest {
             assertNull(result.error)
             assertNotNull(result.refreshError)
             val times = fixture.repository.playlistAdditions("p").first()
-            assertEquals(setOf("b", "c"), times.keys)
-            assertTrue(times.values.all { it > 0 })
+            assertTrue(times.isEmpty())
         }
     }
 
@@ -143,12 +165,12 @@ class BatchPlaylistRepositoryTest {
             val result = fixture.repository.addPlaylistSongs("p", listOf("b", "c"))
             assertNull(result.error)
             assertNotNull(result.refreshError)
-            assertEquals(2, result.addedCount)
+            assertEquals(0, result.addedCount)
             assertEquals(1, fixture.mutations.size)
         }
     }
 
-    private class Fixture : AutoCloseable {
+    internal class Fixture : AutoCloseable {
         private val context = InstrumentationRegistry.getInstrumentation().targetContext
         private val server = ServerSocket(0)
         private val baseUrl = "http://127.0.0.1:${server.localPort}/"
@@ -160,12 +182,13 @@ class BatchPlaylistRepositoryTest {
         val members = CopyOnWriteArrayList<String>().apply { add("existing") }
         @Volatile var failWrite = false
         @Volatile var failRefresh = false
+        @Volatile var ignoredIds: Set<String> = emptySet()
         @Volatile var coverArt: String? = null
         suspend fun seedPlaylist() {
             database.mediaDao().upsertPlaylists(listOf(Playlist("p", "Old name", songCount = 9,
                 coverArtId = "listing-cover").toEntity()))
         }
-        private val session = AccountSession(ServerCredentials(baseUrl, username, "test", true),
+        val session = AccountSession(ServerCredentials(baseUrl, username, "test", true),
             ServerProfile(baseUrl, username, "test", "1", "1.16.1", true), "test", database)
         val repository = MusicRepository(session, OpenSubsonicApiFactory())
         private val worker = thread(isDaemon = true) {
@@ -184,7 +207,7 @@ class BatchPlaylistRepositoryTest {
                     if (write && !failed) {
                         uri.getQueryParameters("songIndexToRemove").map(String::toInt).sortedDescending()
                             .forEach { members.removeAt(it) }
-                        members.addAll(uri.getQueryParameters("songIdToAdd"))
+                        members.addAll(uri.getQueryParameters("songIdToAdd").filterNot { id -> id in ignoredIds })
                     }
                     val payload = if (failed) {
                         """{"status":"failed","version":"1.16.1","error":{"code":50,"message":"Test failure"}}"""

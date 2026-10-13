@@ -31,6 +31,16 @@ import org.junit.Test
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class OfflinePlaybackCacheTest {
+    @Test fun radioAlwaysReadsUpstreamAndNeverCachesLiveAudio() = fixture { f ->
+        val key = "cleartune:radio:radio:station-1"
+        assertArrayEquals(f.audio, f.read(key))
+        assertArrayEquals(f.audio, f.read(key))
+        assertEquals(2, f.upstreamOpens)
+        assertTrue(f.cache.keys.isEmpty())
+        f.offline = true
+        assertThrows(IOException::class.java) { f.read(key) }
+    }
+
     @Test fun mobileCachePlaysOfflineAfterRestartWithOriginalQualityUrl() = fixture { f ->
         f.seed(f.key("&maxBitRate=192"))
         f.reopen()

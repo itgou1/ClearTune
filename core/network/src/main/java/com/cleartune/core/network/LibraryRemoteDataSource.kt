@@ -61,6 +61,13 @@ sealed interface RemoteResult<out T> {
 class LibraryRemoteDataSource(
     private val authorized: AuthorizedOpenSubsonicApi,
 ) {
+    suspend fun radioStations() = execute { api.getInternetRadioStations(authQuery()) }
+        .map { response ->
+            response.internetRadioStations?.internetRadioStation.orEmpty().map {
+                com.cleartune.core.model.InternetRadioStation(it.id, it.name, it.streamUrl, it.homePageUrl)
+            }.distinctBy { it.id }
+        }
+
     suspend fun shares() = execute { api.getShares(authQuery()) }
         .map { it.shares?.share.orEmpty() }
 
