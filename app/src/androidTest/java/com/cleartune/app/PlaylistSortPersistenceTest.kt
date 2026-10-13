@@ -55,6 +55,12 @@ class PlaylistSortPersistenceTest {
             database.mediaDao().replacePlaylistSongs("p", listOf(PlaylistSongEntity("p", "old-song", 0)))
             database.close()
             SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use {
+                it.execSQL("CREATE TABLE old_playlist_songs (playlistId TEXT NOT NULL, songId TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(playlistId, songId))")
+                it.execSQL("INSERT INTO old_playlist_songs SELECT playlistId, songId, position FROM playlist_songs")
+                it.execSQL("DROP TABLE playlist_songs")
+                it.execSQL("ALTER TABLE old_playlist_songs RENAME TO playlist_songs")
+                it.execSQL("CREATE INDEX index_playlist_songs_playlistId ON playlist_songs(playlistId)")
+                it.execSQL("CREATE INDEX index_playlist_songs_position ON playlist_songs(position)")
                 it.execSQL("DROP TABLE playlist_additions")
                 it.version = 4
             }
@@ -62,6 +68,64 @@ class PlaylistSortPersistenceTest {
             assertTrue(database.mediaDao().observePlaylistAdditions("p").first().isEmpty())
             database.mediaDao().recordPlaylistAdditions(listOf(PlaylistAdditionEntity("p", "new-song", 42)))
             assertEquals(42L, database.mediaDao().observePlaylistAdditions("p").first().single().addedAt)
+        } finally { database.close(); context.deleteDatabase(name) }
+    }
+
+    @Test fun versionFiveMigrationRetainsLocalTimesAndSongOrder() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val key = accountStorageKey("https://example.com", UUID.randomUUID().toString())
+        val name = "cleartune_account_$key.db"
+        var database = DatabaseFactory.create(context, key)
+        try {
+            database.mediaDao().upsertSongs(listOf(com.cleartune.core.model.Song("s", "Song").toEntity()))
+            database.mediaDao().recordPlaylistAdditions(listOf(PlaylistAdditionEntity("p", "s", 42)))
+            database.close()
+            SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use {
+                it.execSQL("DROP TABLE playlist_songs")
+                it.execSQL("CREATE TABLE playlist_songs (playlistId TEXT NOT NULL, songId TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(playlistId, songId))")
+                it.execSQL("CREATE INDEX index_playlist_songs_playlistId ON playlist_songs(playlistId)")
+                it.execSQL("CREATE INDEX index_playlist_songs_position ON playlist_songs(position)")
+                it.execSQL("INSERT INTO playlist_songs VALUES ('p', 's', 0)")
+                it.version = 5
+            }
+            database = DatabaseFactory.create(context, key)
+            val entries = database.mediaDao().observePlaylistEntries("p").first()
+            assertEquals("s", entries.single().song.id)
+            assertEquals(42L, entries.single().entryAddedAt)
+            assertEquals(0, entries.single().entryPosition)
+        } finally { database.close(); context.deleteDatabase(name) }
+    }
+
+    @Test fun serverTimesAndLegacyFallbackSurviveReopenWithoutMergingDuplicates() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val key = accountStorageKey("https://example.com", UUID.randomUUID().toString())
+        val name = "cleartune_account_$key.db"
+        var database = DatabaseFactory.create(context, key)
+        try {
+            var dao = database.mediaDao()
+            dao.upsertSongs(listOf(com.cleartune.core.model.Song("s", "Song").toEntity()))
+            dao.recordPlaylistAdditions(listOf(PlaylistAdditionEntity("p", "s", 999)))
+            dao.replacePlaylistSongs("p", listOf(
+                PlaylistSongEntity("p", "s", 0, 10, false),
+                PlaylistSongEntity("p", "s", 1, 20, false),
+                PlaylistSongEntity("p", "s", 2, null, false),
+            ))
+            assertEquals(listOf(10L, 20L, null), dao.observePlaylistEntries("p").first().map { it.entryAddedAt })
+            database.close()
+            database = DatabaseFactory.create(context, key)
+            dao = database.mediaDao()
+            assertEquals(listOf(10L, 20L, null), dao.observePlaylistEntries("p").first().map { it.entryAddedAt })
+            // Downgrade to original server: use retained local history, never old server times.
+            dao.replacePlaylistSongs("p", listOf(PlaylistSongEntity("p", "s", 0)))
+            assertEquals(999L, dao.observePlaylistEntries("p").first().single().entryAddedAt)
+            // Smart/custom unknown must suppress retained local estimates.
+            dao.replacePlaylistSongs("p", listOf(PlaylistSongEntity("p", "s", 0, null, false)))
+            assertNull(dao.observePlaylistEntries("p").first().single().entryAddedAt)
+            dao.replacePlaylistSongs("p", listOf(PlaylistSongEntity("p", "s", 0), PlaylistSongEntity("p", "s", 1)))
+            assertTrue(dao.observePlaylistEntries("p").first().all { it.entryAddedAt == null })
+            dao.replacePlaylistSongs("p", emptyList())
+            dao.replacePlaylistSongs("p", listOf(PlaylistSongEntity("p", "s", 0)))
+            assertNull(dao.observePlaylistEntries("p").first().single().entryAddedAt)
         } finally { database.close(); context.deleteDatabase(name) }
     }
 }

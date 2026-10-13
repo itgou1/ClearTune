@@ -20,7 +20,7 @@ import androidx.room.RoomDatabase
         LyricsCacheEntity::class,
         LyricLineEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class ClearTuneDatabase : RoomDatabase() {

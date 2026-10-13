@@ -1,5 +1,6 @@
 package com.cleartune.app.library
 
+import androidx.room.withTransaction
 import android.os.SystemClock
 import com.cleartune.app.auth.AccountSession
 import com.cleartune.core.database.PlaylistSongEntity
@@ -246,12 +247,13 @@ class MusicRepository @Inject constructor(
         }
     }
 
-    private suspend fun cachePlaylist(id: String, details: PlaylistDetails) {
+    private suspend fun cachePlaylist(id: String, details: PlaylistDetails) = database.withTransaction {
         val playlist = mediaDao.upsertPlaylistDetail(details.playlist.toEntity()).toModel()
         mediaDao.upsertSongs(details.songs.map { it.toEntity() })
         mediaDao.upsertSearchDocuments(listOf(searchDocument(playlist)) + details.songs.map(::searchDocument))
         mediaDao.replacePlaylistSongs(id, details.songs.mapIndexed { index, song ->
-            PlaylistSongEntity(id, song.id, index)
+            PlaylistSongEntity(id, song.id, index, details.entryTimes.getOrNull(index)?.addedAt,
+                details.entryTimes.getOrNull(index)?.allowLocalTime ?: true)
         })
     }
 
@@ -395,6 +397,8 @@ class MusicRepository @Inject constructor(
     fun artistSongs(id: String): Flow<List<Song>> = mediaDao.observeSongsForArtist(id)
         .map { list -> list.map { it.toModel() } }
     fun playlistSongs(id: String): Flow<List<Song>> = mediaDao.observePlaylistSongs(id).map { list -> list.map { it.toModel() } }
+
+    fun playlistEntries(id: String) = mediaDao.observePlaylistEntries(id)
 
     fun playlistAdditions(id: String): Flow<Map<String, Long>> =
         mediaDao.observePlaylistAdditions(id).map { entries -> entries.associate { it.songId to it.addedAt } }

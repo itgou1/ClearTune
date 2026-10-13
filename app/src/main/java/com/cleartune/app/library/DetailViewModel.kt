@@ -1,6 +1,7 @@
 package com.cleartune.app.library
 
 import androidx.lifecycle.ViewModel
+import com.cleartune.core.database.toModel
 import com.cleartune.app.withResolvedArtwork
 import com.cleartune.app.withResolvedArtistArtwork
 import com.cleartune.core.model.ClearTuneError
@@ -39,9 +40,11 @@ internal class RepositoryDetailSource(private val repository: MusicRepository) :
         DetailKind.ARTIST -> combine(repository.artist(target.id), repository.artistSongs(target.id)) { artist, songs ->
             DetailUiState(artist = artist?.withResolvedArtistArtwork(songs), songs = songs)
         }
-        DetailKind.PLAYLIST -> combine(repository.playlist(target.id), repository.playlistSongs(target.id),
-            repository.playlistAdditions(target.id)) { playlist, songs, addedAt ->
-            DetailUiState(playlist = playlist, songs = songs, playlistAddedAt = addedAt)
+        DetailKind.PLAYLIST -> combine(repository.playlist(target.id), repository.playlistEntries(target.id)) { playlist, entries ->
+            DetailUiState(playlist = playlist, songs = entries.map { it.song.toModel() },
+                playlistAddedAt = entries.mapIndexedNotNull { index, entry ->
+                    entry.entryAddedAt?.let { index to it }
+                }.toMap())
         }
     }
 

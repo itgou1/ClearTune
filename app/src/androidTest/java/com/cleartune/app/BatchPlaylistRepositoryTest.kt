@@ -170,6 +170,30 @@ class BatchPlaylistRepositoryTest {
         }
     }
 
+    @Test fun customAndOriginalResponsesRefreshMembershipTimesWithoutLosingDuplicateEntries() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.members.clear()
+            fixture.members.addAll(listOf("same", "same", "old"))
+            fixture.timeCapability = true
+            fixture.entryTimeFields = listOf(
+                ",\"addedAt\":\"2026-10-01T00:00:00Z\"",
+                ",\"addedAt\":\"2026-10-02T00:00:00Z\"",
+            )
+            assertNull(fixture.repository.loadPlaylist("p"))
+            val snapshot = fixture.repository.playlistEntries("p").first()
+            assertEquals(listOf("same", "same", "old"), snapshot.map { it.song.id })
+            assertTrue(snapshot[1].entryAddedAt!! > snapshot[0].entryAddedAt!!)
+            assertNull(snapshot[2].entryAddedAt)
+            fixture.timeCapability = false
+            assertNull(fixture.repository.loadPlaylist("p"))
+            assertTrue(fixture.repository.playlistEntries("p").first().all { it.entryAddedAt == null })
+            fixture.timeCapability = null
+            fixture.entryTimeFields = emptyList()
+            assertNull(fixture.repository.loadPlaylist("p"))
+            assertEquals(3, fixture.repository.playlistEntries("p").first().size)
+        }
+    }
+
     internal class Fixture : AutoCloseable {
         private val context = InstrumentationRegistry.getInstrumentation().targetContext
         private val server = ServerSocket(0)
@@ -184,6 +208,8 @@ class BatchPlaylistRepositoryTest {
         @Volatile var failRefresh = false
         @Volatile var ignoredIds: Set<String> = emptySet()
         @Volatile var coverArt: String? = null
+        @Volatile var timeCapability: Boolean? = null
+        @Volatile var entryTimeFields: List<String> = emptyList()
         suspend fun seedPlaylist() {
             database.mediaDao().upsertPlaylists(listOf(Playlist("p", "Old name", songCount = 9,
                 coverArtId = "listing-cover").toEntity()))
@@ -217,7 +243,7 @@ class BatchPlaylistRepositoryTest {
                         uri.path?.contains("getPlaylists") == true ->
                             """{"status":"ok","version":"1.16.1","playlists":{"playlist":[{"id":"p","name":"Target","songCount":1}]}}"""
                         uri.path?.contains("getPlaylist") == true ->
-                            """{"status":"ok","version":"1.16.1","playlist":{"id":"p","name":"Target","songCount":${members.size},${coverArt?.let { "\"coverArt\":\"$it\"," }.orEmpty()}"entry":[${members.joinToString(",") { """{"id":"$it","title":"$it"}""" }}]}}"""
+                            """{"status":"ok","version":"1.16.1","playlist":{"id":"p","name":"Target","songCount":${members.size},${timeCapability?.let { "\"supportsAddedAt\":$it," }.orEmpty()}${coverArt?.let { "\"coverArt\":\"$it\"," }.orEmpty()}"entry":[${members.mapIndexed { index, id -> """{"id":"$id","title":"$id"${entryTimeFields.getOrNull(index).orEmpty()}}""" }.joinToString(",")}]}}"""
                         else -> """{"status":"ok","version":"1.16.1"}"""
                     }
                     val bytes = """{"subsonic-response":$payload}""".toByteArray()

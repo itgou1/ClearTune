@@ -24,14 +24,14 @@ internal data class PlaylistSort(
 }
 
 internal fun sortedFavoriteEntries(songs: List<Song>, sort: PlaylistSort): List<Song> =
-    sortedPlaylistEntries(songs, songs.mapNotNull { song -> song.starredAt?.let { song.id to it } }.toMap(),
+    sortedPlaylistEntries(songs, songs.mapIndexedNotNull { index, song -> (song.starredAt ?: song.createdAt)?.let { index to it } }.toMap(),
         if (sort.field == PlaylistSortField.DEFAULT) PlaylistSort(PlaylistSortField.ADDED, !sort.descending) else sort)
         .map { it.value }
 
 /** Keep the original index for playlist removal; sorting is a local presentation only. */
 internal fun sortedPlaylistEntries(
     songs: List<Song>,
-    addedAt: Map<String, Long>,
+    addedAt: Map<Int, Long>,
     sort: PlaylistSort,
 ): List<IndexedValue<Song>> {
     val entries = songs.withIndex().toList()
@@ -40,10 +40,9 @@ internal fun sortedPlaylistEntries(
     return entries.sortedWith { a, b ->
         val primary = when (sort.field) {
             PlaylistSortField.ADDED -> {
-                val aTime = addedAt[a.value.id] ?: a.value.createdAt
-                val bTime = addedAt[b.value.id] ?: b.value.createdAt
-                // Prefer playlist membership time; fall back to library creation for history.
-                // Entries missing both timestamps stay last in either direction.
+                val aTime = addedAt[a.index]
+                val bTime = addedAt[b.index]
+                // Unknown membership times stay last in either direction.
                 if (aTime == null || bTime == null) {
                     return@sortedWith when {
                         aTime != null -> -1

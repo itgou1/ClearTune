@@ -36,6 +36,7 @@ data class ArtistDetails(
 data class PlaylistDetails(
     val playlist: Playlist,
     val songs: List<Song>,
+    val entryTimes: List<PlaylistEntryTime> = emptyList(),
 )
 
 data class RemotePlayQueue(
@@ -141,6 +142,7 @@ class LibraryRemoteDataSource(
             PlaylistDetails(
                 playlist = dto.toModel(),
                 songs = dto.entry.map(SongDto::toModel),
+                entryTimes = dto.entry.map { playlistEntryTime(dto.supportsAddedAt, it.addedAt) },
             )
         }
 

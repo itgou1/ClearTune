@@ -12,9 +12,20 @@ object DatabaseFactory {
             context.applicationContext,
             ClearTuneDatabase::class.java,
             "cleartune_account_$accountKey.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .enableMultiInstanceInvalidation()
             .build()
+    }
+
+    internal val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("CREATE TABLE playlist_songs_new (playlistId TEXT NOT NULL, songId TEXT NOT NULL, position INTEGER NOT NULL, addedAt INTEGER, allowLocalTime INTEGER NOT NULL, PRIMARY KEY(playlistId, position))")
+            db.execSQL("INSERT INTO playlist_songs_new SELECT playlistId, songId, position, NULL, 1 FROM playlist_songs")
+            db.execSQL("DROP TABLE playlist_songs")
+            db.execSQL("ALTER TABLE playlist_songs_new RENAME TO playlist_songs")
+            db.execSQL("CREATE INDEX index_playlist_songs_playlistId ON playlist_songs(playlistId)")
+            db.execSQL("CREATE INDEX index_playlist_songs_position ON playlist_songs(position)")
+        }
     }
 
     private val MIGRATION_4_5 = object : Migration(4, 5) {

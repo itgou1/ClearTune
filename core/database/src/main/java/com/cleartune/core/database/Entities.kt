@@ -95,13 +95,15 @@ data class PlaylistEntity(
 
 @Entity(
     tableName = "playlist_songs",
-    primaryKeys = ["playlistId", "songId"],
+    primaryKeys = ["playlistId", "position"],
     indices = [Index("playlistId"), Index("position")],
 )
 data class PlaylistSongEntity(
     val playlistId: String,
     val songId: String,
     val position: Int,
+    val addedAt: Long? = null,
+    val allowLocalTime: Boolean = true,
 )
 
 /** Only confirmed additions made by this client; never song library creation times. */

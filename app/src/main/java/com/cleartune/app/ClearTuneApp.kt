@@ -312,7 +312,7 @@ fun ClearTuneApp(
             navController.navigate(route) { launchSingleTop = true }
         }
     }
-    val showNavigationBar = !batchSelection.active && (currentRoute in mainDestinations.map { it.route } || currentRoute == "radio")
+    val showNavigationBar = !batchSelection.active && currentRoute in mainDestinations.map { it.route }
     val showMiniPlayer = !batchSelection.active && playerState.currentSong != null && currentRoute !in setOf("now-playing", "queue")
     val viewDownloadsLabel = stringResource(R.string.view_downloads)
     val viewUpdateLabel = stringResource(R.string.update_available_action)
@@ -432,7 +432,7 @@ fun ClearTuneApp(
                             ) {
                                 mainDestinations.forEach { destination ->
                                     NavigationBarItem(
-                                        selected = currentRoute == destination.route || (currentRoute == "radio" && destination.route == "home"),
+                                        selected = currentRoute == destination.route,
                                         onClick = {
                                             navController.navigate(destination.route) {
                                                 popUpTo(navController.graph.findStartDestination().id) {

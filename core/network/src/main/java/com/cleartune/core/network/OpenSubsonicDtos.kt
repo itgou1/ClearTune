@@ -185,6 +185,7 @@ data class SongDto(
     val created: String? = null,
     val replayGain: ReplayGainDto? = null,
     val path: String? = null,
+    val addedAt: kotlinx.serialization.json.JsonElement = MissingPlaylistTime,
 )
 
 @Serializable
@@ -243,6 +244,7 @@ data class PlaylistDetailDto(
     val coverArt: String? = null,
     val changed: String? = null,
     val entry: List<SongDto> = emptyList(),
+    val supportsAddedAt: Boolean? = null,
 )
 
 @Serializable

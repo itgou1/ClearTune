@@ -127,7 +127,7 @@ data class DetailUiState(
     val playlist: Playlist? = null,
     val songs: List<Song> = emptyList(),
     val errorMessage: String? = null,
-    val playlistAddedAt: Map<String, Long> = emptyMap(),
+    val playlistAddedAt: Map<Int, Long> = emptyMap(),
 )
 
 data class LyricsUiState(
