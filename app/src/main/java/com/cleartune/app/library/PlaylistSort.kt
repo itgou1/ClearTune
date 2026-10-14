@@ -40,9 +40,10 @@ internal fun sortedPlaylistEntries(
     return entries.sortedWith { a, b ->
         val primary = when (sort.field) {
             PlaylistSortField.ADDED -> {
-                val aTime = addedAt[a.index]
-                val bTime = addedAt[b.index]
-                // Unknown membership times stay last in either direction.
+                // Use server membership time, falling back to the song's library time.
+                val aTime = addedAt[a.index] ?: a.value.createdAt
+                val bTime = addedAt[b.index] ?: b.value.createdAt
+                // If neither time is available, keep the entry last in either direction.
                 if (aTime == null || bTime == null) {
                     return@sortedWith when {
                         aTime != null -> -1

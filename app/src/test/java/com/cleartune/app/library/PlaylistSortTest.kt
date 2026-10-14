@@ -18,15 +18,18 @@ class PlaylistSortTest {
         Song("c", "Banana", artistName = "Alpha", createdAt = 99999),
     )
 
-    @Test fun recentUsesOnlyMembershipTimeInBothDirections() {
+    @Test fun membershipTimeTakesPriorityAndMissingTimesUseLibraryTime() {
         val times = mapOf(0 to 100L, 1 to 200L)
-        assertEquals(listOf("b", "a", "c"), sortedPlaylistEntries(songs, times,
+        assertEquals(listOf("c", "b", "a"), sortedPlaylistEntries(songs, times,
             PlaylistSort(PlaylistSortField.ADDED, true)).map { it.value.id })
         assertEquals(listOf("a", "b", "c"), sortedPlaylistEntries(songs, times,
             PlaylistSort(PlaylistSortField.ADDED, false)).map { it.value.id })
-        assertEquals(listOf("a", "b", "c"), sortedPlaylistEntries(songs, emptyMap(),
+    }
+
+    @Test fun originalServerUsesLibraryTimesInBothDirections() {
+        assertEquals(listOf("c", "a", "b"), sortedPlaylistEntries(songs, emptyMap(),
             PlaylistSort(PlaylistSortField.ADDED, true)).map { it.value.id })
-        assertEquals(listOf("a", "b", "c"), sortedPlaylistEntries(songs, emptyMap(),
+        assertEquals(listOf("b", "a", "c"), sortedPlaylistEntries(songs, emptyMap(),
             PlaylistSort(PlaylistSortField.ADDED, false)).map { it.value.id })
     }
 
@@ -35,8 +38,30 @@ class PlaylistSortTest {
             Song("unknown2", "Three"), Song("fallback", "Four", createdAt = 100))
         listOf(false, true).forEach { descending ->
             assertEquals(listOf("known", "fallback", "unknown1", "unknown2"),
-                sortedPlaylistEntries(entries, mapOf(1 to 100L, 3 to 100L),
+                sortedPlaylistEntries(entries, mapOf(1 to 100L),
                     PlaylistSort(PlaylistSortField.ADDED, descending)).map { it.value.id })
+        }
+        val unknown = listOf(Song("a", "A"), Song("b", "B"))
+        listOf(false, true).forEach { descending ->
+            assertEquals(unknown, sortedPlaylistEntries(unknown, emptyMap(),
+                PlaylistSort(PlaylistSortField.ADDED, descending)).map { it.value })
+        }
+    }
+
+    @Test fun singleMembershipTimeIsComparedWithOtherSongsLibraryTimes() {
+        val times = mapOf(1 to 10000L)
+        assertEquals(listOf(0, 1, 2), sortedPlaylistEntries(songs, times,
+            PlaylistSort(PlaylistSortField.ADDED, false)).map { it.index })
+        assertEquals(listOf(2, 1, 0), sortedPlaylistEntries(songs, times,
+            PlaylistSort(PlaylistSortField.ADDED, true)).map { it.index })
+    }
+
+    @Test fun favoriteUnknownTimesStayLastAndEqualTimesKeepOriginalOrder() {
+        val favorites = listOf(Song("unknown1", "One"), Song("known", "Two", starredAt = 100),
+            Song("unknown2", "Three"), Song("fallback", "Four", createdAt = 100))
+        listOf(false, true).forEach { descending ->
+            assertEquals(listOf("known", "fallback", "unknown1", "unknown2"),
+                sortedFavoriteEntries(favorites, PlaylistSort(PlaylistSortField.ADDED, descending)).map { it.id })
         }
     }
 

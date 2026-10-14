@@ -1,6 +1,7 @@
 package com.cleartune.app
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.cleartune.app.player.RadioUiState
@@ -13,6 +14,34 @@ import org.junit.Test
 
 class RadioScreenTest {
     @get:Rule val compose = createComposeRule()
+    @Test fun initialLoadingHintIsDelayedAndCancelledWhenDataArrives() {
+        val state = mutableStateOf(RadioUiState(loading = true))
+        compose.setContent { MaterialTheme { RadioScreen(state.value, PlayerUiState(), {}, {}, {}) } }
+        compose.onNodeWithText("正在加载电台…").assertDoesNotExist()
+        compose.waitUntil(3_000) {
+            compose.onAllNodesWithText("正在加载电台…").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.runOnIdle {
+            state.value = RadioUiState(stations = listOf(InternetRadioStation("1", "测试电台", "https://example.com/live.mp3")))
+        }
+        compose.onNodeWithText("正在加载电台…").assertDoesNotExist()
+        compose.onNodeWithText("测试电台").assertIsDisplayed()
+    }
+
+    @Test fun backgroundRefreshAndFailureKeepStationInPlaceAndAllowRetry() {
+        val station = InternetRadioStation("1", "测试电台", "https://example.com/live.mp3")
+        val state = mutableStateOf(RadioUiState(stations = listOf(station)))
+        var retries = 0
+        compose.setContent { MaterialTheme { RadioScreen(state.value, PlayerUiState(), {}, { retries++ }, {}) } }
+        val original = compose.onNodeWithText("测试电台").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { state.value = state.value.copy(loading = true) }
+        compose.onNodeWithText("正在加载电台…").assertDoesNotExist()
+        assertEquals(original, compose.onNodeWithText("测试电台").fetchSemanticsNode().boundsInRoot)
+        compose.runOnIdle { state.value = state.value.copy(loading = false, error = "刷新失败") }
+        assertEquals(original, compose.onNodeWithText("测试电台").fetchSemanticsNode().boundsInRoot)
+        compose.onNodeWithText("重试").performClick()
+        assertEquals(1, retries)
+    }
     @Test fun fullPlayerCyclesStationsAndOpensListWithoutSongControls() {
         val stations = listOf(
             InternetRadioStation("1", "中国之声", "https://example.com/1.mp3"),

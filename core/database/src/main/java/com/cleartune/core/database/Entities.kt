@@ -103,7 +103,8 @@ data class PlaylistSongEntity(
     val songId: String,
     val position: Int,
     val addedAt: Long? = null,
-    val allowLocalTime: Boolean = true,
+    // Retained for database compatibility; local history is no longer used for sorting.
+    val allowLocalTime: Boolean = false,
 )
 
 /** Only confirmed additions made by this client; never song library creation times. */

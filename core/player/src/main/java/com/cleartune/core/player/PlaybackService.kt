@@ -2,12 +2,12 @@ package com.cleartune.core.player
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.util.Log
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
-import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
@@ -17,8 +17,8 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.cleartune.core.datastore.AppPreferences
+import com.cleartune.core.datastore.AppSettings
 import com.cleartune.core.datastore.DEFAULT_PLAYBACK_CACHE_SIZE_MB
 import com.cleartune.core.datastore.EqualizerSettings
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +28,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import java.io.File
 
@@ -42,6 +43,8 @@ class PlaybackService : MediaLibraryService() {
     private var volumeNormalizationEnabled = true
     private var equalizerSettings = EqualizerSettings()
     private var equalizerTransitionJob: Job? = null
+    private var audioSettingsLoaded = false
+    private val audioStartupGate = AudioStartupGate { player.playWhenReady = it }
     private var replayGainVolume = 1f
     private var equalizerHeadroom = 1f
     private val equalizerController = EqualizerController(
@@ -84,7 +87,7 @@ class PlaybackService : MediaLibraryService() {
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) = applyReplayGain()
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
-            applyEqualizer(animate = false)
+            if (audioSettingsLoaded) applyEqualizer(animate = true)
         }
     }
 
@@ -118,7 +121,7 @@ class PlaybackService : MediaLibraryService() {
         }.getOrDefault(directDataSourceFactory)
 
         player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(playbackDataSourceFactory))
+            .setMediaSourceFactory(RadioMediaSourceFactory(playbackDataSourceFactory, directDataSourceFactory))
             .build().apply {
             setAudioAttributes(
                 AudioAttributes.Builder()
@@ -128,13 +131,13 @@ class PlaybackService : MediaLibraryService() {
                 true,
             )
             setHandleAudioBecomingNoisy(true)
-            addListener(playerListener)
         }
-        val sessionPlayer = object : ForwardingPlayer(player) {
-            override fun play() {
-                if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) player.prepare()
-                super.play()
-            }
+        // Bind the effect before the first AudioTrack starts instead of reacting
+        // to its creation after audio may already be audible.
+        val audioSessionId = getSystemService(AudioManager::class.java).generateAudioSessionId()
+        if (audioSessionId > 0) player.audioSessionId = audioSessionId
+        player.addListener(playerListener)
+        val sessionPlayer = object : AudioStartupPlayer(player, audioStartupGate) {
             // Headsets and system controls must skip tracks just like the in-app button,
             // including doing nothing at the start of a non-looping queue.
             override fun seekToPrevious() = seekToPreviousMediaItem()
@@ -162,10 +165,15 @@ class PlaybackService : MediaLibraryService() {
         val settingsFlow = AppPreferences(this@PlaybackService).settings
         playbackScope.launch {
             settingsFlow
+                .catch { error ->
+                    Log.w(TAG, "Could not load audio settings; using defaults", error)
+                    emit(AppSettings())
+                }
                 .map { it.volumeNormalizationEnabled to it.equalizer }
                 .distinctUntilChanged()
                 .collect { (normalizationEnabled, newEqualizerSettings) ->
-                    val equalizerChanged = equalizerSettings != newEqualizerSettings
+                    val equalizerChanged = !audioSettingsLoaded || equalizerSettings != newEqualizerSettings
+                    audioSettingsLoaded = true
                     volumeNormalizationEnabled = normalizationEnabled
                     equalizerSettings = newEqualizerSettings
                     applyReplayGain()
@@ -189,6 +197,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         if (activeService === this) activeService = null
+        audioStartupGate.close()
         playbackScope.cancel()
         cacheScope.cancel()
         equalizerController.close()
@@ -271,7 +280,14 @@ class PlaybackService : MediaLibraryService() {
 
     private fun applyEqualizer(animate: Boolean) {
         if (!::player.isInitialized) return
-        equalizerTransitionJob = equalizerController.update(player.audioSessionId, equalizerSettings, animate)
+        val transition = equalizerController.update(player.audioSessionId, equalizerSettings, animate)
+        equalizerTransitionJob = transition
+        playbackScope.launch {
+            transition.join()
+            // A newer settings/session update owns readiness. Native failures are
+            // handled by the controller, so unsupported effects do not block play.
+            if (equalizerTransitionJob === transition) audioStartupGate.open()
+        }
     }
 
     private fun applyOutputVolume() {

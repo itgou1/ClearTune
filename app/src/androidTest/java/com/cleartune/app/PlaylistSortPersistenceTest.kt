@@ -71,7 +71,7 @@ class PlaylistSortPersistenceTest {
         } finally { database.close(); context.deleteDatabase(name) }
     }
 
-    @Test fun versionFiveMigrationRetainsLocalTimesAndSongOrder() = runBlocking {
+    @Test fun versionFiveMigrationIgnoresLocalTimesAndRetainsSongOrder() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val key = accountStorageKey("https://example.com", UUID.randomUUID().toString())
         val name = "cleartune_account_$key.db"
@@ -91,12 +91,12 @@ class PlaylistSortPersistenceTest {
             database = DatabaseFactory.create(context, key)
             val entries = database.mediaDao().observePlaylistEntries("p").first()
             assertEquals("s", entries.single().song.id)
-            assertEquals(42L, entries.single().entryAddedAt)
+            assertNull(entries.single().entryAddedAt)
             assertEquals(0, entries.single().entryPosition)
         } finally { database.close(); context.deleteDatabase(name) }
     }
 
-    @Test fun serverTimesAndLegacyFallbackSurviveReopenWithoutMergingDuplicates() = runBlocking {
+    @Test fun serverTimesSurviveReopenAndLegacyHistoryNeverBecomesMembershipTime() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val key = accountStorageKey("https://example.com", UUID.randomUUID().toString())
         val name = "cleartune_account_$key.db"
@@ -115,9 +115,9 @@ class PlaylistSortPersistenceTest {
             database = DatabaseFactory.create(context, key)
             dao = database.mediaDao()
             assertEquals(listOf(10L, 20L, null), dao.observePlaylistEntries("p").first().map { it.entryAddedAt })
-            // Downgrade to original server: use retained local history, never old server times.
-            dao.replacePlaylistSongs("p", listOf(PlaylistSongEntity("p", "s", 0)))
-            assertEquals(999L, dao.observePlaylistEntries("p").first().single().entryAddedAt)
+            // Original server: ignore local history even when the old flag is enabled.
+            dao.replacePlaylistSongs("p", listOf(PlaylistSongEntity("p", "s", 0, allowLocalTime = true)))
+            assertNull(dao.observePlaylistEntries("p").first().single().entryAddedAt)
             // Smart/custom unknown must suppress retained local estimates.
             dao.replacePlaylistSongs("p", listOf(PlaylistSongEntity("p", "s", 0, null, false)))
             assertNull(dao.observePlaylistEntries("p").first().single().entryAddedAt)

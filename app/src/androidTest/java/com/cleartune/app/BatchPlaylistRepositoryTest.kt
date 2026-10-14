@@ -29,31 +29,34 @@ class BatchPlaylistRepositoryTest {
         }
     }
 
-    @Test fun partialAcceptanceOnlyRecordsConfirmedSongsAndRetrySkipsThem() = runBlocking {
+    @Test fun partialAcceptanceOnlyReportsConfirmedSongsAndRetrySkipsThem() = runBlocking {
         Fixture().use { fixture ->
             fixture.ignoredIds = setOf("stale")
             val result = fixture.repository.addPlaylistSongs("p", listOf("b", "stale"))
             assertNotNull(result.error)
             assertEquals(1, result.addedCount)
-            assertEquals(setOf("b"), fixture.repository.playlistAdditions("p").first().keys)
+            assertEquals(listOf("existing", "b"), fixture.repository.playlistSongs("p").first().map(Song::id))
+            assertTrue(fixture.repository.playlistAdditions("p").first().isEmpty())
             fixture.repository.addPlaylistSongs("p", listOf("b", "stale"))
             assertEquals(listOf("stale"), fixture.mutations.last().getQueryParameters("songIdToAdd"))
         }
     }
 
-    @Test fun creationRecordsSongsAgainstReturnedPlaylistId() = runBlocking {
+    @Test fun creationDoesNotInventLocalMembershipTimes() = runBlocking {
         Fixture().use { fixture ->
             assertNull(fixture.repository.createPlaylistWithSongs("New", listOf("b", "c")).error)
-            assertEquals(setOf("b", "c"), fixture.repository.playlistAdditions("created").first().keys)
+            assertTrue(fixture.repository.playlistAdditions("created").first().isEmpty())
+            assertEquals(listOf("b", "c"), fixture.mutations.last().getQueryParameters("songId"))
             assertTrue(fixture.repository.playlistAdditions("p").first().isEmpty())
         }
     }
 
-    @Test fun successfulAdditionRefreshAndRepeatedAddKeepOriginalMembershipTime() = runBlocking {
+    @Test fun successfulAdditionRefreshAndRepeatedAddDoNotInventMembershipTimes() = runBlocking {
         Fixture().use { fixture ->
             assertNull(fixture.repository.addPlaylistSongs("p", listOf("b", "c")).error)
             val original = fixture.repository.playlistAdditions("p").first()
-            assertEquals(setOf("b", "c"), original.keys)
+            assertTrue(original.isEmpty())
+            assertEquals(listOf("existing", "b", "c"), fixture.repository.playlistSongs("p").first().map(Song::id))
             assertNull(fixture.repository.loadPlaylist("p"))
             assertEquals(original, fixture.repository.playlistAdditions("p").first())
             assertEquals(0, fixture.repository.addPlaylistSongs("p", listOf("b")).addedCount)
@@ -63,7 +66,7 @@ class BatchPlaylistRepositoryTest {
         }
     }
 
-    @Test fun onlyConfirmedNewMembershipsReceiveAdditionTimesEvenIfRefreshFails() = runBlocking {
+    @Test fun failedWritesAndRefreshesDoNotInventMembershipTimes() = runBlocking {
         Fixture().use { fixture ->
             fixture.failWrite = true
             fixture.repository.addPlaylistSongs("p", listOf("b"))

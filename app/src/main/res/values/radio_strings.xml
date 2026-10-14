@@ -14,6 +14,7 @@
     <string name="radio_back">返回首页</string>
     <string name="radio_refresh">刷新电台</string>
     <string name="radio_retry">重试</string>
+    <string name="radio_loading">正在加载电台…</string>
     <string name="radio_empty">暂无电台，请先在 Navidrome 网页端添加电台</string>
     <string name="radio_connecting">正在连接直播…</string>
     <string name="radio_live">正在直播 · 播放中</string>

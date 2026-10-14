@@ -4,7 +4,6 @@ import androidx.room.withTransaction
 import android.os.SystemClock
 import com.cleartune.app.auth.AccountSession
 import com.cleartune.core.database.PlaylistSongEntity
-import com.cleartune.core.database.PlaylistAdditionEntity
 import com.cleartune.core.database.PendingMutationEntity
 import com.cleartune.core.database.toCacheWrite
 import com.cleartune.core.database.toEntity
@@ -253,7 +252,7 @@ class MusicRepository @Inject constructor(
         mediaDao.upsertSearchDocuments(listOf(searchDocument(playlist)) + details.songs.map(::searchDocument))
         mediaDao.replacePlaylistSongs(id, details.songs.mapIndexed { index, song ->
             PlaylistSongEntity(id, song.id, index, details.entryTimes.getOrNull(index)?.addedAt,
-                details.entryTimes.getOrNull(index)?.allowLocalTime ?: true)
+                details.entryTimes.getOrNull(index)?.allowLocalTime ?: false)
         })
     }
 
@@ -309,7 +308,6 @@ class MusicRepository @Inject constructor(
         return when (val result = remote.createPlaylist(name.trim(), additions)) {
             is RemoteResult.Failure -> PlaylistSongsAddResult(error = result.error)
             is RemoteResult.Success -> {
-                result.value?.let { recordPlaylistAdditions(it, additions) }
                 PlaylistSongsAddResult(addedCount = additions.size, refreshError = refreshPlaylists(remote))
             }
         }
@@ -344,7 +342,6 @@ class MusicRepository @Inject constructor(
                         cachePlaylist(id, confirmed.value)
                         val savedIds = confirmed.value.songs.map(Song::id).toSet()
                         val saved = additions.filter { it in savedIds }
-                        recordPlaylistAdditions(id, saved)
                         val missing = additions.size - saved.size
                         PlaylistSongsAddResult(
                             addedCount = saved.size,
@@ -402,11 +399,6 @@ class MusicRepository @Inject constructor(
 
     fun playlistAdditions(id: String): Flow<Map<String, Long>> =
         mediaDao.observePlaylistAdditions(id).map { entries -> entries.associate { it.songId to it.addedAt } }
-
-    private suspend fun recordPlaylistAdditions(id: String, songIds: List<String>) {
-        val now = System.currentTimeMillis()
-        mediaDao.recordPlaylistAdditions(songIds.map { PlaylistAdditionEntity(id, it, now) })
-    }
 
     suspend fun localSearch(query: String): SearchResults = withContext(Dispatchers.Default) {
         val plan = buildSearchQueryPlan(query)

@@ -71,7 +71,9 @@ class PlayerViewModel @Inject constructor(
             val result = repository.radioStations()
             if (!repository.isSessionActive()) return@launch
             _radioState.value = when (result) {
-                is RemoteResult.Success -> RadioUiState(stations = result.value)
+                is RemoteResult.Success -> RadioUiState(
+                    stations = mergeRadioStations(_radioState.value.stations, result.value),
+                )
                 else -> _radioState.value.copy(loading = false, error = "电台加载失败，请检查网络后重试")
             }
         }

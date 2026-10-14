@@ -10,12 +10,8 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface MediaDao {
     @Query("""SELECT songs.*, ps.position AS entryPosition,
-        CASE WHEN ps.addedAt IS NOT NULL THEN ps.addedAt
-             WHEN ps.allowLocalTime = 1 AND (SELECT COUNT(*) FROM playlist_songs duplicates
-                WHERE duplicates.playlistId = ps.playlistId AND duplicates.songId = ps.songId) = 1
-             THEN pa.addedAt ELSE NULL END AS entryAddedAt
+        ps.addedAt AS entryAddedAt
         FROM playlist_songs ps JOIN songs ON songs.id = ps.songId
-        LEFT JOIN playlist_additions pa ON pa.playlistId = ps.playlistId AND pa.songId = ps.songId
         WHERE ps.playlistId = :playlistId ORDER BY ps.position""")
     fun observePlaylistEntries(playlistId: String): Flow<List<CachedPlaylistEntry>>
 

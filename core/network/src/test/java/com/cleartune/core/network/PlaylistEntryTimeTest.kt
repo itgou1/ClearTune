@@ -11,8 +11,8 @@ class PlaylistEntryTimeTest {
             """{"id":"p","name":"P"$extra,"entry":[{"id":"s","title":"S"$entry}]}""")
         return playlistEntryTime(dto.supportsAddedAt, dto.entry.single().addedAt)
     }
-    @Test fun originalServerUsesLocalHistory() {
-        assertEquals(PlaylistEntryTime(), parse())
+    @Test fun originalServerDoesNotUseLocalHistory() {
+        assertEquals(PlaylistEntryTime(allowLocalTime = false), parse())
     }
     @Test fun capabilityControlsMissingTimes() {
         assertEquals(PlaylistEntryTime(allowLocalTime = false), parse(",\"supportsAddedAt\":true"))
