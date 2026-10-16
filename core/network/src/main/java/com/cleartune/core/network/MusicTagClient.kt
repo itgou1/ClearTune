@@ -24,12 +24,14 @@ class PreparedMusicTagWrite internal constructor(internal val row: JsonObject, p
 }
 
 /** This adapter uses the token + /apimt contract. Never retries a write automatically. */
-class MusicTagClient(settings: MusicTagSettings) {
+class MusicTagClient(settings: MusicTagSettings, localTunnel: Boolean = false) : java.io.Closeable {
+    init { require(settings.connectionMode == MusicTagConnectionMode.DIRECT) { "SSH 模式必须通过按需隧道访问" } }
     private val base = normalizeMusicTagAddress(settings.baseUrl, settings.allowHttp)
     private val username = settings.username
     private val password = settings.password
     private var token: String? = null
     private val client = OkHttpClient.Builder()
+        .apply { if (localTunnel) proxy(java.net.Proxy.NO_PROXY) }
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(40, TimeUnit.SECONDS)
         .callTimeout(55, TimeUnit.SECONDS).retryOnConnectionFailure(true)
         .followRedirects(false).followSslRedirects(false).build()
@@ -38,6 +40,14 @@ class MusicTagClient(settings: MusicTagSettings) {
     private val writeClient = client.newBuilder().retryOnConnectionFailure(false)
         .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)).build()
     private val json = Json { ignoreUnknownKeys = true }
+
+    override fun close() {
+        token = null
+        client.dispatcher.cancelAll()
+        writeClient.dispatcher.cancelAll()
+        client.connectionPool.evictAll()
+        writeClient.connectionPool.evictAll()
+    }
 
     suspend fun login() {
         val reply = request("apimt/token/", buildJsonObject {

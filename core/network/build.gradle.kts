@@ -23,5 +23,10 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation("com.github.mwiede:jsch:2.28.7")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.85.2")
     testImplementation(libs.junit)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("org.apache.sshd:sshd-core:2.16.0")
+    testRuntimeOnly("org.slf4j:slf4j-nop:2.0.17")
 }

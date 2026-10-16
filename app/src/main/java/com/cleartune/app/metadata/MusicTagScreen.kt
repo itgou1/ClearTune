@@ -18,6 +18,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import coil3.compose.AsyncImage
 import com.cleartune.core.model.*
 
@@ -27,6 +30,19 @@ val LocalMusicTagActions = staticCompositionLocalOf { MusicTagActions() }
 @Composable
 fun MusicTagHost(viewModel: MusicTagViewModel, onSynced: (Song) -> Unit, content: @Composable () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val editorShown = state.song != null && !state.settingsShown
+    DisposableEffect(viewModel, lifecycleOwner, editorShown) {
+        fun updateVisibility() = viewModel.editorVisibility(editorShown &&
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        val observer = LifecycleEventObserver { _, _ -> updateVisibility() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        updateVisibility()
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            if (editorShown) viewModel.editorVisibility(false)
+        }
+    }
     val syncs by viewModel.syncs.collectAsStateWithLifecycle()
     val dismissedSyncs = remember(viewModel) { mutableStateMapOf<String, Pair<Long, Boolean>>() }
     val actions = remember(viewModel) { MusicTagActions(viewModel::open, viewModel::showSettings) }
@@ -99,7 +115,7 @@ private fun MusicTagDialog(state: MusicTagUiState, viewModel: MusicTagViewModel)
             },
         ) { padding ->
             if (state.settingsShown) {
-                MusicTagSettingsPage(state, viewModel::configure, viewModel::disconnect, Modifier.padding(padding))
+                MusicTagSettingsPage(state, viewModel::configure, viewModel::disconnect, Modifier.padding(padding), viewModel::editSettings)
             } else {
                 MusicTagEditor(state, MusicTagEditorActions(
                     query = viewModel::query, source = viewModel::source, search = viewModel::search,
@@ -111,6 +127,17 @@ private fun MusicTagDialog(state: MusicTagUiState, viewModel: MusicTagViewModel)
                 ), Modifier.padding(padding))
             }
         }
+    }
+    state.hostKeyRequest?.let { request ->
+        AlertDialog(onDismissRequest = viewModel::dismissHostKey,
+            title = { Text("核对 SSH 服务器指纹") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(request.endpoint)
+                androidx.compose.foundation.text.selection.SelectionContainer { Text(request.fingerprint) }
+                Text("请与云服务器控制台或可信管理员提供的 SHA256 指纹核对。确认后保存信任记录；后续指纹变化将阻止连接。")
+            } },
+            confirmButton = { TextButton(onClick = viewModel::confirmHostKey, enabled = !state.busy) { Text("已核对，信任并继续") } },
+            dismissButton = { TextButton(onClick = viewModel::dismissHostKey) { Text("取消") } })
     }
     if (state.candidateValues.isNotEmpty()) MusicTagCandidateDialog(state, viewModel::select, viewModel::fillCandidate, viewModel::dismissCandidate)
     if (confirmReload) AlertDialog(onDismissRequest = { confirmReload = false }, title = { Text("放弃修改并重新读取？") },

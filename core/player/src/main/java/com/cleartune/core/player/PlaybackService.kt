@@ -47,6 +47,8 @@ class PlaybackService : MediaLibraryService() {
     private val audioStartupGate = AudioStartupGate { player.playWhenReady = it }
     private var replayGainVolume = 1f
     private var equalizerHeadroom = 1f
+    private var equalizerSessionId = 0
+    private var audioOutputReady = false
     private val equalizerController = EqualizerController(
         createEffect = ::SystemEqualizer,
         onHeadroom = { headroom ->
@@ -87,7 +89,7 @@ class PlaybackService : MediaLibraryService() {
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) = applyReplayGain()
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
-            if (audioSettingsLoaded) applyEqualizer(animate = true)
+            if (audioSettingsLoaded && audioSessionId != equalizerSessionId) applyEqualizer(animate = false)
         }
     }
 
@@ -123,6 +125,9 @@ class PlaybackService : MediaLibraryService() {
         player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(RadioMediaSourceFactory(playbackDataSourceFactory, directDataSourceFactory))
             .build().apply {
+            // AudioTrack may be prepared before saved settings/native effects finish.
+            // Its very first buffer must never inherit the default full volume.
+            volume = 0f
             setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -280,19 +285,32 @@ class PlaybackService : MediaLibraryService() {
 
     private fun applyEqualizer(animate: Boolean) {
         if (!::player.isInitialized) return
-        val transition = equalizerController.update(player.audioSessionId, equalizerSettings, animate)
+        val sessionId = player.audioSessionId
+        val initializing = !audioStartupGate.isReady || sessionId != equalizerSessionId || !audioOutputReady
+        if (initializing) {
+            audioOutputReady = false
+            applyOutputVolume()
+        }
+        equalizerSessionId = sessionId
+        val transition = equalizerController.update(sessionId, equalizerSettings, animate && !initializing)
         equalizerTransitionJob = transition
         playbackScope.launch {
             transition.join()
             // A newer settings/session update owns readiness. Native failures are
             // handled by the controller, so unsupported effects do not block play.
-            if (equalizerTransitionJob === transition) audioStartupGate.open()
+            if (equalizerTransitionJob === transition && (!equalizerSettings.enabled || sessionId > 0)) {
+                audioOutputReady = true
+                applyOutputVolume()
+                audioStartupGate.open()
+            }
         }
     }
 
     private fun applyOutputVolume() {
         if (::player.isInitialized) {
-            player.volume = (replayGainVolume * equalizerHeadroom).coerceIn(0f, 1f)
+            player.volume = if (audioOutputReady) {
+                (replayGainVolume * equalizerHeadroom).coerceIn(0f, 1f)
+            } else 0f
         }
     }
 

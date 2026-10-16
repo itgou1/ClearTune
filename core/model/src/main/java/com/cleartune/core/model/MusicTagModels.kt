@@ -9,9 +9,34 @@ data class MusicTagSettings(
     val targetRoot: String = "/app/media",
     val source: String = "netease",
     val allowHttp: Boolean = false,
+    val connectionMode: MusicTagConnectionMode = MusicTagConnectionMode.DIRECT,
+    val ssh: MusicTagSshSettings = MusicTagSshSettings(),
 ) {
-    val configured: Boolean get() = baseUrl.isNotBlank() && username.isNotBlank() && password.isNotEmpty()
+    val serviceAddress: String get() = if (connectionMode == MusicTagConnectionMode.SSH) ssh.serviceUrl else baseUrl
+    val configured: Boolean get() = serviceAddress.isNotBlank() && username.isNotBlank() && password.isNotEmpty() &&
+        (connectionMode == MusicTagConnectionMode.DIRECT || ssh.configured)
     override fun toString(): String = "MusicTagSettings(configured=$configured)"
+}
+
+enum class MusicTagConnectionMode { DIRECT, SSH }
+enum class MusicTagSshAuth { PASSWORD, PRIVATE_KEY }
+
+data class MusicTagSshSettings(
+    val host: String = "",
+    val port: Int = 22,
+    val username: String = "",
+    val auth: MusicTagSshAuth = MusicTagSshAuth.PASSWORD,
+    val password: String = "",
+    val privateKey: String = "",
+    val passphrase: String = "",
+    val serviceUrl: String = "http://127.0.0.1:8002",
+    val hostKey: String = "",
+    val hostKeyEndpoint: String = "",
+) {
+    val endpoint: String get() = "${host.trim().lowercase()}:$port"
+    val configured: Boolean get() = host.isNotBlank() && port in 1..65535 && username.isNotBlank() &&
+        if (auth == MusicTagSshAuth.PASSWORD) password.isNotEmpty() else privateKey.isNotBlank()
+    override fun toString(): String = "MusicTagSshSettings(configured=$configured)"
 }
 
 enum class MusicTagField(val wireName: String, val label: String) {

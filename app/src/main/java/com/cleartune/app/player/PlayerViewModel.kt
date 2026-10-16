@@ -90,8 +90,16 @@ class PlayerViewModel @Inject constructor(
         if (state.value.currentSong?.id == station.playbackId) {
             connection.togglePlayPause()
         } else {
-            val song = station.asSong()
-            connection.setQueue(listOf(song), 0, mapOf(song.id to station.streamUrl), mapOf(song.id to radioArtworkUri))
+            val stations = _radioState.value.stations.let { current ->
+                if (current.any { it.id == station.id }) current.map { if (it.id == station.id) station else it }
+                else current + station
+            }
+            val songs = stations.map { it.asSong() }
+            connection.setQueue(
+                songs, stations.indexOfFirst { it.id == station.id },
+                stations.associate { it.playbackId to it.streamUrl },
+                songs.associate { it.id to radioArtworkUri },
+            )
         }
     }
 

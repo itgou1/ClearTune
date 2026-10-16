@@ -86,9 +86,7 @@ class PlayerConnection(context: Context) {
                 runCatching { controllerFuture.get() }.onSuccess { mediaController ->
                     controller = mediaController
                     mediaController.addListener(listener)
-                    val liveRadio = mediaController.currentMediaItem?.mediaMetadata?.extras
-                        ?.getBoolean("com.cleartune.song.is_radio", false) == true
-                    applyMode(mediaController, if (liveRadio) PlaybackMode.SEQUENTIAL else mode)
+                    applyMode(mediaController, mode)
                     pendingQueue?.let { pending ->
                         pendingQueue = null
                         setQueue(
@@ -162,7 +160,6 @@ class PlayerConnection(context: Context) {
         if (items.isEmpty()) return
         controller?.apply {
             deferredQueueError = if (!playWhenReady) playerError else null
-            applyMode(this, if (songs.any(Song::isRadio)) PlaybackMode.SEQUENTIAL else mode)
             // Restoring a queue must not open the audio source until playback is requested.
             // Stop an already prepared source too, e.g. when a newer server queue replaces it.
             if (!playWhenReady) {
@@ -170,6 +167,7 @@ class PlayerConnection(context: Context) {
                 stop()
             }
             setMediaItems(items, startIndex.coerceIn(items.indices), positionMs.coerceAtLeast(0))
+            applyMode(this, mode)
             if (playWhenReady) {
                 prepare()
                 play()
@@ -353,8 +351,13 @@ class PlayerConnection(context: Context) {
     }
 
     private fun applyMode(player: Player, value: PlaybackMode) {
-        val shuffle = value == PlaybackMode.SHUFFLE
-        val repeatMode = when (value) {
+        val radio = player.currentMediaItem?.mediaMetadata?.extras
+            ?.getBoolean("com.cleartune.song.is_radio", false) == true
+        val effectiveMode = if (radio) {
+            if (player.mediaItemCount > 1) PlaybackMode.REPEAT_ALL else PlaybackMode.SEQUENTIAL
+        } else value
+        val shuffle = effectiveMode == PlaybackMode.SHUFFLE
+        val repeatMode = when (effectiveMode) {
             PlaybackMode.SEQUENTIAL -> Player.REPEAT_MODE_OFF
             PlaybackMode.REPEAT_ALL, PlaybackMode.SHUFFLE -> Player.REPEAT_MODE_ALL
             PlaybackMode.REPEAT_ONE -> Player.REPEAT_MODE_ONE

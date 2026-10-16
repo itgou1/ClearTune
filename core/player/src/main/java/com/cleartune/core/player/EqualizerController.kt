@@ -60,10 +60,10 @@ internal class EqualizerController(
     }
 
     private suspend fun apply(newSessionId: Int, settings: EqualizerSettings, animate: Boolean) {
+        val replacingSession = sessionId > 0 && sessionId != newSessionId
         if (sessionId != newSessionId || newSessionId <= 0) {
             detach()
             sessionId = newSessionId
-            setHeadroom(1f)
         }
         if (newSessionId <= 0 || (!settings.enabled && effect == null)) {
             setHeadroom(1f)
@@ -78,10 +78,25 @@ internal class EqualizerController(
         check(current.hasControl()) { "System equalizer control is held by another audio effect" }
         val frequencies = current.centerFrequenciesHz
         val range = current.levelRange
+        val target = frequencies.map { frequency ->
+            if (!settings.enabled) 0 else EqualizerMath.millibels(
+                interpolatedEqualizerLevelDb(EQUALIZER_FREQUENCIES_HZ, settings.activeLevelsDb, frequency),
+                range,
+            ).toInt()
+        }
+        val shouldAnimate = animate && !replacingSession
         if (!current.enabled) {
             if (!settings.enabled) {
                 detach()
                 setHeadroom(1f)
+                return
+            }
+            if (!shouldAnimate) {
+                // Cold start/session replacement: configure the final attenuation
+                // and curve before enabling the native effect, with no full-gain ramp.
+                setHeadroom(EqualizerMath.headroomMultiplier(target.map { it / 100f }))
+                target.forEachIndexed { index, level -> current.setLevel(index, level.toShort()) }
+                current.enabled = true
                 return
             }
             // Enable a flat curve, then move towards the requested sound. Never
@@ -90,13 +105,7 @@ internal class EqualizerController(
             current.enabled = true
         }
         val start = frequencies.indices.map { current.getLevel(it).toInt() }
-        val target = frequencies.map { frequency ->
-            if (!settings.enabled) 0 else EqualizerMath.millibels(
-                interpolatedEqualizerLevelDb(EQUALIZER_FREQUENCIES_HZ, settings.activeLevelsDb, frequency),
-                range,
-            ).toInt()
-        }
-        val steps = if (animate) TRANSITION_STEPS else 1
+        val steps = if (shouldAnimate) TRANSITION_STEPS else 1
         repeat(steps) { step ->
             val fraction = (step + 1f) / steps
             val levels = start.indices.map { (start[it] + (target[it] - start[it]) * fraction).roundToInt() }
@@ -107,11 +116,11 @@ internal class EqualizerController(
             if (gain < headroom) setHeadroom(gain)
             levels.forEachIndexed { index, level -> current.setLevel(index, level.toShort()) }
             if (gain != headroom) setHeadroom(gain)
-            if (animate) delay(TRANSITION_DURATION_MS / steps)
+            if (shouldAnimate) delay(TRANSITION_DURATION_MS / steps)
         }
         if (!settings.enabled) {
             // Let the flat curve settle while audio continues at normal volume.
-            if (animate) delay(FLAT_SETTLE_MS)
+            if (shouldAnimate) delay(FLAT_SETTLE_MS)
             detach()
         }
     }

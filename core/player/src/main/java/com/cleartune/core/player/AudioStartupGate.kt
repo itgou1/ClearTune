@@ -3,6 +3,7 @@ package com.cleartune.core.player
 /** Main-thread gate: do not advance the first track while saved audio effects are loading. */
 internal class AudioStartupGate(private val setPlaying: (Boolean) -> Unit) {
     private var ready = false
+    val isReady: Boolean get() = ready
     private var requested = false
     private var closed = false
 

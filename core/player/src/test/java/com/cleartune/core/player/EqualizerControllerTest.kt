@@ -15,6 +15,26 @@ import org.junit.Test
 class EqualizerControllerTest {
     private val boosted = EqualizerSettings(true, EqualizerPreset.CUSTOM, listOf(6, 6, 0, -3, -6))
 
+    @Test fun coldStartAppliesFinalHeadroomAndCurveBeforeEnablingEffect() = fixture { f ->
+        f.controller.update(1, boosted, false).join()
+        val effect = f.effects.single()
+        assertEquals(listOf(600, 600, 0, -300, -600), effect.levelsAtEnable)
+        assertEquals(0.5011872f, effect.gainAtEnable, 0.0001f)
+        assertEquals(listOf(1f, effect.gainAtEnable), f.gains)
+    }
+
+    @Test fun replacingSessionNeverRestoresFullGainOrRampsFromFlat() = fixture { f ->
+        f.controller.update(1, boosted, false).join()
+        val previousGain = f.gains.last()
+        f.gains.clear()
+        f.controller.update(2, boosted, true).join()
+        assertTrue(f.gains.isNotEmpty())
+        assertTrue(f.gains.all { it <= previousGain })
+        assertEquals(listOf(600, 600, 0, -300, -600), f.effects.last().levelsAtEnable)
+        assertEquals(previousGain, f.effects.last().gainAtEnable, 0f)
+        assertEquals(1, f.effects.first().releases)
+    }
+
     @Test fun switchingNeverMutesAndReleaseHappensOnlyAfterFlatCurve() = fixture { f ->
         f.controller.update(1, boosted, true).join()
         assertEquals(0.5011872f, f.gains.last(), 0.0001f)
@@ -110,7 +130,7 @@ class EqualizerControllerTest {
         val errors = mutableListOf<Throwable>()
         var onCreate: () -> Unit = {}
         val controller = EqualizerController(
-            createEffect = { session -> onCreate(); FakeEffect(session).also(effects::add) },
+            createEffect = { session -> onCreate(); FakeEffect(session) { gains.last() }.also(effects::add) },
             onHeadroom = { gains.add(it); volumeThreads.add(Thread.currentThread().name) },
             onFailure = errors::add,
             dispatcher = worker,
@@ -118,10 +138,17 @@ class EqualizerControllerTest {
         )
     }
 
-    private class FakeEffect(val session: Int) : EqualizerEffect {
+    private class FakeEffect(val session: Int, private val gain: () -> Float) : EqualizerEffect {
         override var enabled = false
             get() { checkUsable(); return field }
-            set(value) { checkUsable(); field = value }
+            set(value) {
+                checkUsable()
+                if (value) {
+                    levelsAtEnable = levels.toList()
+                    gainAtEnable = gain()
+                }
+                field = value
+            }
         override val centerFrequenciesHz = listOf(60, 230, 910, 3600, 14000)
         override val levelRange = -1500..1500
         val levels = IntArray(5) { 300 } // Device preset must be cleared before enabling.
@@ -129,6 +156,8 @@ class EqualizerControllerTest {
         var releases = 0
         var failWrites = false
         var levelsAtRelease = emptyList<Int>()
+        var levelsAtEnable = emptyList<Int>()
+        var gainAtEnable = 1f
         override fun hasControl() = true.also { checkUsable() }
         override fun getLevel(band: Int) = levels[band].toShort().also { checkUsable() }
         override fun setLevel(band: Int, level: Short) {

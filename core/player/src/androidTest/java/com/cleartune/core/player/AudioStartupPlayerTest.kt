@@ -31,7 +31,7 @@ class AudioStartupPlayerTest {
             }
             await { player.playbackState == Player.STATE_READY }
             val initialization = equalizer.update(session,
-                EqualizerSettings(true, EqualizerPreset.CUSTOM, listOf(6, 6, 0, -3, -6)), true)
+                EqualizerSettings(true, EqualizerPreset.CUSTOM, listOf(6, 6, 0, -3, -6)), false)
             runBlocking { initialization.join() }
             assertTrue("Native effect initialization failed: $errors", errors.isEmpty())
             assertTrue(equalizer.isAttached)

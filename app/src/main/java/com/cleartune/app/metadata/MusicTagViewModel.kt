@@ -5,7 +5,10 @@ import androidx.lifecycle.viewModelScope
 import com.cleartune.core.model.*
 import com.cleartune.core.network.MusicTagClient
 import com.cleartune.core.network.MusicTagException
-import com.cleartune.core.network.normalizeMusicTagAddress
+import com.cleartune.core.network.normalizeMusicTagSettings
+import com.cleartune.core.network.SshHostKeyRequired
+import com.cleartune.core.network.SshHostKeyChanged
+import com.cleartune.core.network.MusicTagEditorConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
@@ -19,6 +22,8 @@ import kotlinx.coroutines.flow.receiveAsFlow
 data class MusicTagUiState(
     val settings: MusicTagSettings = MusicTagSettings(),
     val settingsShown: Boolean = false,
+    val editingSettings: Boolean = false,
+    val hostKeyRequest: SshHostKeyRequired? = null,
     val song: Song? = null,
     val busy: Boolean = false,
     val progress: String = "",
@@ -64,6 +69,9 @@ internal fun fillMusicTagDraft(draft: Map<MusicTagField, String>, candidate: Map
 
 @HiltViewModel
 class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepository) : ViewModel() {
+    private val editorConnection = MusicTagEditorConnection(viewModelScope)
+    fun editorVisibility(visible: Boolean) { if (visible) editorConnection.enter() else editorConnection.leave() }
+    private var pendingConfiguration: MusicTagSettings? = null
     private val _state = MutableStateFlow(MusicTagUiState(busy = true))
     val state = _state.asStateFlow()
     private val drafts = mutableMapOf<String, MusicTagUiState>()
@@ -88,13 +96,24 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
         }
     }
 
-    fun showSettings() { if (!_state.value.busy) _state.update { it.copy(settingsShown = true, message = null) } }
+    fun showSettings() {
+        if (_state.value.busy) return
+        editorConnection.leave()
+        _state.update { it.copy(settingsShown = true, editingSettings = false, message = null) }
+    }
+    fun editSettings() { if (!_state.value.busy) _state.update { it.copy(editingSettings = true, message = null) } }
     fun closeSettings() {
         if (_state.value.busy) return
-        _state.update { it.copy(settingsShown = false, message = null) }
+        pendingConfiguration = null
+        _state.update { it.copy(settingsShown = false, editingSettings = false, hostKeyRequest = null, message = null) }
+        if (_state.value.song != null) editorConnection.enter() else editorConnection.leave()
         if (_state.value.song != null && _state.value.snapshot == null && _state.value.settings.configured) reload()
     }
-    fun close() { if (!_state.value.busy) _state.update { MusicTagUiState(settings = it.settings, syncVersion = it.syncVersion) } }
+    fun close() {
+        if (_state.value.busy) return
+        editorConnection.leave()
+        _state.update { MusicTagUiState(settings = it.settings, syncVersion = it.syncVersion) }
+    }
     fun keepDraftAndClose() {
         val current = _state.value
         if (current.busy || current.pending) return
@@ -103,27 +122,51 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
     }
 
     fun configure(settings: MusicTagSettings) = task("正在测试连接并保存…") {
-        check(!_state.value.settings.configured) { "请先退出当前 Music Tag 连接，再重新配置" }
-        val normalized = settings.copy(baseUrl = normalizeMusicTagAddress(settings.baseUrl, settings.allowHttp))
+        editorConnection.leave()
+        val normalized = normalizeMusicTagSettings(settings)
         MusicTagPath.resolve("sample.flac", normalized.sourceRoot, normalized.targetRoot)
-        repository.client(normalized)
+        try { repository.withClient(normalized, { progress -> _state.update { it.copy(progress = progress) } }) {} }
+        catch (required: SshHostKeyRequired) {
+            pendingConfiguration = normalized
+            _state.update { it.copy(hostKeyRequest = required) }
+            return@task
+        }
         repository.saveSettings(normalized)
+        pendingConfiguration = null
         drafts.clear()
-        _state.update { it.copy(settings = normalized, snapshot = null, sourcePath = null, targetPath = null,
+        _state.update { it.copy(settings = normalized, editingSettings = false, hostKeyRequest = null, snapshot = null, sourcePath = null, targetPath = null,
             searched = false, values = emptyMap(), selected = emptySet(),
-            candidates = emptyList(), message = "连接成功，配置已保存。目录写入权限将在应用标签时检查") }
+            candidates = emptyList(), message = "配置已验证并保存，连接已释放。目录写入权限将在应用标签时检查") }
     }
 
-    fun disconnect() = task("正在退出 Music Tag 连接…") {
+    fun confirmHostKey() {
+        val settings = pendingConfiguration ?: return
+        val request = _state.value.hostKeyRequest ?: return
+        if (_state.value.busy || request.endpoint != settings.ssh.endpoint) return
+        _state.update { it.copy(hostKeyRequest = null) }
+        configure(settings.copy(ssh = settings.ssh.copy(hostKey = request.key, hostKeyEndpoint = request.endpoint)))
+    }
+
+    fun dismissHostKey() {
+        pendingConfiguration = null
+        _state.update { it.copy(hostKeyRequest = null, message = "未信任服务器，配置未保存") }
+    }
+
+    private suspend fun <T> withClient(settings: MusicTagSettings, block: suspend (MusicTagClient) -> T): T =
+        repository.withClient(settings, { progress -> _state.update { it.copy(progress = progress) } }, editorConnection, block)
+
+    fun disconnect() = task("正在移除 Music Tag 配置…") {
+        editorConnection.leave()
         repository.disconnect()
         drafts.clear()
         _state.update { MusicTagUiState(settingsShown = true, song = it.song,
             queryTitle = it.queryTitle, queryArtist = it.queryArtist, pending = it.pending,
-            syncVersion = it.syncVersion, message = "已退出 Music Tag 连接，可重新配置") }
+            syncVersion = it.syncVersion, message = "已移除 Music Tag 配置及保存的凭据") }
     }
 
     fun open(song: Song) {
         if (_state.value.busy) return
+        editorConnection.enter()
         drafts.remove(song.id)?.let { draft ->
             _state.update { draft.copy(settings = it.settings, song = song, syncVersion = it.syncVersion,
                 message = "已恢复未保存草稿，保存时会核对原文件是否发生变化") }
@@ -149,8 +192,7 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
         _state.update { it.copy(sourcePath = sourcePath) }
         val path = MusicTagPath.resolve(sourcePath, current.settings.sourceRoot, current.settings.targetRoot)
         _state.update { it.copy(targetPath = path) }
-        val client = repository.client(current.settings)
-        val snapshot = client.read(path)
+        val snapshot = withClient(current.settings) { it.read(path) }
         val latestPending = repository.pending(song.id)
         val syncing = syncs.value[song.id]?.running == true && latestPending != null
         _state.update { it.copy(snapshot = snapshot, values = snapshot.values, candidateValues = emptyMap(), selected = emptySet(),
@@ -169,8 +211,7 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
 
     fun search() = task("正在刮削匹配…") {
         val current = _state.value
-        val client = repository.client(current.settings)
-        val candidates = client.search(current.queryTitle, current.queryArtist, current.song?.albumName.orEmpty(), current.settings.source)
+        val candidates = withClient(current.settings) { it.search(current.queryTitle, current.queryArtist, current.song?.albumName.orEmpty(), current.settings.source) }
         _state.update { it.copy(candidates = candidates, searched = true, candidateValues = emptyMap(), selected = emptySet(),
             message = if (candidates.isEmpty()) "没有匹配结果，请调整检索词或切换来源" else "找到 ${candidates.size} 个候选，请核对歌曲版本") }
     }
@@ -179,9 +220,10 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
         var values = candidate.values
         var message = "已载入候选，请选择要填入表单的字段"
         try {
-            val client = repository.client(_state.value.settings)
-            values = values + (MusicTagField.LYRICS to client.lyrics(candidate))
+            values = values + (MusicTagField.LYRICS to withClient(_state.value.settings) { it.lyrics(candidate) })
         } catch (cancelled: CancellationException) { throw cancelled }
+        catch (changed: SshHostKeyChanged) { throw changed }
+        catch (required: SshHostKeyRequired) { throw required }
         catch (_: Exception) { message = "候选已载入，歌词暂不可用；原歌词会保留" }
         _state.update { it.copy(candidateValues = values, selected = values.filter { (field, value) ->
             value.isNotBlank() && value != it.values[field]
@@ -214,8 +256,7 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
         val changes = current.changes
         require(changes.isNotEmpty() && changes.values.all { it.isNotBlank() && "\${" !in it }) { "请选择有效标签；本版不支持清空或模板表达式" }
         changes[MusicTagField.YEAR]?.let { require(it.toIntOrNull() in 1..9999) { "年份应为 1–9999" } }
-        val client = repository.client(current.settings)
-        val snapshotAfter = repository.apply(song, current.settings, client, snapshot, changes)
+        val snapshotAfter = withClient(current.settings) { repository.apply(song, current.settings, it, snapshot, changes) }
         _state.update { it.copy(snapshot = snapshotAfter, values = snapshotAfter.values, fileSaved = true, pending = true, progress = "文件已保存，正在更新曲库…") }
         completeSync(song)
     }
@@ -227,8 +268,7 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
             completeSync(song)
             return@task
         }
-        val client = repository.client(current.settings)
-        val snapshot = repository.verify(song, current.settings, client)
+        val snapshot = withClient(current.settings) { repository.verify(song, current.settings, it) }
         _state.update { it.copy(snapshot = snapshot, values = snapshot.values, coverReview = null, fileSaved = true, progress = "文件已保存，正在更新曲库…") }
         completeSync(song)
     }
@@ -237,8 +277,7 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
         val current = _state.value
         val review = checkNotNull(current.coverReview)
         val song = checkNotNull(current.song)
-        val client = repository.client(current.settings)
-        val snapshot = repository.verify(song, current.settings, client, approvedCover = review)
+        val snapshot = withClient(current.settings) { repository.verify(song, current.settings, it, approvedCover = review) }
         _state.update { it.copy(snapshot = snapshot, values = snapshot.values, coverReview = null, fileSaved = true, progress = "封面已确认，正在更新曲库…") }
         completeSync(song)
     }
@@ -255,9 +294,8 @@ class MusicTagViewModel @Inject constructor(private val repository: MusicTagRepo
         val current = _state.value
         val song = checkNotNull(current.song)
         check(syncs.value[song.id]?.running != true) { "曲库正在同步，可直接返回" }
-        val client = repository.client(current.settings)
         val path = repository.songPath(song, current.settings)
-        val snapshot = client.read(path)
+        val snapshot = withClient(current.settings) { it.read(path) }
         repository.acknowledgeMismatch(song.id)
         _state.update { it.copy(snapshot = snapshot, coverReview = null, pending = false, fileSaved = false, values = snapshot.values,
             selected = emptySet(), message = "已重新读取当前标签，可直接编辑或刮削填充") }

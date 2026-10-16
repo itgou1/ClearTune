@@ -15,27 +15,34 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.cleartune.core.model.MusicTagSettings
+import com.cleartune.core.model.*
 
 @Composable
 internal fun MusicTagSettingsPage(state: MusicTagUiState, onSave: (MusicTagSettings) -> Unit,
-    onDisconnect: () -> Unit, modifier: Modifier = Modifier) {
+    onDisconnect: () -> Unit, modifier: Modifier = Modifier, onEdit: () -> Unit = {}) {
     var draft by remember(state.settings) { mutableStateOf(state.settings) }
+    val showSaved = state.settings.configured && !state.editingSettings
+    var confirmRemove by remember { mutableStateOf(false) }
+    if (confirmRemove) AlertDialog(onDismissRequest = { confirmRemove = false }, title = { Text("移除标签服务配置？") },
+        text = { Text("将删除保存的服务凭据和 SSH 信任记录；尚未确认的标签保存记录会保留。") },
+        confirmButton = { TextButton(onClick = { confirmRemove = false; onDisconnect() }) { Text("移除配置") } },
+        dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("取消") } })
     Column(modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
             .padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             if (state.busy || state.isError) MusicTagNotice(state)
-            if (state.settings.configured) MusicTagConnectedContent(state.settings)
+            if (showSaved) MusicTagConnectedContent(state.settings)
             else MusicTagSettingsFields(draft, state.busy, { draft = it })
         }
         Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
-                if (state.settings.configured) OutlinedButton(onClick = onDisconnect, enabled = !state.busy,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
-                    Text("退出连接")
+                if (showSaved) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = onEdit, enabled = !state.busy, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("修改配置") }
+                    OutlinedButton(onClick = { confirmRemove = true }, enabled = !state.busy,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("移除配置") }
                 } else Button(onClick = { onSave(draft) }, enabled = !state.busy && draft.configured,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("测试连接并保存") }
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(if (draft.connectionMode == MusicTagConnectionMode.SSH) "测试并保存配置" else "测试连接并保存") }
             }
         }
     }
@@ -52,7 +59,7 @@ internal fun MusicTagConnectionSettings(settings: MusicTagSettings, busy: Boolea
     OutlinedButton(onClick = onDisconnect, enabled = !busy,
         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
-        Text("退出连接")
+        Text("移除配置")
     }
 }
 
@@ -64,8 +71,9 @@ private fun MusicTagConnectedContent(settings: MusicTagSettings) {
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(Icons.Rounded.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f)) {
-                Text("已连接", style = MaterialTheme.typography.titleLarge)
-                Text("${settings.username} · ${settings.baseUrl.substringAfter("://").substringBefore('/')}",
+                Text("配置已验证", style = MaterialTheme.typography.titleLarge)
+                Text(if (settings.connectionMode == MusicTagConnectionMode.SSH) "SSH 隧道 · 待使用，当前未连接"
+                    else if (settings.baseUrl.startsWith("https://")) "直接连接 · HTTPS" else "直接连接 · HTTP 未加密",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -77,7 +85,14 @@ private fun MusicTagConnectedContent(settings: MusicTagSettings) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("服务地址", style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(settings.baseUrl, style = MaterialTheme.typography.bodyMedium)
+            Text(settings.serviceAddress, style = MaterialTheme.typography.bodyMedium)
+            if (settings.connectionMode == MusicTagConnectionMode.SSH) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Text("SSH 服务器 · ${settings.ssh.endpoint}", style = MaterialTheme.typography.bodyMedium)
+                Text("编辑期间复用连接，空闲 60 秒或离开页面后释放。", style = MaterialTheme.typography.bodySmall)
+                Text("保存和核验期间保持连接，完成后才开始空闲计时。", style = MaterialTheme.typography.bodySmall)
+                Text("隧道失败时不切换到直连 HTTP。", style = MaterialTheme.typography.bodySmall)
+            }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Text("账号 · ${settings.username}", style = MaterialTheme.typography.bodyMedium)
         }
@@ -98,7 +113,7 @@ private fun MusicTagConnectedContent(settings: MusicTagSettings) {
             }
         }
     }
-    Text("要更换服务或路径，请先退出当前连接。", style = MaterialTheme.typography.bodySmall,
+    Text("配置验证代表上次测试通过；实际操作时会重新连接服务。", style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
@@ -109,7 +124,7 @@ internal fun MusicTagSettingsForm(settings: MusicTagSettings, busy: Boolean,
     Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
         MusicTagSettingsFields(draft, busy, { draft = it })
         Button(onClick = { onSave(draft) }, enabled = !busy && draft.configured,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("测试连接并保存") }
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(if (draft.connectionMode == MusicTagConnectionMode.SSH) "测试并保存配置" else "测试连接并保存") }
     }
 }
 
@@ -119,17 +134,30 @@ private fun MusicTagSettingsFields(settings: MusicTagSettings, busy: Boolean,
     var mappingsExpanded by remember { mutableStateOf(settings.sourceRoot.isNotBlank() || settings.targetRoot != "/app/media") }
     Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("连接标签服务", style = MaterialTheme.typography.titleLarge)
-            Text("连接后即可刮削和编辑音乐文件标签", style = MaterialTheme.typography.bodySmall,
+            Text(if (settings.connectionMode == MusicTagConnectionMode.SSH) "按需加密访问" else "连接标签服务", style = MaterialTheme.typography.titleLarge)
+            Text(if (settings.connectionMode == MusicTagConnectionMode.SSH) "按需连接，编辑期间复用，空闲 60 秒断开" else "连接后即可刮削和编辑音乐文件标签", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onPrimaryContainer)
         }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        MusicTagConnectionMode.entries.forEach { mode ->
+            FilterChip(selected = settings.connectionMode == mode, enabled = !busy,
+                onClick = { onChange(settings.copy(connectionMode = mode)) },
+                label = { Text(if (mode == MusicTagConnectionMode.DIRECT) "直接连接" else "SSH 隧道") },
+                modifier = Modifier.weight(1f))
+        }
+    }
+    if (settings.connectionMode == MusicTagConnectionMode.SSH) MusicTagSshFields(settings.ssh, busy) {
+        onChange(settings.copy(ssh = it))
     }
     Text("服务账号", style = MaterialTheme.typography.titleMedium)
     Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(settings.baseUrl, { onChange(settings.copy(baseUrl = it)) },
-                label = { Text("服务地址") },
-                supportingText = { Text("支持根地址或以 /login、/admin 结尾的网页地址") },
+            OutlinedTextField(settings.serviceAddress, {
+                onChange(if (settings.connectionMode == MusicTagConnectionMode.SSH) settings.copy(ssh = settings.ssh.copy(serviceUrl = it)) else settings.copy(baseUrl = it))
+            },
+                label = { Text(if (settings.connectionMode == MusicTagConnectionMode.SSH) "内部服务地址" else "服务地址") },
+                supportingText = { Text(if (settings.connectionMode == MusicTagConnectionMode.SSH) "服务器本机 HTTP 地址，公网通过 SSH 加密" else "支持 HTTP / HTTPS，以及 /login、/admin 网页地址") },
                 placeholder = { Text("https://music-tag.example.com") },
                 modifier = Modifier.fillMaxWidth(), enabled = !busy, singleLine = true,
                 shape = RoundedCornerShape(12.dp))
@@ -140,7 +168,7 @@ private fun MusicTagSettingsFields(settings: MusicTagSettings, busy: Boolean,
                 label = { Text("密码") }, modifier = Modifier.fillMaxWidth(), enabled = !busy,
                 singleLine = true, visualTransformation = PasswordVisualTransformation(),
                 shape = RoundedCornerShape(12.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            if (settings.connectionMode == MusicTagConnectionMode.DIRECT) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Switch(checked = settings.allowHttp,
                     onCheckedChange = { onChange(settings.copy(allowHttp = it)) }, enabled = !busy)
@@ -177,6 +205,6 @@ private fun MusicTagSettingsFields(settings: MusicTagSettings, busy: Boolean,
             }
         }
     }
-    Text("连接成功后显示状态；更换配置时先退出连接。", style = MaterialTheme.typography.bodySmall,
+    Text("测试成功后保存配置并释放连接。", style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
 }

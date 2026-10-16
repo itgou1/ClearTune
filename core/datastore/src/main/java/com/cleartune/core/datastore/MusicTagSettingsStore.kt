@@ -14,15 +14,11 @@ class MusicTagSettingsStore(context: Context, private val cipher: CredentialCiph
         val encoded = preferences.getString(account, null) ?: return@withContext MusicTagSettings()
         val parts = encoded.split(':', limit = 2)
         val value = cipher.decrypt(Base64.decode(parts[1], Base64.NO_WRAP), Base64.decode(parts[0], Base64.NO_WRAP))
-        val values = value.split('\n').map { String(Base64.decode(it, Base64.NO_WRAP), Charsets.UTF_8) }
-        MusicTagSettings(values[0], values[1], values[2], values[3], values[4], values[5], values[6].toBoolean())
+        MusicTagSettingsCodec.decode(value)
     }
 
     suspend fun save(account: String, value: MusicTagSettings) = withContext(Dispatchers.IO) {
-        val clear = listOf(value.baseUrl, value.username, value.password, value.sourceRoot,
-            value.targetRoot, value.source, value.allowHttp.toString()).joinToString("\n") {
-            Base64.encodeToString(it.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        }
+        val clear = MusicTagSettingsCodec.encode(value)
         val encrypted = cipher.encrypt(clear)
         check(preferences.edit().putString(account,
             Base64.encodeToString(encrypted.initializationVector, Base64.NO_WRAP) + ":" +

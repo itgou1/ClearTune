@@ -41,7 +41,22 @@ class MusicTagRepository @Inject constructor(
     suspend fun client(settings: MusicTagSettings): MusicTagClient {
         checkSession()
         require(settings.configured) { "请先在设置中配置 Music Tag 服务" }
-        return MusicTagClient(settings).also { it.login(); checkSession() }
+        val client = MusicTagClient(settings)
+        try { client.login(); checkSession(); return client }
+        catch (error: Throwable) { client.close(); throw error }
+    }
+
+    suspend fun <T> withClient(settings: MusicTagSettings, onProgress: (String) -> Unit = {},
+        editorConnection: MusicTagEditorConnection? = null,
+        block: suspend (MusicTagClient) -> T): T {
+        checkSession()
+        require(settings.configured) { "请先在设置中配置 Music Tag 服务" }
+        val use: suspend (MusicTagClient) -> T = { client ->
+            checkSession()
+            block(client).also { checkSession() }
+        }
+        return if (editorConnection == null) MusicTagConnection().withClient(settings, onProgress, use)
+        else editorConnection.withClient(settings, onProgress, use)
     }
 
     suspend fun songPath(song: Song, settings: MusicTagSettings): String {
@@ -135,9 +150,11 @@ class MusicTagRepository @Inject constructor(
         checkSession()
         prepared.coverBytes?.let { freezeCover(song.id, it) }
         checkSession()
-        rememberWrite(song.id, PendingTagWrite(snapshot.path, changes, normalizeMusicTagAddress(settings.baseUrl, settings.allowHttp),
+        rememberWrite(song.id, PendingTagWrite(snapshot.path, changes, musicTagServiceIdentity(settings),
             expectedCoverHash = prepared.coverHash))
-        suspendedPlayback[song.id] = PlaybackService.suspendForTagWrite()
+        withContext(Dispatchers.Main.immediate) {
+            suspendedPlayback[song.id] = PlaybackService.suspendForTagWrite()
+        }
         try {
             withContext(Dispatchers.IO) { AudioFileRevision.bump(context, session.accountKey, song.id) }
             checkSession()
@@ -177,7 +194,7 @@ class MusicTagRepository @Inject constructor(
         approvedCover: MusicTagCoverReview? = null): MusicTagSnapshot {
         checkSession()
         val pending = checkNotNull(pending(song.id)) { "没有待确认的保存" }
-        check(pending.baseUrl == normalizeMusicTagAddress(settings.baseUrl, settings.allowHttp)) { "请恢复上次保存所用的 Music Tag 服务地址" }
+        check(pending.baseUrl == musicTagServiceIdentity(settings)) { "请恢复上次保存所用的 Music Tag 服务地址" }
         val readBack = client.read(pending.path)
         val mismatch = pending.changes.filter { (field, value) ->
             field != MusicTagField.COVER && readBack.values[field]?.trim()?.replace("\r\n", "\n") != value.trim().replace("\r\n", "\n")
