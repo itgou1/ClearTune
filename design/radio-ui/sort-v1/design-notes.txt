@@ -1,0 +1,15 @@
+电台排序设计 v1（已放弃，仅保留历史设计稿）
+
+2026-10-15：用户明确取消按创建时间、更新时间、收听次数排序的计划。此方案不再列入待开发或待发布内容；以下为历史设计记录，不作为实施要求。
+
+以 outputs/radio-acceptance/radio-playing.png 的真实清单布局为基础，沿用浅紫主题、宣传图、电台条目、迷你播放器及底部导航。排序面板参照 outputs/playlist-sort-sheet.png。
+全部电台标题旁保留数量，右侧增加紧凑的排序入口。默认创建时间、新到旧；点击打开底部排序面板，选项立即生效。
+时间方向使用“旧 → 新 / 新 → 旧”；收听次数方向应切换为“少 → 多 / 多 → 少”。按账号保存选择。排序不改变正在播放的电台。
+收听次数为可选方案，设计为本机统计而非全端累计；建议连续有效收听达到 30 秒计一次，自动重连不重复计数，具体规则在实施前确定。
+
+数据核查：本地 Navidrome model/radio.go 有 CreatedAt、UpdatedAt；server/subsonic/radio.go 和 responses.Radio 未将它们返回给客户端。当前客户端 DTO 只有 id/name/streamUrl/homePageUrl。
+OpenSubsonic 标准电台响应没有创建时间、更新时间、收听次数：https://opensubsonic.netlify.app/docs/responses/internetradiostation/
+所以时间排序需要服务端扩展或另外的可靠数据来源；不支持时不能把服务端默认顺序伪称创建时间排序，应显示默认顺序，并隐藏/禁用不可用时间选项。设计图展示的是时间字段已获支持的目标状态。
+本机次数可由客户端新增统计支持；全端次数需要服务端新增数据和上报支持。目前均未实现。
+
+生成工具：内置 image_gen（imagegen 技能）；参考现有截图生成，不修改应用代码。
