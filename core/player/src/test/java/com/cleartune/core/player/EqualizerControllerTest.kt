@@ -13,12 +13,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EqualizerControllerTest {
-    private val boosted = EqualizerSettings(true, EqualizerPreset.CUSTOM, listOf(6, 6, 0, -3, -6))
+    private val boosted = EqualizerSettings(true, EqualizerPreset.CUSTOM, listOf(6, 6, 4, 2, 0, -1, -2, -3, -5, -6))
+
+    @Test fun legacyNativeBandsReceiveMappedCurveBeforeEnable() = fixture { f ->
+        f.frequencies = listOf(31, 125, 500, 2000, 16000)
+        f.controller.update(1, boosted, false).join()
+        assertEquals(listOf(600, 400, 0, -200, -600), f.effects.single().levelsAtEnable)
+        assertEquals(0.5011872f, f.effects.single().gainAtEnable, 0.0001f)
+        f.controller.update(1, boosted.copy(enabled = false), false).join()
+        assertTrue(f.controller.isAttached)
+        assertFalse(f.controller.isEqualizing)
+        assertEquals(1f, f.gains.last(), 0f)
+    }
 
     @Test fun coldStartAppliesFinalHeadroomAndCurveBeforeEnablingEffect() = fixture { f ->
         f.controller.update(1, boosted, false).join()
         val effect = f.effects.single()
-        assertEquals(listOf(600, 600, 0, -300, -600), effect.levelsAtEnable)
+        assertEquals(listOf(600, 600, 400, 200, 0, -100, -200, -300, -500, -600), effect.levelsAtEnable)
         assertEquals(0.5011872f, effect.gainAtEnable, 0.0001f)
         assertEquals(listOf(1f, effect.gainAtEnable), f.gains)
     }
@@ -30,32 +41,49 @@ class EqualizerControllerTest {
         f.controller.update(2, boosted, true).join()
         assertTrue(f.gains.isNotEmpty())
         assertTrue(f.gains.all { it <= previousGain })
-        assertEquals(listOf(600, 600, 0, -300, -600), f.effects.last().levelsAtEnable)
+        assertEquals(listOf(600, 600, 400, 200, 0, -100, -200, -300, -500, -600), f.effects.last().levelsAtEnable)
         assertEquals(previousGain, f.effects.last().gainAtEnable, 0f)
         assertEquals(1, f.effects.first().releases)
     }
 
-    @Test fun switchingNeverMutesAndReleaseHappensOnlyAfterFlatCurve() = fixture { f ->
+    @Test fun switchingNeverMutesOrReleasesTheSessionEffect() = fixture { f ->
         f.controller.update(1, boosted, true).join()
         assertEquals(0.5011872f, f.gains.last(), 0.0001f)
         f.controller.update(1, boosted.copy(enabled = false), true).join()
-        assertFalse(f.controller.isAttached)
+        assertTrue(f.controller.isAttached)
+        assertFalse(f.controller.isEqualizing)
         assertTrue(f.gains.all { it >= 0.501f })
         assertTrue(f.gains.zipWithNext().all { (a, b) -> kotlin.math.abs(a - b) < 0.07f })
         assertEquals(1f, f.gains.last(), 0f)
-        assertEquals(listOf(0, 0, 0, 0, 0), f.effects.single().levelsAtRelease)
-        assertEquals(1, f.effects.single().releases)
+        assertEquals(List(10) { 0 }, f.effects.single().levels.toList())
+        assertEquals(0, f.effects.single().releases)
         assertTrue(f.effects.single().threads.all { it.substringBefore(" @") == "eq-worker" })
         assertTrue(f.volumeThreads.all { it.substringBefore(" @") == "eq-volume" })
         assertTrue(f.errors.isEmpty())
     }
 
-    @Test fun flatPresetDoesNotChangeVolumeAndRepeatedOffDoesNotCreateAnEffect() = fixture { f ->
+    @Test fun flatPresetAndOffReuseOneUnityEffect() = fixture { f ->
         f.controller.update(1, EqualizerSettings(enabled = true), true).join()
         repeat(3) { f.controller.update(1, EqualizerSettings(), true).join() }
         assertTrue(f.gains.all { it == 1f })
         assertEquals(1, f.effects.size)
-        assertEquals(1, f.effects.single().releases)
+        assertEquals(0, f.effects.single().releases)
+    }
+
+    @Test fun returningToFlatAndTogglingKeepsOneUnityEffect() = fixture { f ->
+        f.controller.update(1, boosted, false).join()
+        f.controller.update(1, EqualizerSettings(enabled = true), true).join()
+        assertTrue(f.controller.isAttached)
+        assertFalse(f.controller.isEqualizing)
+        assertEquals(0, f.effects.single().releases)
+        assertEquals(List(10) { 0 }, f.effects.single().levels.toList())
+        repeat(3) {
+            f.controller.update(1, EqualizerSettings(), true).join()
+            f.controller.update(1, EqualizerSettings(enabled = true), true).join()
+        }
+        f.controller.update(1, boosted.copy(customLevelsDb = List(10) { 0 }), true).join()
+        assertEquals(1, f.effects.size)
+        assertEquals(1f, f.gains.last(), 0f)
     }
 
     @Test fun rapidReversalKeepsLatestCurveAndDoesNotReleaseReenabledEffect() = fixture { f ->
@@ -65,9 +93,10 @@ class EqualizerControllerTest {
         f.controller.update(1, boosted, true).join()
         assertTrue(f.controller.isAttached)
         assertEquals(0, f.effects.single().releases)
-        assertEquals(listOf(600, 600, 0, -300, -600), f.effects.single().levels.toList())
+        assertEquals(listOf(600, 600, 400, 200, 0, -100, -200, -300, -500, -600), f.effects.single().levels.toList())
         f.controller.update(1, boosted.copy(enabled = false), true).join()
-        assertFalse(f.controller.isAttached)
+        assertTrue(f.controller.isAttached)
+        assertFalse(f.controller.isEqualizing)
         assertEquals(1f, f.gains.last(), 0f)
         assertTrue(f.errors.isEmpty())
     }
@@ -78,8 +107,9 @@ class EqualizerControllerTest {
         assertEquals(listOf(1, 2), f.effects.map { it.session })
         assertEquals(1, f.effects.first().releases)
         f.controller.update(2, boosted.copy(enabled = false), true).join()
-        assertTrue(f.effects.all { it.releases == 1 })
-        assertFalse(f.controller.isAttached)
+        assertEquals(listOf(1, 0), f.effects.map { it.releases })
+        assertTrue(f.controller.isAttached)
+        assertFalse(f.controller.isEqualizing)
         assertEquals(1f, f.gains.last(), 0f)
     }
 
@@ -129,8 +159,9 @@ class EqualizerControllerTest {
         val volumeThreads = mutableListOf<String>()
         val errors = mutableListOf<Throwable>()
         var onCreate: () -> Unit = {}
+        var frequencies = com.cleartune.core.datastore.EQUALIZER_FREQUENCIES_HZ
         val controller = EqualizerController(
-            createEffect = { session -> onCreate(); FakeEffect(session) { gains.last() }.also(effects::add) },
+            createEffect = { session -> onCreate(); FakeEffect(session, frequencies) { gains.last() }.also(effects::add) },
             onHeadroom = { gains.add(it); volumeThreads.add(Thread.currentThread().name) },
             onFailure = errors::add,
             dispatcher = worker,
@@ -138,7 +169,11 @@ class EqualizerControllerTest {
         )
     }
 
-    private class FakeEffect(val session: Int, private val gain: () -> Float) : EqualizerEffect {
+    private class FakeEffect(
+        val session: Int,
+        override val centerFrequenciesHz: List<Int>,
+        private val gain: () -> Float,
+    ) : EqualizerEffect {
         override var enabled = false
             get() { checkUsable(); return field }
             set(value) {
@@ -149,9 +184,8 @@ class EqualizerControllerTest {
                 }
                 field = value
             }
-        override val centerFrequenciesHz = listOf(60, 230, 910, 3600, 14000)
         override val levelRange = -1500..1500
-        val levels = IntArray(5) { 300 } // Device preset must be cleared before enabling.
+        val levels = IntArray(centerFrequenciesHz.size) { 300 } // Device preset must be cleared before enabling.
         val threads = mutableListOf<String>()
         var releases = 0
         var failWrites = false

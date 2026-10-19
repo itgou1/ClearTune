@@ -87,6 +87,7 @@
     <string name="folder_back_to_roots">返回音乐库</string>
     <string name="offline_music">离线音乐</string>
     <string name="offline_and_downloads">离线与下载</string>
+    <string name="shared_playlist_badge">共享歌单，来自 %1$s</string>
     <string name="my_music">我的音乐</string>
     <string name="download_and_storage">下载与存储</string>
     <string name="account_and_app">账号与应用</string>
@@ -294,9 +295,9 @@
     <string name="eq_night_soft">夜间柔和</string>
     <string name="eq_night_soft_description">减少刺激，适合小音量</string>
     <string name="eq_custom">自定义</string>
-    <string name="eq_custom_description">用五个频段调出偏好</string>
-    <string name="eq_custom_five_band">五段自定义</string>
-    <string name="eq_custom_five_band_description">调整范围为 -6 至 +6 dB</string>
+    <string name="eq_custom_description">用十个频段调出偏好</string>
+    <string name="eq_custom_ten_band">十段自定义</string>
+    <string name="eq_custom_ten_band_description">调整范围为 -6 至 +6 dB</string>
     <string name="eq_db_value">%1$+d dB</string>
     <string name="eq_auto_headroom">自动防失真</string>
     <string name="eq_auto_headroom_description">提升频段时自动预留音量空间，减少爆音与削波</string>

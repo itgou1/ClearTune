@@ -1,11 +1,11 @@
 package com.cleartune.core.player
 
 import android.media.AudioManager
-import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.test.platform.app.InstrumentationRegistry
 import com.cleartune.core.datastore.EqualizerSettings
 import com.cleartune.core.datastore.EqualizerPreset
@@ -26,7 +26,28 @@ import org.junit.Test
 class EqualizerLifecycleTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
-    @Test fun playbackProbeAcrossEqualizerToggleAndTrackChanges() = fixture(enableInitially = false) { service, player ->
+    @Test fun flatAndOffKeepSameNativeHandleAndUnityGain() = fixture(enableInitially = false) { service, player ->
+        fun nativeEffect() = EqualizerController::class.java.getDeclaredField("effect")
+            .apply { isAccessible = true }.get(controller(service)) as EqualizerEffect
+        val original = nativeEffect()
+        repeat(3) {
+            listOf(true, false).forEach { enabled ->
+                main { apply(service, enabled, preset = EqualizerPreset.BALANCED) }
+                awaitTransition(service)
+                main {
+                    assertSame(original, nativeEffect())
+                    assertTrue(original.enabled)
+                    assertFalse(controller(service).isEqualizing)
+                    assertEquals(1f, player.volume, 0f)
+                    original.centerFrequenciesHz.indices.forEach { band ->
+                        assertEquals(0.toShort(), original.getLevel(band))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test fun playbackContinuesAcrossEqualizerToggleAndTrackChanges() = fixture(enableInitially = false) { service, player ->
         val context = instrumentation.targetContext
         var lowestVolume = 1f
         val files = listOf(48_000, 44_100, 32_000).map { rate ->
@@ -46,33 +67,27 @@ class EqualizerLifecycleTest {
                 player.play()
             }
             awaitPlaying(player)
-            probe(service, player, "cold-play")
             Thread.sleep(1500)
             repeat(3) { index ->
                 main { player.seekToNextMediaItem() }
                 awaitPlaying(player)
-                probe(service, player, "cold-skip-$index")
                 Thread.sleep(1500)
             }
-            probe(service, player, "enable-request")
             main { apply(service, enabled = true) }
             awaitTransition(service)
             main { assertTrue("Native equalizer must be supported for this probe", controller(service).isAttached) }
-            probe(service, player, "enabled")
             Thread.sleep(2000)
-            probe(service, player, "disable-request")
             main { apply(service, enabled = false) }
             awaitTransition(service)
-            probe(service, player, "disabled")
             Thread.sleep(2000)
             repeat(6) { index ->
                 main { player.seekToNextMediaItem() }
                 awaitPlaying(player)
-                probe(service, player, "disabled-skip-$index")
                 Thread.sleep(1500)
             }
             main {
-                assertFalse("Disabled equalizer must not remain attached after track changes", controller(service).isAttached)
+                assertTrue("Native chain must remain attached across toggles", controller(service).isAttached)
+                assertFalse(controller(service).isEqualizing)
                 assertEquals(1f, player.volume, 0.0001f)
                 assertNull(player.playerError)
                 assertTrue("EQ switching must not dip below its required 6 dB headroom", lowestVolume >= 0.501f)
@@ -81,11 +96,6 @@ class EqualizerLifecycleTest {
             main { player.stop() }
             files.forEach { it.delete() }
         }
-    }
-
-    private fun probe(service: PlaybackService, player: ExoPlayer, event: String) = main {
-        Log.i("EqualizerProbe", "${System.currentTimeMillis()} $event session=${player.audioSessionId} " +
-            "attached=${controller(service).isAttached} volume=${player.volume} position=${player.currentPosition}")
     }
 
     private fun awaitPlaying(player: ExoPlayer) {
@@ -112,14 +122,16 @@ class EqualizerLifecycleTest {
         }.array()
     }
 
-    @Test fun disablingReleasesEffectAndRepeatedDisabledUpdatesLeaveItDetached() = fixture { service, player ->
+    @Test fun disablingKeepsUnityEffectAndRepeatedDisabledUpdatesDoNotReattach() = fixture { service, player ->
         main { apply(service, enabled = false) }
         awaitTransition(service)
         main {
-            assertFalse(controller(service).isAttached)
+            assertTrue(controller(service).isAttached)
+            assertFalse(controller(service).isEqualizing)
             assertEquals(1f, player.volume, 0.0001f)
             repeat(3) { apply(service, enabled = false) }
-            assertFalse(controller(service).isAttached)
+            assertTrue(controller(service).isAttached)
+            assertFalse(controller(service).isEqualizing)
             assertEquals(1f, player.volume, 0.0001f)
         }
     }
@@ -132,7 +144,8 @@ class EqualizerLifecycleTest {
         main { apply(service, enabled = false) }
         awaitTransition(service)
         main {
-            assertFalse(controller(service).isAttached)
+            assertTrue(controller(service).isAttached)
+            assertFalse(controller(service).isEqualizing)
             assertEquals(1f, player.volume, 0.0001f)
             apply(service, enabled = true)
         }
@@ -146,15 +159,32 @@ class EqualizerLifecycleTest {
     private fun fixture(enableInitially: Boolean = true, block: (PlaybackService, ExoPlayer) -> Unit) {
         lateinit var service: PlaybackService
         lateinit var player: ExoPlayer
+        val audio = File.createTempFile("eq-lifecycle-", ".wav", instrumentation.targetContext.cacheDir)
+        audio.writeBytes(tone(44_100))
         try {
             main {
                 service = PlaybackService()
                 val context = instrumentation.targetContext
+                android.content.ContextWrapper::class.java
+                    .getDeclaredMethod("attachBaseContext", android.content.Context::class.java)
+                    .apply { isAccessible = true }.invoke(service, context)
                 player = ExoPlayer.Builder(context).build()
+                player.volume = 0f
                 player.audioSessionId = context.getSystemService(AudioManager::class.java).generateAudioSessionId()
                 setField(service, "player", player)
-                if (enableInitially) apply(service, enabled = true, animate = false)
+                setField(service, "audioSettingsLoaded", true)
+                player.addAnalyticsListener(field(service, "audioStartupListener") as AnalyticsListener)
+                apply(service, enabled = enableInitially, animate = false)
+                player.setMediaItem(MediaItem.fromUri(audio.toURI().toString()))
+                player.prepare()
             }
+            val deadline = System.nanoTime() + 5_000_000_000L
+            var ready = false
+            while (!ready && System.nanoTime() < deadline) {
+                main { ready = (field(service, "audioStartupGate") as AudioStartupGate).isReady }
+                if (!ready) Thread.sleep(10)
+            }
+            assertTrue("Real AudioTrack/EQ startup did not finish", ready)
             awaitTransition(service)
             main {
                 if (enableInitially) {
@@ -168,6 +198,7 @@ class EqualizerLifecycleTest {
                 controller(service).close()
                 player.release()
             }
+            audio.delete()
         }
     }
 
@@ -182,8 +213,9 @@ class EqualizerLifecycleTest {
         fail("Equalizer transition did not finish")
     }
 
-    private fun apply(service: PlaybackService, enabled: Boolean, animate: Boolean = true) {
-        setField(service, "equalizerSettings", EqualizerSettings(enabled = enabled, preset = EqualizerPreset.CUSTOM,
+    private fun apply(service: PlaybackService, enabled: Boolean, animate: Boolean = true,
+        preset: EqualizerPreset = EqualizerPreset.CUSTOM) {
+        setField(service, "equalizerSettings", EqualizerSettings(enabled = enabled, preset = preset,
             customLevelsDb = listOf(6, 6, 0, -3, -6)))
         PlaybackService::class.java.getDeclaredMethod("applyEqualizer", Boolean::class.javaPrimitiveType)
             .apply { isAccessible = true }.invoke(service, animate)

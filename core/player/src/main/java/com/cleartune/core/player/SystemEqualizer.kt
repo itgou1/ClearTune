@@ -1,12 +1,16 @@
 package com.cleartune.core.player
 
 import android.media.audiofx.Equalizer
+import android.media.audiofx.AudioEffect
 
 internal class SystemEqualizer(sessionId: Int) : EqualizerEffect {
     private val effect = Equalizer(0, sessionId)
     override var enabled: Boolean
         get() = effect.enabled
-        set(value) { effect.enabled = value }
+        set(value) {
+            val status = effect.setEnabled(value)
+            check(status == AudioEffect.SUCCESS) { "System equalizer enable=$value failed: $status" }
+        }
     override val centerFrequenciesHz: List<Int>
         get() = List(effect.numberOfBands.toInt()) { (effect.getCenterFreq(it.toShort()) / 1000).coerceAtLeast(1) }
     override val levelRange: IntRange

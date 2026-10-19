@@ -47,27 +47,22 @@ data class EqualizerSettings(
 ) {
     val activeLevelsDb: List<Int>
         get() = when (preset) {
-            EqualizerPreset.BALANCED -> listOf(0, 0, 0, 0, 0)
-            EqualizerPreset.CLEAR_VOCAL -> listOf(-4, -3, -1, 0, -1)
-            EqualizerPreset.WARM_BASS -> listOf(0, 0, -3, -2, -1)
-            EqualizerPreset.AIRY_TREBLE -> listOf(-3, -2, -2, -1, 0)
-            EqualizerPreset.NIGHT_SOFT -> listOf(-4, -2, 0, -2, -4)
+            EqualizerPreset.BALANCED -> List(10) { 0 }
+            EqualizerPreset.CLEAR_VOCAL -> listOf(-3, -2, -1, -1, 0, 1, 3, 2, 0, -1)
+            EqualizerPreset.WARM_BASS -> listOf(1, 3, 3, 1, -1, -1, 0, 0, 0, -1)
+            EqualizerPreset.AIRY_TREBLE -> listOf(-2, -1, -1, 0, 0, 0, 1, 1, 2, 3)
+            EqualizerPreset.NIGHT_SOFT -> listOf(-3, -2, -1, 0, 1, 1, 0, -1, -2, -3)
             EqualizerPreset.CUSTOM -> customLevelsDb.sanitizedEqualizerLevels()
         }
 }
 
-val EQUALIZER_FREQUENCIES_HZ = listOf(60, 230, 910, 3_600, 14_000)
-val DEFAULT_EQUALIZER_LEVELS_DB = listOf(2, 1, 0, 1, 2)
+val EQUALIZER_FREQUENCIES_HZ = listOf(31, 62, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000)
+val DEFAULT_EQUALIZER_LEVELS_DB = listOf(2, 2, 1, 1, 0, 0, 1, 1, 2, 2)
 const val DEFAULT_PLAYBACK_CACHE_SIZE_MB = 512
 val PLAYBACK_CACHE_SIZE_OPTIONS_MB = listOf(512, 1_024, 2_048, 4_096)
 
 fun normalizedPlaybackCacheSizeMb(value: Int?): Int =
     value?.takeIf(PLAYBACK_CACHE_SIZE_OPTIONS_MB::contains) ?: DEFAULT_PLAYBACK_CACHE_SIZE_MB
-
-private fun List<Int>.sanitizedEqualizerLevels(): List<Int> =
-    takeIf { size == EQUALIZER_FREQUENCIES_HZ.size }
-        ?.map { it.coerceIn(-6, 6) }
-        ?: DEFAULT_EQUALIZER_LEVELS_DB
 
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -82,7 +77,10 @@ data class AppSettings(
 
 const val DEFAULT_FAVORITE_SONG_SORT = "TITLE"
 
-private val Context.appSettingsDataStore by preferencesDataStore(name = "app_settings")
+private val Context.appSettingsDataStore by preferencesDataStore(
+    name = "app_settings",
+    produceMigrations = { listOf(EqualizerBandsMigration) },
+)
 
 class AppPreferences(private val context: Context) {
     fun favoritesSort(accountKey: String): Flow<String> = context.appSettingsDataStore.data.map {
@@ -127,11 +125,7 @@ class AppPreferences(private val context: Context) {
                 preset = preferences[EQUALIZER_PRESET]
                     ?.let { runCatching { EqualizerPreset.valueOf(it) }.getOrNull() }
                     ?: EqualizerPreset.BALANCED,
-                customLevelsDb = preferences[EQUALIZER_CUSTOM_LEVELS]
-                    ?.split(EQUALIZER_SEPARATOR)
-                    ?.mapNotNull(String::toIntOrNull)
-                    ?.sanitizedEqualizerLevels()
-                    ?: DEFAULT_EQUALIZER_LEVELS_DB,
+                customLevelsDb = decodeEqualizerLevels(preferences[EQUALIZER_CUSTOM_LEVELS]),
             ),
             wifiOnlyDownloads = preferences[WIFI_ONLY] ?: true,
             playbackCacheSizeMb = normalizedPlaybackCacheSizeMb(preferences[PLAYBACK_CACHE_SIZE_MB]),

@@ -8,7 +8,7 @@ class EqualizerPresetTest {
     @Test
     fun `balanced preset remains neutral`() {
         assertEquals(
-            listOf(0, 0, 0, 0, 0),
+            List(10) { 0 },
             EqualizerSettings(preset = EqualizerPreset.BALANCED).activeLevelsDb,
         )
     }
@@ -20,16 +20,17 @@ class EqualizerPresetTest {
         val treble = EqualizerSettings(preset = EqualizerPreset.AIRY_TREBLE).activeLevelsDb
         val night = EqualizerSettings(preset = EqualizerPreset.NIGHT_SOFT).activeLevelsDb
 
-        assertEquals(3, vocal.indexOf(vocal.max()))
-        assertEquals(0, bass.indexOf(bass.max()))
-        assertEquals(bass.max(), bass[1])
-        assertEquals(4, treble.indexOf(treble.max()))
+        assertEquals(6, vocal.indexOf(vocal.max()))
+        assertEquals(1, bass.indexOf(bass.max()))
+        assertEquals(bass.max(), bass[2])
+        assertTrue(bass.first() < bass[1])
+        assertEquals(9, treble.indexOf(treble.max()))
         assertTrue(treble.zipWithNext().all { (lower, higher) -> lower <= higher })
-        assertTrue(night.first() < night[2])
-        assertTrue(night.last() < night[2])
+        assertTrue(night.first() < night[5])
+        assertTrue(night.last() < night[5])
         listOf(vocal, bass, treble, night).forEach { levels ->
-            assertEquals(0, levels.max())
-            assertTrue(levels.min() >= -4)
+            assertTrue(levels.max() in 1..3)
+            assertTrue(levels.min() in -3..-1)
         }
     }
 }

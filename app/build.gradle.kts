@@ -40,8 +40,8 @@ android {
         applicationId = "com.cleartune.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 18
-        versionName = "1.6.0"
+        versionCode = 19
+        versionName = "1.6.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -93,6 +93,12 @@ android {
     }
 
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    // Picnic is not used by SSH. Keep the other Bouncy Castle algorithms/resources intact.
+    packaging.resources.excludes += setOf(
+        "org/bouncycastle/pqc/legacy/picnic/lowmcL1.bin.properties",
+        "org/bouncycastle/pqc/legacy/picnic/lowmcL3.bin.properties",
+        "org/bouncycastle/pqc/legacy/picnic/lowmcL5.bin.properties",
+    )
 }
 
 dependencies {

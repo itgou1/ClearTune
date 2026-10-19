@@ -46,15 +46,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cleartune.app.settings.SettingsViewModel
 import com.cleartune.core.datastore.EQUALIZER_FREQUENCIES_HZ
 import com.cleartune.core.datastore.EqualizerPreset
-import com.cleartune.core.player.sampledEqualizerCurveDb
+import kotlin.math.ln
 import kotlin.math.roundToInt
 
 private data class PresetPresentation(
@@ -208,8 +211,8 @@ internal fun EqualizerScreen(
             if (equalizer.preset == EqualizerPreset.CUSTOM) {
                 item {
                     ClearTuneSectionCard(
-                        title = stringResource(R.string.eq_custom_five_band),
-                        subtitle = stringResource(R.string.eq_custom_five_band_description),
+                        title = stringResource(R.string.eq_custom_ten_band),
+                        subtitle = stringResource(R.string.eq_custom_ten_band_description),
                         icon = Icons.Rounded.Tune,
                         modifier = Modifier.alpha(if (equalizer.enabled) 1f else 0.56f),
                     ) {
@@ -336,6 +339,7 @@ private fun EqualizerBand(
             )
         }
         Slider(
+            modifier = Modifier.semantics { contentDescription = formatFrequency(frequencyHz) },
             value = valueDb.toFloat(),
             onValueChange = { onValueChange(it.roundToInt()) },
             onValueChangeFinished = onValueChangeFinished,
@@ -351,10 +355,6 @@ private fun FrequencyCurve(levelsDb: List<Int>, modifier: Modifier = Modifier) {
     val lineColor = MaterialTheme.colorScheme.primary
     val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
     val fillColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-    val curveLevels = sampledEqualizerCurveDb(
-        anchorFrequenciesHz = EQUALIZER_FREQUENCIES_HZ,
-        anchorLevelsDb = levelsDb,
-    )
     Canvas(modifier) {
         val horizontalPadding = 8.dp.toPx()
         val usableWidth = size.width - horizontalPadding * 2
@@ -363,23 +363,33 @@ private fun FrequencyCurve(levelsDb: List<Int>, modifier: Modifier = Modifier) {
             val y = size.height * row / 4f
             drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
         }
-        val points = curveLevels.mapIndexed { index, level ->
+        val logStart = ln(EQUALIZER_FREQUENCIES_HZ.first().toFloat())
+        val logSpan = ln(EQUALIZER_FREQUENCIES_HZ.last().toFloat()) - logStart
+        val points = levelsDb.mapIndexed { index, level ->
             Offset(
-                x = horizontalPadding + usableWidth * index / (curveLevels.size - 1).coerceAtLeast(1),
-                y = centerY - (level.coerceIn(-6f, 6f) / 6f) * centerY * 0.78f,
+                x = horizontalPadding + usableWidth *
+                    (ln(EQUALIZER_FREQUENCIES_HZ[index].toFloat()) - logStart) / logSpan,
+                y = centerY - (level.coerceIn(-6, 6) / 6f) * centerY * 0.78f,
             )
         }
         if (points.isNotEmpty()) {
+            val curve = Path().apply {
+                moveTo(points.first().x, points.first().y)
+                points.zipWithNext().forEach { (start, end) ->
+                    // Horizontal tangents keep adjoining segments smooth and bounded
+                    // by their band gains. This is a visual guide, not a filter response.
+                    val third = (end.x - start.x) / 3f
+                    cubicTo(start.x + third, start.y, end.x - third, end.y, end.x, end.y)
+                }
+            }
             val fill = Path().apply {
-                moveTo(points.first().x, centerY)
-                points.forEach { lineTo(it.x, it.y) }
+                addPath(curve)
                 lineTo(points.last().x, centerY)
+                lineTo(points.first().x, centerY)
                 close()
             }
             drawPath(fill, fillColor)
-            points.zipWithNext().forEach { (start, end) ->
-                drawLine(lineColor, start, end, strokeWidth = 3.dp.toPx())
-            }
+            drawPath(curve, lineColor, style = Stroke(width = 3.dp.toPx()))
         }
     }
 }

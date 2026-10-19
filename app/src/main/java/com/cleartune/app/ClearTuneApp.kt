@@ -17,6 +17,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -1194,12 +1195,18 @@ private fun MyScreen(
                     Icon(
                         Icons.Rounded.AccountCircle,
                         contentDescription = null,
-                        modifier = Modifier.size(60.dp),
+                        modifier = Modifier.size(48.dp),
                         tint = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(profile.username, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            profile.username,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
@@ -1208,17 +1215,16 @@ private fun MyScreen(
                             )
                             Spacer(Modifier.width(7.dp))
                             Text(
-                                text = listOf(serverStatusLabel, profile.serverVersion)
-                                    .filter(String::isNotBlank)
-                                    .joinToString(" · "),
-                                style = MaterialTheme.typography.bodyMedium,
+                                text = serverStatusLabel,
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
-                    FilledTonalIconButton(onClick = onSettings) {
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = onSettings) {
                         Icon(Icons.Rounded.Settings, contentDescription = stringResource(R.string.settings))
                     }
                 }
@@ -1334,7 +1340,7 @@ private fun MyScreen(
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
             ) {
                 Column {
-                    PlaylistRow(playlist = playlist, viewModel = viewModel, onClick = onPlaylist)
+                    PlaylistRow(playlist = playlist, viewModel = viewModel, onClick = onPlaylist, isShared = !playlist.owner.isNullOrBlank() && playlist.owner != profile.username)
                     if (!last) HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 14.dp),
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
@@ -4008,7 +4014,7 @@ private fun ArtistRow(artist: Artist, viewModel: MusicViewModel, onClick: (Strin
 }
 
 @Composable
-private fun PlaylistRow(playlist: Playlist, viewModel: MusicViewModel, onClick: (String) -> Unit) {
+private fun PlaylistRow(playlist: Playlist, viewModel: MusicViewModel, onClick: (String) -> Unit, isShared: Boolean = false) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -4016,7 +4022,26 @@ private fun PlaylistRow(playlist: Playlist, viewModel: MusicViewModel, onClick: 
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PlaylistCover(playlist.coverArtId, playlist.name, viewModel, Modifier.size(52.dp))
+        Box(Modifier.size(52.dp)) {
+            PlaylistCover(playlist.coverArtId, playlist.name, viewModel, Modifier.fillMaxSize())
+            if (isShared) {
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomEnd).size(18.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.surface),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Rounded.Share,
+                            contentDescription = stringResource(R.string.shared_playlist_badge, playlist.owner.orEmpty()),
+                            modifier = Modifier.size(11.dp),
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.size(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(playlist.name, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -4024,6 +4049,8 @@ private fun PlaylistRow(playlist: Playlist, viewModel: MusicViewModel, onClick: 
                 stringResource(R.string.song_count, playlist.songCount),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         Icon(Icons.Rounded.ChevronRight, contentDescription = null)

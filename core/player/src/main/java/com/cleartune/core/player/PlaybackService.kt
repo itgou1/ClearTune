@@ -6,6 +6,8 @@ import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.util.Log
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -49,8 +51,10 @@ class PlaybackService : MediaLibraryService() {
     private var equalizerHeadroom = 1f
     private var equalizerSessionId = 0
     private var audioOutputReady = false
+    private var firstAudioTrackInitialized = false
+    private var startupAudioTrackCount = 0
     private val equalizerController = EqualizerController(
-        createEffect = ::SystemEqualizer,
+        createEffect = NativeEqualizerFactory::create,
         onHeadroom = { headroom ->
             equalizerHeadroom = headroom
             applyOutputVolume()
@@ -58,6 +62,33 @@ class PlaybackService : MediaLibraryService() {
         onFailure = { Log.w(TAG, "Could not update system equalizer", it) },
     )
     private var forcedNext: ForcedNext? = null
+    private val audioStartupListener = object : AnalyticsListener {
+        override fun onAudioTrackInitialized(
+            eventTime: AnalyticsListener.EventTime,
+            audioTrackConfig: AudioSink.AudioTrackConfig,
+        ) {
+            if (audioStartupGate.isReady) return
+            startupAudioTrackCount++
+            firstAudioTrackInitialized = true
+            if (audioSettingsLoaded) applyEqualizer(animate = false)
+        }
+
+        override fun onAudioTrackReleased(
+            eventTime: AnalyticsListener.EventTime,
+            audioTrackConfig: AudioSink.AudioTrackConfig,
+        ) {
+            if (audioStartupGate.isReady) return
+            // Media3 releases outputs asynchronously: an old release can arrive
+            // after the replacement's initialization. Do not invalidate that track.
+            startupAudioTrackCount = (startupAudioTrackCount - 1).coerceAtLeast(0)
+            if (startupAudioTrackCount > 0) return
+            firstAudioTrackInitialized = false
+            // A stopped/replaced track must not be released by an old EQ completion.
+            equalizerTransitionJob = null
+            equalizerController.update(0, equalizerSettings, animate = false)
+        }
+
+    }
     private val playerListener = object : Player.Listener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             // Release an endless live connection on pause, including headset/system controls.
@@ -89,7 +120,9 @@ class PlaybackService : MediaLibraryService() {
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) = applyReplayGain()
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
-            if (audioSettingsLoaded && audioSessionId != equalizerSessionId) applyEqualizer(animate = false)
+            if (audioSettingsLoaded && firstAudioTrackInitialized && audioSessionId != equalizerSessionId) {
+                applyEqualizer(animate = false)
+            }
         }
     }
 
@@ -137,11 +170,13 @@ class PlaybackService : MediaLibraryService() {
             )
             setHandleAudioBecomingNoisy(true)
         }
-        // Bind the effect before the first AudioTrack starts instead of reacting
-        // to its creation after audio may already be audible.
+        // Reserve an ID, but do not attach an effect to it until a real, paused
+        // AudioTrack exists. Creating an effect on an empty session can initialize
+        // the device's effect/output chain only when playback starts.
         val audioSessionId = getSystemService(AudioManager::class.java).generateAudioSessionId()
         if (audioSessionId > 0) player.audioSessionId = audioSessionId
         player.addListener(playerListener)
+        player.addAnalyticsListener(audioStartupListener)
         val sessionPlayer = object : AudioStartupPlayer(player, audioStartupGate) {
             // Headsets and system controls must skip tracks just like the in-app button,
             // including doing nothing at the start of a non-looping queue.
@@ -207,6 +242,7 @@ class PlaybackService : MediaLibraryService() {
         cacheScope.cancel()
         equalizerController.close()
         player.removeListener(playerListener)
+        player.removeAnalyticsListener(audioStartupListener)
         session.release()
         player.release()
         runCatching { playbackCache?.release() }
@@ -285,6 +321,10 @@ class PlaybackService : MediaLibraryService() {
 
     private fun applyEqualizer(animate: Boolean) {
         if (!::player.isInitialized) return
+        // Preparing while playWhenReady=false creates the real AudioTrack without
+        // consuming the song. Neither saved settings nor a reserved session ID
+        // alone may unmute/open the startup gate, even when EQ is disabled.
+        if (!firstAudioTrackInitialized) return
         val sessionId = player.audioSessionId
         val initializing = !audioStartupGate.isReady || sessionId != equalizerSessionId || !audioOutputReady
         if (initializing) {
@@ -298,7 +338,8 @@ class PlaybackService : MediaLibraryService() {
             transition.join()
             // A newer settings/session update owns readiness. Native failures are
             // handled by the controller, so unsupported effects do not block play.
-            if (equalizerTransitionJob === transition && (!equalizerSettings.enabled || sessionId > 0)) {
+            if (equalizerTransitionJob === transition && firstAudioTrackInitialized &&
+                (!equalizerSettings.enabled || sessionId > 0)) {
                 audioOutputReady = true
                 applyOutputVolume()
                 audioStartupGate.open()

@@ -32,6 +32,8 @@ internal class EqualizerController(
 
     @Volatile var isAttached = false
         private set
+    @Volatile var isEqualizing = false
+        private set
 
     fun update(sessionId: Int, settings: EqualizerSettings, animate: Boolean): Job = scope.launch {
         if (closed.get()) return@launch
@@ -39,7 +41,11 @@ internal class EqualizerController(
         // The returned parent job remains active until this transition completes.
         transition = launch {
             try {
-                apply(sessionId, settings, animate)
+                // Flat and disabled share the same unity curve and processing path.
+                val effectiveSettings = if (settings.activeLevelsDb.all { it == 0 }) {
+                    settings.copy(enabled = false)
+                } else settings
+                apply(sessionId, effectiveSettings, animate)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -65,7 +71,7 @@ internal class EqualizerController(
             detach()
             sessionId = newSessionId
         }
-        if (newSessionId <= 0 || (!settings.enabled && effect == null)) {
+        if (newSessionId <= 0) {
             setHeadroom(1f)
             return
         }
@@ -86,17 +92,13 @@ internal class EqualizerController(
         }
         val shouldAnimate = animate && !replacingSession
         if (!current.enabled) {
-            if (!settings.enabled) {
-                detach()
-                setHeadroom(1f)
-                return
-            }
             if (!shouldAnimate) {
                 // Cold start/session replacement: configure the final attenuation
                 // and curve before enabling the native effect, with no full-gain ramp.
                 setHeadroom(EqualizerMath.headroomMultiplier(target.map { it / 100f }))
                 target.forEachIndexed { index, level -> current.setLevel(index, level.toShort()) }
                 current.enabled = true
+                isEqualizing = target.any { it != 0 }
                 return
             }
             // Enable a flat curve, then move towards the requested sound. Never
@@ -105,7 +107,14 @@ internal class EqualizerController(
             current.enabled = true
         }
         val start = frequencies.indices.map { current.getLevel(it).toInt() }
+        if (start == target) {
+            val gain = EqualizerMath.headroomMultiplier(target.map { it / 100f })
+            if (gain != headroom) setHeadroom(gain)
+            isEqualizing = target.any { it != 0 }
+            return
+        }
         val steps = if (shouldAnimate) TRANSITION_STEPS else 1
+        var appliedLevels = start
         repeat(steps) { step ->
             val fraction = (step + 1f) / steps
             val levels = start.indices.map { (start[it] + (target[it] - start[it]) * fraction).roundToInt() }
@@ -114,15 +123,16 @@ internal class EqualizerController(
             // Gain follows the current curve rather than dropping abruptly to
             // the destination headroom or passing through silence.
             if (gain < headroom) setHeadroom(gain)
-            levels.forEachIndexed { index, level -> current.setLevel(index, level.toShort()) }
+            levels.forEachIndexed { index, level ->
+                if (appliedLevels[index] != level) current.setLevel(index, level.toShort())
+            }
+            appliedLevels = levels
             if (gain != headroom) setHeadroom(gain)
             if (shouldAnimate) delay(TRANSITION_DURATION_MS / steps)
         }
-        if (!settings.enabled) {
-            // Let the flat curve settle while audio continues at normal volume.
-            if (shouldAnimate) delay(FLAT_SETTLE_MS)
-            detach()
-        }
+        // Keep the native engine/latency/volume owner stable for this audio session.
+        // Flat is the user-visible off state; release only on session change/close/error.
+        isEqualizing = target.any { it != 0 }
     }
 
     private suspend fun setHeadroom(value: Float) = withContext(volumeDispatcher) {
@@ -136,6 +146,7 @@ internal class EqualizerController(
         val old = effect
         effect = null
         isAttached = false
+        isEqualizing = false
         if (old != null) {
             runCatching { old.enabled = false }.onFailure(onFailure)
             runCatching { old.release() }.onFailure(onFailure)
@@ -145,7 +156,6 @@ internal class EqualizerController(
     private companion object {
         const val TRANSITION_STEPS = 12
         const val TRANSITION_DURATION_MS = 120L
-        const val FLAT_SETTLE_MS = 20L
     }
 }
 

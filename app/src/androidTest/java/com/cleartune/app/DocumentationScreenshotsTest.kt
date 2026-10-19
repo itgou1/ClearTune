@@ -58,7 +58,7 @@ class DocumentationScreenshotsTest {
             """{"id":"s$i","title":"${titles[i % 6]} · ${i / 6 + 1}","artist":"示例音乐人","album":"${titles[i % 6]}","albumId":"a${i % 6}","coverArt":"${600 + i % 6}","duration":210,"suffix":"flac","genre":"${if (i >= 17) "Rock" else "Pop"}","playCount":${24 - i}}"""
         }
         val covers = (0 until 6).map(::cover)
-        val response = """{"subsonic-response":{"status":"ok","version":"1.16.1","type":"test","albumList2":{"album":[$albums]},"artists":{"index":[]},"playlists":{"playlist":[{"id":"p1","name":"清晨慢慢听","songCount":8,"duration":1680,"coverArt":"601"},{"id":"p2","name":"通勤路上","songCount":12,"duration":2520,"coverArt":"602"}]},"searchResult3":{"song":[${songs.joinToString(",")}]},"starred2":{"song":[${songs.take(8).joinToString(",")}]},"genres":{"genre":[]},"musicFolders":{"musicFolder":[]},"playQueue":{"entry":[]}}}""".toByteArray()
+        val response = """{"subsonic-response":{"status":"ok","version":"1.16.1","type":"test","albumList2":{"album":[$albums]},"artists":{"index":[]},"playlists":{"playlist":[{"id":"p1","name":"AI音乐","owner":"demo","songCount":36,"duration":9937,"coverArt":"601"},{"id":"p2","name":"AI音乐","owner":"示例用户","public":true,"songCount":36,"duration":9937,"coverArt":"601"},{"id":"p3","name":"偶尔听听","owner":"demo","songCount":188,"duration":45840,"coverArt":"602"}]},"searchResult3":{"song":[${songs.joinToString(",")}]},"starred2":{"song":[${songs.take(8).joinToString(",")}]},"genres":{"genre":[]},"musicFolders":{"musicFolder":[]},"playQueue":{"entry":[]}}}""".toByteArray()
         val responder = thread(isDaemon = true) {
             while (!server.isClosed) {
                 val client = runCatching { server.accept() }.getOrNull() ?: break
@@ -128,6 +128,12 @@ class DocumentationScreenshotsTest {
                 val bitmap = ui.onRoot().captureToImage().asAndroidBitmap()
                 File(folder, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 bitmap.recycle()
+            }
+            if (InstrumentationRegistry.getArguments().getString("myPageScreenshot") == "true") {
+                ui.onNodeWithText("我的").performClick()
+                ui.onNodeWithContentDescription("共享歌单，来自 示例用户").assertExists()
+                capture("ui-my-shared-badge.png")
+                return
             }
             capture("ui-home-v1.3.3.png")
             ui.onNodeWithText("发现音乐").performClick()

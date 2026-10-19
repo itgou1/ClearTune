@@ -12,6 +12,8 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlinx.coroutines.runBlocking
+import kotlin.math.PI
+import kotlin.math.sin
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -75,12 +77,14 @@ class AudioStartupPlayerTest {
             put("RIFF".toByteArray()); putInt(36 + frames * 2); put("WAVEfmt ".toByteArray())
             putInt(16); putShort(1); putShort(1); putInt(44100); putInt(88200)
             putShort(2); putShort(16); put("data".toByteArray()); putInt(frames * 2)
+            repeat(frames) { putShort((sin(2 * PI * 440 * it / 44100 + PI / 2) * 2000).toInt().toShort()) }
         }.array())
         lateinit var player: ExoPlayer
         lateinit var gate: AudioStartupGate
         lateinit var wrapper: AudioStartupPlayer
         main {
             player = ExoPlayer.Builder(context).build()
+            player.volume = 0f
             player.audioSessionId = context.getSystemService(AudioManager::class.java).generateAudioSessionId()
             gate = AudioStartupGate { player.playWhenReady = it }
             wrapper = AudioStartupPlayer(player, gate)
