@@ -39,8 +39,8 @@ class DownloadPipelineTest {
             assertEquals(1, f.repository.enqueue(listOf(f.song)).queuedCount)
             val done = f.awaitState("COMPLETED")
             assertTrue(seen.any { it.state == DownloadState.DOWNLOADING && it.bytesDownloaded > 0 })
-            val file = File(Uri.parse(done.localUri).path!!)
-            assertArrayEquals(f.server.audio, file.readBytes())
+            assertEquals("content", Uri.parse(done.localUri).scheme)
+            assertArrayEquals(f.server.audio, f.context.contentResolver.openInputStream(Uri.parse(done.localUri))!!.use { it.readBytes() })
             val artwork = ArtworkCache.localFile(f.context, f.session.accountKey, "test-cover")!!
             assertArrayEquals(f.server.cover, artwork.readBytes())
             assertTrue(ArtworkCache.clearTemporary(f.context))
@@ -153,12 +153,12 @@ class DownloadPipelineTest {
             f.repository.retry(active, f.song)
             val completed = f.awaitState("COMPLETED")
             assertNotEquals(paused.requestId, completed.requestId)
-            assertArrayEquals(f.server.audio, File(Uri.parse(completed.localUri).path!!).readBytes())
+            assertArrayEquals(f.server.audio, f.context.contentResolver.openInputStream(Uri.parse(completed.localUri))!!.use { it.readBytes() })
             assertTrue("Continue should request a byte range", f.server.requests.any { it > 0 })
             f.repository.delete(f.repository.downloads.first { it.any { d -> d.state == DownloadState.COMPLETED } }.single())
             assertNull(f.dao.forSong(f.song.id))
             assertEquals(0, f.dao.updateProgress(completed.requestId, "QUEUED", 0, null, null, null, 0))
-            assertFalse(File(Uri.parse(completed.localUri).path!!).exists())
+            assertFalse(DeviceDownloads(f.context).readable(completed.localUri))
         }
     }
 
@@ -234,6 +234,9 @@ class DownloadPipelineTest {
             store.clear()
             server.close()
             delay(500)
+            DeviceDownloads(context).list().filter { it.account == key && !it.legacy }.forEach {
+                DeviceDownloads(context).remove(it, true)
+            }
             database.close()
             context.deleteDatabase("cleartune_account_$key.db")
             File(context.filesDir, "accounts/$key").deleteRecursively()

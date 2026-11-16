@@ -110,8 +110,18 @@ class PlayerViewModel @Inject constructor(
                 .distinctUntilChanged()
                 .collectLatest { (songId, failed) ->
                     if (!failed) return@collectLatest
+                    val snapshot = state.value
+                    val local = snapshot.sourceUri?.takeIf { it.startsWith("content:") || it.startsWith("file:") }
+                    if (local != null && songId != null && !songId.startsWith("device:") && repository.rejectLocalSource(local)) {
+                        val urls = repository.urls(snapshot.queue)
+                        if (urls != null && state.value.currentSong?.id == songId && state.value.status == PlaybackStatus.ERROR) {
+                            _message.value = "本机文件无法播放，正在尝试缓存或服务器音频"
+                            connection.setQueue(snapshot.queue, snapshot.currentIndex, urls.streams, urls.artwork, snapshot.positionMs)
+                            return@collectLatest
+                        }
+                    }
                     _message.value = state.value.errorMessage ?: "播放失败，请稍后重试"
-                    if (songId != null && state.value.currentSong?.isRadio != true && repository.removeMissingFailedSong(songId)) {
+                    if (songId != null && !songId.startsWith("device:" ) && state.value.currentSong?.isRadio != true && repository.removeMissingFailedSong(songId)) {
                         _message.value = "歌曲已从服务器移除，曲库已更新"
                         connection.removeSong(songId)
                     }
@@ -184,7 +194,7 @@ class PlayerViewModel @Inject constructor(
                     submittedSongId = null
                     started = false
                 }
-                if (songId != null && status == PlaybackStatus.PLAYING && !started && state.value.currentSong?.isRadio != true) {
+                if (songId != null && !songId.startsWith("device:") && status == PlaybackStatus.PLAYING && !started && state.value.currentSong?.isRadio != true) {
                     started = true
                     viewModelScope.launch { repository.recordStarted(songId) }
                     viewModelScope.launch {
@@ -198,7 +208,7 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             state.collect { snapshot ->
                 val song = snapshot.currentSong ?: return@collect
-                if (song.isRadio) return@collect
+                if (song.isRadio || song.id.startsWith("device:")) return@collect
                 val threshold = minOf(240_000L, (snapshot.durationMs / 2).coerceAtLeast(30_000L))
                 if (snapshot.positionMs >= threshold && submittedSongId != song.id) {
                     submittedSongId = song.id

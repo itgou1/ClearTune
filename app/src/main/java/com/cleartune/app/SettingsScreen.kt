@@ -69,7 +69,6 @@ import com.cleartune.app.settings.SettingsViewModel
 import com.cleartune.app.settings.UpdateRelease
 import com.cleartune.core.datastore.EqualizerPreset
 import com.cleartune.core.datastore.MobileAudioQuality
-import com.cleartune.core.datastore.PLAYBACK_CACHE_SIZE_OPTIONS_MB
 import com.cleartune.core.datastore.ThemeMode
 import com.cleartune.core.model.ServerProfile
 
@@ -82,6 +81,8 @@ internal fun FullSettingsScreen(
     onEqualizer: () -> Unit,
     onLogout: () -> Unit,
 ) {
+    var cachePage by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    if (cachePage) { CacheManagementScreen { cachePage = false }; return }
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     val update by viewModel.updateState.collectAsStateWithLifecycle()
@@ -89,7 +90,6 @@ internal fun FullSettingsScreen(
     val context = LocalContext.current
     var showThemePicker by remember { mutableStateOf(false) }
     var showQualityPicker by remember { mutableStateOf(false) }
-    var showPlaybackCachePicker by remember { mutableStateOf(false) }
     var showUpdateDetails by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
     var showLicenses by remember { mutableStateOf(false) }
@@ -170,6 +170,19 @@ internal fun FullSettingsScreen(
 
             SettingsGroup(stringResource(R.string.settings_play_quality)) {
                 SettingsRow(
+                    icon = Icons.Rounded.Tune,
+                    title = stringResource(R.string.keep_screen_on_for_lyrics),
+                    subtitle = stringResource(R.string.keep_screen_on_for_lyrics_description),
+                    trailing = {
+                        ClearTuneAccessibleSwitch(
+                            label = stringResource(R.string.keep_screen_on_for_lyrics),
+                            checked = settings.keepScreenOnForLyrics,
+                            onCheckedChange = viewModel::setKeepScreenOnForLyrics,
+                        )
+                    },
+                )
+                SettingsDivider()
+                SettingsRow(
                     icon = Icons.AutoMirrored.Rounded.VolumeUp,
                     title = stringResource(R.string.volume_normalization),
                     subtitle = stringResource(R.string.volume_normalization_auto_mode),
@@ -214,21 +227,9 @@ internal fun FullSettingsScreen(
                 SettingsDivider()
                 SettingsRow(
                     icon = Icons.Rounded.Storage,
-                    title = stringResource(R.string.playback_cache),
-                    subtitle = stringResource(
-                        R.string.playback_cache_description,
-                        formatBytes(cache.playbackSizeBytes),
-                    ),
-                    value = formatPlaybackCacheSize(settings.playbackCacheSizeMb),
-                    onClick = { showPlaybackCachePicker = true },
-                )
-                SettingsDivider()
-                SettingsRow(
-                    icon = Icons.Rounded.DeleteSweep,
-                    title = stringResource(R.string.clear_cache),
-                    subtitle = cache.message,
-                    value = if (cache.clearing) stringResource(R.string.clearing_cache) else formatBytes(cache.sizeBytes),
-                    onClick = if (cache.clearing) null else viewModel::clearCache,
+                    title = stringResource(R.string.cache_management),
+                    value = storageBytes(cache.playbackSizeBytes + cache.sizeBytes),
+                    onClick = { cachePage = true },
                 )
             }
 
@@ -317,18 +318,6 @@ internal fun FullSettingsScreen(
                 showQualityPicker = false
             },
             onClose = { showQualityPicker = false },
-        )
-    }
-    if (showPlaybackCachePicker) {
-        ChoiceDialog(
-            title = stringResource(R.string.playback_cache),
-            options = PLAYBACK_CACHE_SIZE_OPTIONS_MB.map(::formatPlaybackCacheSize),
-            selectedIndex = PLAYBACK_CACHE_SIZE_OPTIONS_MB.indexOf(settings.playbackCacheSizeMb),
-            onSelected = { index ->
-                viewModel.setPlaybackCacheSizeMb(PLAYBACK_CACHE_SIZE_OPTIONS_MB[index])
-                showPlaybackCachePicker = false
-            },
-            onClose = { showPlaybackCachePicker = false },
         )
     }
     if (showPrivacy) InfoDialog(
@@ -552,9 +541,6 @@ private fun formatBytes(bytes: Long): String = when {
     bytes >= 1024 -> "%.1f KB".format(bytes / 1024.0)
     else -> "$bytes B"
 }
-
-private fun formatPlaybackCacheSize(sizeMb: Int): String =
-    if (sizeMb >= 1_024) "${sizeMb / 1_024} GB" else "$sizeMb MB"
 
 @Composable
 private fun ThemeMode.label(): String = stringResource(when (this) {

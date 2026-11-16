@@ -41,7 +41,6 @@ class PlaybackService : MediaLibraryService() {
     private val playbackScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val cacheScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var playbackCache: SimpleCache? = null
-    private var cacheEvictor: ResizableLeastRecentlyUsedCacheEvictor? = null
     private var volumeNormalizationEnabled = true
     private var equalizerSettings = EqualizerSettings()
     private var equalizerTransitionJob: Job? = null
@@ -102,6 +101,9 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            PlaybackCacheStore.currentMediaKey = mediaItem?.localConfiguration?.customCacheKey?.let { AudioFileRevision.cacheKey(this@PlaybackService, it) }
+            PlaybackCacheStore.currentLocalUri = mediaItem?.localConfiguration?.uri?.takeIf { it.scheme in setOf("file", "content") }?.toString()
+            cacheScope.launch { PlaybackCacheStore.trim() }
             forcedNext?.let { pending ->
                 if (mediaItem?.mediaId == pending.targetMediaId || mediaItem?.mediaId != pending.sourceMediaId) {
                     restorePlaybackModeAfterForcedNext()
@@ -131,15 +133,7 @@ class PlaybackService : MediaLibraryService() {
         activeService = this
         val directDataSourceFactory = DefaultDataSource.Factory(this)
         val playbackDataSourceFactory = runCatching<androidx.media3.datasource.DataSource.Factory> {
-            val evictor = ResizableLeastRecentlyUsedCacheEvictor(
-                DEFAULT_PLAYBACK_CACHE_SIZE_MB.toBytes(),
-            )
-            val cache = SimpleCache(
-                File(filesDir, PLAYBACK_CACHE_DIRECTORY_NAME),
-                evictor,
-                StandaloneDatabaseProvider(this),
-            )
-            cacheEvictor = evictor
+            val cache = PlaybackCacheStore.get(this)
             playbackCache = cache
             val connectivity = getSystemService(ConnectivityManager::class.java)
             PlaybackDataSourceFactory(
@@ -150,6 +144,7 @@ class PlaybackService : MediaLibraryService() {
                     connectivity.activeNetwork == null
                 },
                 reviseKey = { AudioFileRevision.cacheKey(this, it) },
+                canWrite = { PlaybackCacheStore.canWrite(this) },
             )
         }.onFailure {
             Log.w(TAG, "Playback cache is unavailable; continuing without disk cache", it)
@@ -225,8 +220,8 @@ class PlaybackService : MediaLibraryService() {
                 .map { it.playbackCacheSizeMb }
                 .distinctUntilChanged()
                 .collect { sizeMb ->
-                    val cache = playbackCache ?: return@collect
-                    cacheEvictor?.resize(cache, sizeMb.toBytes())
+                    if (playbackCache == null) return@collect
+                    PlaybackCacheStore.resize(this@PlaybackService, sizeMb)
                 }
         }
     }
@@ -237,6 +232,8 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         if (activeService === this) activeService = null
+        PlaybackCacheStore.currentMediaKey = null
+        PlaybackCacheStore.currentLocalUri = null
         audioStartupGate.close()
         playbackScope.cancel()
         cacheScope.cancel()
@@ -245,8 +242,7 @@ class PlaybackService : MediaLibraryService() {
         player.removeAnalyticsListener(audioStartupListener)
         session.release()
         player.release()
-        runCatching { playbackCache?.release() }
-            .onFailure { Log.w(TAG, "Could not close playback cache cleanly", it) }
+        playbackCache = null // The process-owned cache remains available to settings.
         super.onDestroy()
     }
 

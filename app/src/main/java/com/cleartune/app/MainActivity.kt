@@ -167,6 +167,8 @@ private fun LoginScreen(
     state: AuthUiState.Login,
     onConnect: (String, String, String, Boolean) -> Unit,
 ) {
+    var devicePage by rememberSaveable { mutableStateOf(false) }
+    if (devicePage) { DeviceDownloadsScreen { devicePage = false }; return }
     var address by rememberSaveable(state.address) { mutableStateOf(state.address) }
     var username by rememberSaveable(state.username) { mutableStateOf(state.username) }
     var password by rememberSaveable { mutableStateOf("") }
@@ -183,6 +185,8 @@ private fun LoginScreen(
             .padding(horizontal = 24.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.Center,
     ) {
+        TextButton(onClick = { devicePage = true }) { Text(stringResource(R.string.device_downloads)) }
+
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Surface(
                 shape = MaterialTheme.shapes.large,

@@ -12,5 +12,6 @@ internal fun playbackErrorMessage(code: Int): String = when (code) {
     PlaybackException.ERROR_CODE_DECODING_FAILED,
     PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
     PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> "音频格式不支持或文件损坏"
+    PlaybackException.ERROR_CODE_IO_UNSPECIFIED -> "本地内容可能不完整，请联网或下载完整歌曲"
     else -> "播放失败，请检查网络或音频格式"
 }

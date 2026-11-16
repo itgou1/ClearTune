@@ -37,6 +37,7 @@ data class PlayerUiState(
     val bufferedPositionMs: Long = 0,
     val mode: PlaybackMode = PlaybackMode.SEQUENTIAL,
     val errorMessage: String? = null,
+    val sourceUri: String? = null,
 )
 
 @OptIn(markerClass = [UnstableApi::class])
@@ -47,6 +48,7 @@ class PlayerConnection(context: Context) {
     private val controllerFuture: ListenableFuture<MediaController>
     private var controller: MediaController? = null
     private var songMap: Map<String, Song> = emptyMap()
+    private var sourceUris: Map<String, String> = emptyMap()
     private var mode: PlaybackMode = PlaybackMode.SEQUENTIAL
     private var pendingQueue: PendingQueue? = null
     private val queueUndoSnapshots = LinkedHashMap<Long, QueueUndoSnapshot>()
@@ -131,6 +133,7 @@ class PlayerConnection(context: Context) {
             )
             return
         }
+        sourceUris = streamUrls.toMap()
         songMap = songs.associateBy(Song::id)
         val replayGainQueue = ReplayGainMetadata.queueValues(songs)
         val items = songs.mapNotNull { song ->
@@ -263,6 +266,7 @@ class PlayerConnection(context: Context) {
     fun hasActiveQueue(): Boolean = (controller?.mediaItemCount ?: 0) > 0
 
     fun playNext(song: Song, streamUrl: String? = null, artworkUrl: String? = null) {
+        if (streamUrl != null) sourceUris = sourceUris + (song.id to streamUrl)
         val mediaController = controller ?: return
         songMap = songMap + (song.id to song)
         val item = streamUrl?.let { stream ->
@@ -396,6 +400,7 @@ class PlayerConnection(context: Context) {
             bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0),
             mode = mode,
             errorMessage = currentError?.let { playbackErrorMessage(it.errorCode) },
+            sourceUri = player.currentMediaItem?.localConfiguration?.uri?.toString() ?: queue.getOrNull(index)?.id?.let(sourceUris::get),
         )
     }
 

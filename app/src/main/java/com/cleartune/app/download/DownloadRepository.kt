@@ -71,10 +71,21 @@ class DownloadRepository @Inject constructor(
         var queued = 0
         var already = 0
         var failed = 0
-        for (song in songs) {
+        for (song in songs.distinctBy { it.id }) {
             if (!session.active) break
+            val device = DeviceDownloads(context)
             val existing = dao.forSong(song.id)
-            if (existing?.state == "COMPLETED" && valid(existing.localUri)) { already++; continue }
+            val published = device.find(session.accountKey, song.id)
+            if (published != null) {
+                if (existing != null && existing.requestId != published.id) {
+                    pauseRecord(existing, "使用已完成的本机下载")
+                    existing.requestId.toUuid()?.let { scheduler.cancel(it) }
+                }
+                dao.upsert(DownloadEntity(published.id, song.id, "COMPLETED", published.bytes,
+                    published.bytes, published.uri, null, System.currentTimeMillis()))
+                already++; continue
+            }
+            if (existing?.state == "COMPLETED" && existing.localUri?.startsWith("file:") == true && valid(existing.localUri)) { already++; continue }
             try {
                 if (existing != null) {
                     pauseRecord(existing, "正在重新安排下载")
@@ -112,15 +123,25 @@ class DownloadRepository @Inject constructor(
 
     suspend fun delete(item: DownloadItem) = operations.withLock {
         val row = dao.forRequest(item.requestId) ?: return@withLock
+        check(row.localUri == null || com.cleartune.core.player.PlaybackCacheStore.currentLocalUri != row.localUri) { "文件正在播放，请切换歌曲后再删除" }
+        val indexed = DeviceDownloads(context).indexed(row.requestId)
+        if (indexed != null) {
+            DeviceDownloads(context).remove(indexed, true)
+            return@withLock
+        }
         pauseRecord(row, "正在取消下载")
         row.requestId.toUuid()?.let { scheduler.cancel(it) }
-        dao.delete(row.requestId)
         withContext(Dispatchers.IO) {
-            row.localUri?.let(Uri::parse)?.path?.let(::File)?.delete()
+            row.localUri?.let { value ->
+                val uri = Uri.parse(value)
+                if (uri.scheme == "content") context.contentResolver.delete(uri, null, null)
+                else uri.path?.let(::File)?.let { check(!it.exists() || it.delete()) { "无法删除文件" } }
+            }
             row.requestId.toUuid()?.let {
                 File(context.filesDir, "accounts/${session.accountKey}/offline_music/$it.part").delete()
             }
         }
+        dao.delete(row.requestId)
         ArtworkCache.pruneOffline(context, session.accountKey) {
             dao.all().mapNotNull { session.database.mediaDao().song(it.songId)?.coverArtId.displayableArtworkId() }.toSet()
         }
@@ -181,8 +202,7 @@ class DownloadRepository @Inject constructor(
         return DownloadNetwork(capabilities != null,
             capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true)
     }
-    private fun valid(uri: String?): Boolean = uri?.let(Uri::parse)?.path?.let(::File)
-        ?.let { it.isFile && it.length() > 0 } == true
+    private fun valid(uri: String?): Boolean = DeviceDownloads(context).readable(uri)
     private fun String.toUuid(): UUID? = runCatching { UUID.fromString(this) }.getOrNull()
     private data class DownloadNetwork(val connected: Boolean, val unmetered: Boolean)
     private data class MonitorSnapshot(val rows: List<DownloadEntity>, val work: List<WorkInfo>,

@@ -639,19 +639,7 @@ fun ClearTuneApp(
                 )
             }
             committedBackComposable(navController, "offline") {
-                OfflineMusicScreen(
-                    downloads = downloads,
-                    songs = libraryState.songs,
-                    onBack = navController::popBackStack,
-                    onPlay = playerViewModel::play,
-                    onBrowseLibrary = {
-                        navController.navigate("library") {
-                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    },
-                )
+                DeviceDownloadsScreen(onBack = { navController.popBackStack() })
             }
             committedBackComposable(
                 navController = navController,
@@ -778,6 +766,7 @@ fun ClearTuneApp(
                         onBack = { navController.popBackStack() },
                     )
                 } else NowPlayingScreen(
+                    keepScreenOnForLyrics = settings.keepScreenOnForLyrics,
                     state = playerState,
                     playerViewModel = playerViewModel,
                     musicViewModel = viewModel,
@@ -839,6 +828,7 @@ fun ClearTuneApp(
             }
             committedBackComposable(navController, "lyrics") {
                 LyricsScreen(
+                    keepScreenOnForLyrics = settings.keepScreenOnForLyrics,
                     state = lyricsState,
                     playerState = playerState,
                     onSeek = playerViewModel::seekTo,
@@ -1900,13 +1890,13 @@ internal fun LibraryScreen(
     onGenre: (String) -> Unit,
 ) {
     val labels = listOf(
-        stringResource(R.string.songs),
         stringResource(R.string.albums),
+        stringResource(R.string.songs),
         stringResource(R.string.artists),
         stringResource(R.string.genres),
         stringResource(R.string.folders),
     )
-    var savedSelectedTab by rememberSaveable { mutableIntStateOf(1) }
+    var savedSelectedTab by rememberSaveable { mutableIntStateOf(0) }
     val selectedTab = savedSelectedTab.coerceIn(labels.indices)
     var savedSongSort by rememberSaveable { mutableIntStateOf(LibrarySongSort.TITLE.ordinal) }
     val songSort = LibrarySongSort.entries.getOrElse(savedSongSort) { LibrarySongSort.TITLE }
@@ -1919,11 +1909,11 @@ internal fun LibraryScreen(
     }
     val selectableIds = remember(indexedSongs.songs) { indexedSongs.songs.map(Song::id).toSet() }
     LaunchedEffect(selectedTab, selectableIds) {
-        if (selectedTab != 0) selection.clear() else selection.retain(selectableIds)
+        if (selectedTab != 1) selection.clear() else selection.retain(selectableIds)
     }
     val batchHint = stringResource(R.string.batch_long_press)
     LaunchedEffect(selectedTab, selectableIds.isNotEmpty()) {
-        if (selectedTab == 0 && selectableIds.isNotEmpty()) viewModel.showSongBatchHint(batchHint)
+        if (selectedTab == 1 && selectableIds.isNotEmpty()) viewModel.showSongBatchHint(batchHint)
     }
     val songListState = rememberLazyListState()
     val songListScope = rememberCoroutineScope()
@@ -2025,7 +2015,7 @@ internal fun LibraryScreen(
                     action = stringResource(R.string.refresh),
                     onAction = onRefresh,
                 )
-                0 -> Box(Modifier.fillMaxSize()) {
+                1 -> Box(Modifier.fillMaxSize()) {
                     LazyColumn(
                         state = songListState,
                         modifier = Modifier.fillMaxSize(),
@@ -2309,7 +2299,7 @@ internal fun LibraryScreen(
                         }
                     }
                 }
-                1 -> LazyVerticalGrid(
+                0 -> LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),

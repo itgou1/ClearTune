@@ -30,18 +30,11 @@ class DownloadViewModel @Inject constructor(
 
     fun download(songs: List<Song>) = action {
         val result = repository.enqueue(songs)
-        val message = when {
-            result.failedCount > 0 -> "${result.failedCount} 个下载任务提交失败，请在下载列表重试"
-            result.waitingForWifi -> "已加入队列，等待非计费 Wi-Fi 网络"
-            result.queuedCount > 0 -> "已加入下载队列"
-            result.alreadyDownloadedCount > 0 -> "歌曲已下载"
-            else -> null
-        }
-        message?.let { _messages.emit(it) }
+        downloadEnqueueMessage(result)?.let { _messages.emit(it) }
     }
     fun pause(item: DownloadItem) = action { repository.pause(item) }
     fun retry(item: DownloadItem, song: Song) = action {
-        if (repository.retry(item, song).failedCount > 0) _messages.emit("下载任务提交失败，请重试")
+        downloadEnqueueMessage(repository.retry(item, song))?.let { _messages.emit(it) }
     }
     fun delete(item: DownloadItem) = action { repository.delete(item) }
 
@@ -50,3 +43,10 @@ class DownloadViewModel @Inject constructor(
         } catch (_: Exception) { _messages.emit("后台任务操作失败，请稍后重试") }
     }
 }
+
+internal fun downloadEnqueueMessage(result: DownloadEnqueueResult): String? = buildList {
+    if (result.queuedCount > 0) add("已加入 ${result.queuedCount} 首歌曲到下载队列" +
+        if (result.waitingForWifi) "，等待非计费 Wi-Fi 网络" else "")
+    if (result.alreadyDownloadedCount > 0) add("已跳过 ${result.alreadyDownloadedCount} 首已下载歌曲")
+    if (result.failedCount > 0) add("${result.failedCount} 个任务提交失败，请在下载列表重试")
+}.takeIf { it.isNotEmpty() }?.joinToString("；")

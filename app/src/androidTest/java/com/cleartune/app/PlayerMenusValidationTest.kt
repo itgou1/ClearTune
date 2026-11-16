@@ -29,6 +29,31 @@ class PlayerMenusValidationTest {
     private val second = first.copy(id = "second", title = "菜单验证乙", starredAt = 1L)
     private val state = PlayerUiState(currentSong = first, currentIndex = 0, queue = listOf(first, second))
 
+    @Test fun mainPlayerKeepsScreenOnOnlyWhileViewingPlayingLyrics() = models { music, player ->
+        var current by mutableStateOf(state.copy(status = com.cleartune.core.player.PlaybackStatus.PLAYING))
+        lateinit var root: android.view.View
+        ui.setContent {
+            root = androidx.compose.ui.platform.LocalView.current.rootView
+            ClearTuneTheme { NowPlayingScreen(current, player, music, LyricsUiState(), false,
+                {}, {}, {}, { _, _ -> }, {}) }
+        }
+        fun hasScreenOn(view: android.view.View): Boolean = view.keepScreenOn ||
+            (view is android.view.ViewGroup && (0 until view.childCount).any { hasScreenOn(view.getChildAt(it)) })
+        fun check(expected: Boolean) {
+            ui.waitForIdle()
+            ui.runOnIdle { assertEquals(expected, hasScreenOn(root)) }
+        }
+        check(false)
+        ui.onNodeWithContentDescription(context.getString(R.string.lyrics)).performClick()
+        check(true)
+        ui.runOnIdle { current = current.copy(status = com.cleartune.core.player.PlaybackStatus.PAUSED) }
+        check(false)
+        ui.runOnIdle { current = current.copy(status = com.cleartune.core.player.PlaybackStatus.PLAYING) }
+        check(true)
+        ui.onNodeWithContentDescription(context.getString(R.string.lyrics)).performClick()
+        check(false)
+    }
+
     @Test fun mainMenuHasCorrectOrderAndAlbumNavigation() = models { music, player ->
         var album: String? = null
         ui.setContent { ClearTuneTheme { NowPlayingScreen(state, player, music, LyricsUiState(), false,

@@ -52,11 +52,16 @@ internal fun DownloadsScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onBrowseLibrary: () -> Unit,
 ) {
+    var devicePage by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    if (devicePage) { DeviceDownloadsScreen { devicePage = false }; return }
     val songsById = songs.associateBy(Song::id)
     var pendingDelete by remember { mutableStateOf<DownloadItem?>(null) }
     Scaffold(
         topBar = {
-            ClearTuneTopAppBar(title = stringResource(R.string.downloads), onBack = onBack)
+            Column {
+                ClearTuneTopAppBar(title = stringResource(R.string.downloads), onBack = onBack)
+                TextButton(onClick = { devicePage = true }) { Text(stringResource(R.string.device_downloads)) }
+            }
         },
     ) { padding ->
         if (downloads.isEmpty()) {

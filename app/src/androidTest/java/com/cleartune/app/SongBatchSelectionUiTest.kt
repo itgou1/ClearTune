@@ -54,7 +54,14 @@ class SongBatchSelectionUiTest {
                     }
                 }
             }
-            if (screen == "library") ui.onNodeWithText(context.getString(R.string.songs)).performClick()
+            if (screen == "library") {
+                ui.onNodeWithText(context.getString(R.string.albums)).assertIsSelected()
+                val tabs = listOf(R.string.albums, R.string.songs, R.string.artists, R.string.genres, R.string.folders)
+                val positions = tabs.map { ui.onNodeWithText(context.getString(it)).fetchSemanticsNode().boundsInRoot.left }
+                assertEquals(positions.sorted(), positions)
+                ui.onNodeWithText(context.getString(R.string.songs)).performClick()
+                ui.onNodeWithText(context.getString(R.string.songs)).assertIsSelected()
+            }
             ui.onNode(hasText("Batch Alpha") and hasClickAction()).performClick()
             ui.runOnIdle { assertEquals(1, plays) }
             ui.onNode(hasText("Batch Alpha") and hasClickAction()).performTouchInput { longClick() }

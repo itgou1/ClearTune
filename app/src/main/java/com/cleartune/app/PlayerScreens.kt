@@ -275,11 +275,13 @@ internal fun NowPlayingScreen(
     onAlbum: (String) -> Unit = {},
     onArtist: (String) -> Unit = {},
     downloadState: DownloadState? = null,
+    keepScreenOnForLyrics: Boolean = true,
 ) {
     val musicTagActions = com.cleartune.app.metadata.LocalMusicTagActions.current
     val song = state.currentSong
     val displayCoverArtId = song?.displayCoverArtId()
     var showLyrics by remember { mutableStateOf(false) }
+    LyricsKeepScreenOn(keepScreenOnForLyrics && showLyrics && song != null && state.status == PlaybackStatus.PLAYING)
     LaunchedEffect(showLyrics, song?.id) {
         if (showLyrics) song?.let(musicViewModel::loadLyrics)
     }
@@ -1022,7 +1024,9 @@ internal fun LyricsScreen(
     onSeek: (Long) -> Unit,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
+    keepScreenOnForLyrics: Boolean = true,
 ) {
+    LyricsKeepScreenOn(keepScreenOnForLyrics && playerState.currentSong != null && playerState.status == PlaybackStatus.PLAYING)
     Scaffold(
         topBar = {
             TopAppBar(

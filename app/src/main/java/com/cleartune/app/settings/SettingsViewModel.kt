@@ -66,6 +66,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setTheme(value: ThemeMode) = viewModelScope.launch { preferences.setThemeMode(value) }
+    fun setKeepScreenOnForLyrics(value: Boolean) = viewModelScope.launch {
+        preferences.setKeepScreenOnForLyrics(value)
+    }
     fun setVolumeNormalization(value: Boolean) = viewModelScope.launch {
         preferences.setVolumeNormalizationEnabled(value)
     }
@@ -163,9 +166,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun cacheSize(): Long = context.cacheDir.walkTopDown()
-        .filter { it.isFile }
-        .sumOf { it.length() }
+    private fun cacheSize(): Long = com.cleartune.app.artwork.ArtworkCache.temporarySize(context)
 
     private fun directorySize(directory: File): Long = directory
         .takeIf(File::exists)

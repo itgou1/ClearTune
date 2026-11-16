@@ -15,11 +15,24 @@ internal class PlaybackDataSourceFactory(
     private val cache: Cache,
     private val directFactory: DataSource.Factory,
     private val reviseKey: (String) -> String = { it },
+    private val canWrite: () -> Boolean = { true },
     private val isOffline: () -> Boolean,
 ) : DataSource.Factory {
     private val cachedFactory = CacheDataSource.Factory().setCache(cache)
         .setUpstreamDataSourceFactory(directFactory)
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        .setCacheWriteDataSinkFactory {
+            val sink = androidx.media3.datasource.cache.CacheDataSink(cache, 2 * 1024 * 1024L)
+            object : androidx.media3.datasource.DataSink {
+                var writing = false
+                override fun open(spec: DataSpec) { if (canWrite()) { sink.open(spec); writing = true } }
+                override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                    if (writing && !canWrite()) { writing = false; sink.close() }
+                    if (writing) sink.write(buffer, offset, length)
+                }
+                override fun close() { if (writing) { writing = false; sink.close() } }
+            }
+        }
     private val offlineFactory = CacheDataSource.Factory().setCache(cache)
         .setCacheWriteDataSinkFactory(null)
 
@@ -47,6 +60,7 @@ private class RoutingDataSource(
     private var requestedKey: String? = null
     private var resolvedKey: String? = null
     private var alternativeQuality = false
+    private var registeredRead = false
 
     override fun addTransferListener(transferListener: TransferListener) {
         cached.addTransferListener(transferListener)
@@ -76,7 +90,9 @@ private class RoutingDataSource(
         // cache holes from that URL, even if connectivity returns during playback.
         active = if (disconnected || alternativeQuality) offline else cached
         if (!alternativeQuality && resolvedKey != currentKey) throw java.io.IOException("Audio file changed; reopen playback")
-        return active!!.open(dataSpec.buildUpon().setKey(resolvedKey).build())
+        resolvedKey?.let { PlaybackCacheStore.beginRead(it); registeredRead = true }
+        try { return active!!.open(dataSpec.buildUpon().setKey(resolvedKey).build()) }
+        catch (error: Exception) { close(); throw error }
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
@@ -90,7 +106,9 @@ private class RoutingDataSource(
     override fun close() {
         val source = active
         active = null
-        source?.close()
+        try { source?.close() } finally {
+            if (registeredRead) { registeredRead = false; resolvedKey?.let(PlaybackCacheStore::endRead) }
+        }
     }
 }
 

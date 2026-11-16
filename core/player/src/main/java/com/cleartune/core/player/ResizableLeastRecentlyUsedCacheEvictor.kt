@@ -58,7 +58,7 @@ internal class ResizableLeastRecentlyUsedCacheEvictor(initialMaxBytes: Long) : C
     private fun evictCache(cache: Cache, requiredSpace: Long) {
         while (true) {
             val oldest = synchronized(stateLock) {
-                leastRecentlyUsed.firstOrNull()
+                leastRecentlyUsed.firstOrNull { !PlaybackCacheStore.isReading(it.key) }
                     ?.takeIf { currentSize + requiredSpace > maxBytes }
             } ?: return
             cache.removeSpan(oldest)

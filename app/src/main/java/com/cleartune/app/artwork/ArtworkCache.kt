@@ -110,6 +110,16 @@ object ArtworkCache {
             }
         }
 
+    private fun temporaryDirectories(context: Context): List<File> =
+        listOf("image_cache", "coil_image_cache").map { File(context.cacheDir, it).canonicalFile }.filter { it.isDirectory }
+
+    fun temporarySize(context: Context): Long {
+        val managed = context.imageLoader.diskCache?.directory?.toFile()?.canonicalFile
+        val directories = (temporaryDirectories(context) + listOfNotNull(managed)).distinct()
+        return directories.filter { child -> directories.none { it != child && child.toPath().startsWith(it.toPath()) } }
+            .sumOf { dir -> dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+    }
+
     suspend fun clearTemporary(context: Context): Boolean = withContext(Dispatchers.IO) {
         val loader = context.imageLoader
         var success = true
@@ -119,11 +129,11 @@ object ArtworkCache {
         clears.incrementAndGet()
         // Never delete an active image cache's directory/index behind the cache library.
         val managed = loader.diskCache?.directory?.toFile()?.canonicalFile
-        val root = context.cacheDir.canonicalFile
-        root.listFiles()?.forEach { child ->
-            val path = child.canonicalFile
+        // Only delete known disposable image directories. Share/export/active worker
+        // files must not be swept merely because they live under cacheDir.
+        temporaryDirectories(context).forEach { path ->
             val containsManaged = managed != null && managed.toPath().startsWith(path.toPath())
-            if (path.parentFile == root && !containsManaged && !child.deleteRecursively()) success = false
+            if (!containsManaged && !path.deleteRecursively()) success = false
         }
         changes.update { it + 1 }
         success

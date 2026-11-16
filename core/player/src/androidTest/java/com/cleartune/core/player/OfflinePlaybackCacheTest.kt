@@ -31,6 +31,18 @@ import org.junit.Test
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class OfflinePlaybackCacheTest {
+    @Test fun lowSpaceReadsNetworkWithoutWritingAndRecovers() = fixture { f ->
+        f.allowWrites = false
+        assertArrayEquals(f.audio, f.read(f.key()))
+        assertEquals(0L, f.cache.cacheSpace)
+        f.allowWrites = true
+        assertArrayEquals(f.audio, f.read(f.key()))
+        assertTrue(f.cache.cacheSpace > 0)
+        f.offline = true
+        assertArrayEquals(f.audio, f.read(f.key()))
+        assertEquals(2, f.upstreamOpens)
+    }
+
     @Test fun radioAlwaysReadsUpstreamAndNeverCachesLiveAudio() = fixture { f ->
         val key = "cleartune:radio:radio:station-1"
         assertArrayEquals(f.audio, f.read(key))
@@ -200,6 +212,7 @@ class OfflinePlaybackCacheTest {
             putInt(16); putShort(1); putShort(1); putInt(16_000); putInt(32_000)
             putShort(2); putShort(16); put("data".toByteArray()); putInt(32_000)
         }.array()
+        var allowWrites = true
         var offline = false
         var upstreamOpens = 0
         val url = "https://music.invalid/rest/stream.view?u=alice&id=song&t=fresh&s=new"
@@ -242,6 +255,7 @@ class OfflinePlaybackCacheTest {
                 cache = cache,
                 directFactory = upstream,
                 isOffline = { offline },
+                canWrite = { allowWrites },
             )
         }
 

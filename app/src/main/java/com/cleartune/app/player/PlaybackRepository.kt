@@ -57,6 +57,9 @@ class PlaybackRepository @Inject constructor(
     private val activityDao = database.activityDao()
     private val refreshingSongIds = ConcurrentHashMap.newKeySet<String>()
     private val scrobbleSyncMutex = Mutex()
+    private val rejectedLocalUris = ConcurrentHashMap.newKeySet<String>()
+    fun rejectLocalSource(uri: String): Boolean = rejectedLocalUris.add(uri)
+
 
     suspend fun radioStations() = remote()?.radioStations()
     fun isSessionActive() = session.active
@@ -86,21 +89,22 @@ class PlaybackRepository @Inject constructor(
         val serverProfile = session.profile
         val streams = mutableMapOf<String, String>()
         var usesStreaming = false
+        val device = com.cleartune.app.download.DeviceDownloads(context)
+        val publicFiles = device.playbackFiles(session.accountKey, songs.map { it.id }.toSet())
         songs.forEach { song ->
             val download = database.downloadDao().forSong(song.id)
-            val localFile = download?.localUri?.let(Uri::parse)?.path?.let(::File)
-            val localSize = localFile?.takeIf(File::isFile)?.length() ?: 0L
-            val expectedSize = download?.totalBytes?.takeIf { it > 0 }
-            if (download?.state == com.cleartune.core.model.DownloadState.COMPLETED.name &&
-                localSize > 0 && (expectedSize == null || localSize == expectedSize)
-            ) {
-                streams[song.id] = download.localUri.orEmpty()
+            val publicFile = publicFiles[song.id]?.takeIf { it.uri !in rejectedLocalUris }
+            val localUri = publicFile?.uri ?: download?.localUri?.takeIf {
+                it.startsWith("file:") && it !in rejectedLocalUris && download.state == com.cleartune.core.model.DownloadState.COMPLETED.name && device.readable(it, download.totalBytes)
+            }
+            if (localUri != null) {
+                streams[song.id] = localUri
             } else {
-                if (download?.state == com.cleartune.core.model.DownloadState.COMPLETED.name) {
+                if (download?.state == com.cleartune.core.model.DownloadState.COMPLETED.name && download.localUri !in rejectedLocalUris) {
                     database.downloadDao().upsert(
                         download.copy(
                             state = com.cleartune.core.model.DownloadState.FAILED.name,
-                            failureReason = "本地文件已丢失或损坏",
+                            failureReason = if (device.readable(download.localUri, download.totalBytes)) "服务器文件已更新，请更新下载" else "本地文件不存在或无法读取",
                             updatedAt = System.currentTimeMillis(),
                         ),
                     )
@@ -168,7 +172,7 @@ class PlaybackRepository @Inject constructor(
 
     suspend fun persistQueue(state: PlayerUiState) {
         // Radio is ephemeral; preserve the user's last music queue for the next launch.
-        if (state.queue.any(Song::isRadio)) return
+        if (state.queue.any { it.isRadio || it.id.startsWith("device:") }) return
         val now = System.currentTimeMillis()
         queueDao.replace(
             state.queue.mapIndexed { index, song ->
@@ -184,7 +188,7 @@ class PlaybackRepository @Inject constructor(
     }
 
     suspend fun saveServerQueue(state: PlayerUiState) {
-        if (state.queue.any(Song::isRadio)) return
+        if (state.queue.any { it.isRadio || it.id.startsWith("device:") }) return
         val remote = remote() ?: return queuePendingMutation(state)
         when (
             remote.saveQueue(

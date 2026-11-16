@@ -13,6 +13,7 @@ import com.cleartune.app.artwork.ArtworkCache
 import com.cleartune.core.database.ClearTuneDatabase
 import com.cleartune.core.database.DatabaseFactory
 import com.cleartune.core.database.DownloadDao
+import com.cleartune.core.database.toModel
 import com.cleartune.core.datastore.AppPreferences
 import com.cleartune.core.datastore.CredentialsStore
 import com.cleartune.core.network.OpenSubsonicApiFactory
@@ -36,6 +37,7 @@ class DownloadWorker(appContext: Context, params: WorkerParameters) : CoroutineW
         var connection: HttpURLConnection? = null
         var downloaded = 0L
         var total: Long? = null
+        var publicationCompleted = false
         suspend fun update(state: String, reason: String? = null, uri: String? = null): Boolean =
             dao?.updateProgress(requestId, state, downloaded, total, uri, reason,
                 System.currentTimeMillis()) == 1
@@ -156,10 +158,16 @@ class DownloadWorker(appContext: Context, params: WorkerParameters) : CoroutineW
             checkActive()
             if (!temporary.renameTo(target)) throw DownloadProblem("无法完成文件写入，请检查存储空间")
             total = downloaded
-            if (!update("COMPLETED", reason = artworkWarning, uri = Uri.fromFile(target).toString())) {
+            val device = DeviceDownloads(applicationContext)
+            val published = device.publish(requestId, account, song.toModel(), target)
+            if (!update("COMPLETED", reason = artworkWarning, uri = published.uri)) {
+                device.remove(published, deleteFile = true)
                 target.delete()
                 throw TaskObsolete()
             }
+            publicationCompleted = true
+            target.delete()
+            revisionFile.delete()
             source?.delete()
             if (artworkWarning != null) runCatching {
                 OfflineArtworkWorker.enqueue(applicationContext, account, token,
@@ -196,6 +204,8 @@ class DownloadWorker(appContext: Context, params: WorkerParameters) : CoroutineW
                     if (dao != null && dao.forRequest(requestId) == null) {
                         temporary?.delete()
                         target?.delete()
+                        val device = DeviceDownloads(applicationContext)
+                        if (!publicationCompleted) device.indexed(requestId)?.let { device.remove(it, true) }
                     }
                 }
             }

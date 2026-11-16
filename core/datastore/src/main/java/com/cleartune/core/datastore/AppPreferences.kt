@@ -59,10 +59,10 @@ data class EqualizerSettings(
 val EQUALIZER_FREQUENCIES_HZ = listOf(31, 62, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000)
 val DEFAULT_EQUALIZER_LEVELS_DB = listOf(2, 2, 1, 1, 0, 0, 1, 1, 2, 2)
 const val DEFAULT_PLAYBACK_CACHE_SIZE_MB = 512
-val PLAYBACK_CACHE_SIZE_OPTIONS_MB = listOf(512, 1_024, 2_048, 4_096)
+val PLAYBACK_CACHE_SIZE_OPTIONS_MB = listOf(512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768)
 
 fun normalizedPlaybackCacheSizeMb(value: Int?): Int =
-    value?.takeIf(PLAYBACK_CACHE_SIZE_OPTIONS_MB::contains) ?: DEFAULT_PLAYBACK_CACHE_SIZE_MB
+    value?.takeIf { it in 512..32_768 } ?: DEFAULT_PLAYBACK_CACHE_SIZE_MB
 
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -73,6 +73,7 @@ data class AppSettings(
     val mobileAudioQuality: MobileAudioQuality = MobileAudioQuality.RATE_192,
     val checkUpdates: Boolean = true,
     val favoriteSongSort: String = DEFAULT_FAVORITE_SONG_SORT,
+    val keepScreenOnForLyrics: Boolean = true,
 )
 
 const val DEFAULT_FAVORITE_SONG_SORT = "TITLE"
@@ -134,10 +135,12 @@ class AppPreferences(private val context: Context) {
                 ?: MobileAudioQuality.fromLegacyBitRate(preferences[MOBILE_BIT_RATE]),
             checkUpdates = preferences[CHECK_UPDATES] ?: true,
             favoriteSongSort = preferences[FAVORITE_SONG_SORT] ?: DEFAULT_FAVORITE_SONG_SORT,
+            keepScreenOnForLyrics = preferences[KEEP_SCREEN_ON_FOR_LYRICS] ?: true,
         )
     }
 
     suspend fun setThemeMode(value: ThemeMode) = edit { it[THEME] = value.name }
+    suspend fun setKeepScreenOnForLyrics(value: Boolean) = edit { it[KEEP_SCREEN_ON_FOR_LYRICS] = value }
     suspend fun setVolumeNormalizationEnabled(value: Boolean) = edit {
         it[VOLUME_NORMALIZATION] = value
     }
@@ -235,6 +238,7 @@ class AppPreferences(private val context: Context) {
             stringPreferencesKey("account_${accountKey}_playlist_${songStorageKey(playlistId)}_sort")
         val SONG_BATCH_HINT_SHOWN = booleanPreferencesKey("song_batch_hint_shown")
         val THEME = stringPreferencesKey("theme")
+        val KEEP_SCREEN_ON_FOR_LYRICS = booleanPreferencesKey("keep_screen_on_for_lyrics")
         val VOLUME_NORMALIZATION = booleanPreferencesKey("volume_normalization")
         val EQUALIZER_ENABLED = booleanPreferencesKey("equalizer_enabled")
         val EQUALIZER_PRESET = stringPreferencesKey("equalizer_preset")
